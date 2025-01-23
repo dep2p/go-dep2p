@@ -5,8 +5,8 @@ import (
 	"io"
 	"sync"
 
+	"github.com/dep2p/go-dep2p/multiformats/varint"
 	pool "github.com/dep2p/go-dep2p/p2plib/buffer/pool"
-	"github.com/multiformats/go-varint"
 )
 
 // varintWriter 是实现 Writer 接口的底层类型

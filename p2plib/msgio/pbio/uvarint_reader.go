@@ -29,7 +29,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/multiformats/go-varint"
+	"github.com/dep2p/go-dep2p/multiformats/varint"
 )
 
 // uvarintReader 实现了带有 varint 长度前缀的 protobuf 消息读取器

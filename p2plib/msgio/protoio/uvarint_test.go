@@ -29,8 +29,8 @@ import (
 
 	"github.com/gogo/protobuf/test"
 
+	"github.com/dep2p/go-dep2p/multiformats/varint"
 	"github.com/dep2p/go-dep2p/p2plib/msgio/protoio"
-	"github.com/multiformats/go-varint"
 )
 
 // TestVarintNormal 测试正常情况下的变长整数编解码

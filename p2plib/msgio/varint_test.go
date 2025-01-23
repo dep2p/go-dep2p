@@ -7,7 +7,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/multiformats/go-varint"
+	"github.com/dep2p/go-dep2p/multiformats/varint"
 )
 
 // TestVarintReadWrite 测试 varint 读写功能

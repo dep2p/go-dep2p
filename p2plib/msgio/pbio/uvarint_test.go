@@ -27,9 +27,9 @@ import (
 	"math/rand"
 	"testing"
 
+	"github.com/dep2p/go-dep2p/multiformats/varint"
 	"github.com/dep2p/go-dep2p/p2plib/msgio/pbio"
 	"github.com/dep2p/go-dep2p/p2plib/msgio/pbio/pb"
-	"github.com/multiformats/go-varint"
 )
 
 //go:generate protoc --go_out=. --go_opt=Mpb/test.proto=./pb pb/test.proto
