@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package dep2p.key;
+
+option go_package = "github.com/dep2p/go-dep2p/pkg/proto/key";
+
+// KeyType 密钥类型
+enum KeyType {
+    KEY_TYPE_UNSPECIFIED = 0;
+    KEY_TYPE_ED25519 = 1;
+    KEY_TYPE_ECDSA = 2;
+    KEY_TYPE_RSA = 3;
+}
+
+// PublicKey 公钥序列化格式
+message PublicKey {
+    // type 密钥类型
+    KeyType type = 1;
+    
+    // data 密钥原始字节
+    bytes data = 2;
+}
+
+// PrivateKey 私钥序列化格式
+message PrivateKey {
+    // type 密钥类型
+    KeyType type = 1;
+    
+    // data 密钥原始字节
+    bytes data = 2;
+}
+
+// SignedData 签名数据
+message SignedData {
+    // public_key 签名者的公钥
+    PublicKey public_key = 1;
+    
+    // payload 被签名的数据
+    bytes payload = 2;
+    
+    // signature 签名
+    bytes signature = 3;
+}
+

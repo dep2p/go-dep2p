@@ -1,0 +1,53 @@
+{
+  "_comment": "DeP2P 示例配置文件 - 复制为 config.json 并根据需要修改",
+
+  "preset": "desktop",
+
+  "listen_port": 4001,
+
+  "identity": {
+    "key_file": "~/.dep2p/identity.key"
+  },
+
+  "connection_limits": {
+    "low": 50,
+    "high": 100,
+    "grace_period": "30s",
+    "idle_timeout": "5m"
+  },
+
+  "discovery": {
+    "bootstrap_peers": [
+      "/dns4/bootstrap-ap.dep2p.io/udp/4001/quic-v1/p2p/12D3KooWExample1...",
+      "/dns4/bootstrap-eu.dep2p.io/udp/4001/quic-v1/p2p/12D3KooWExample2...",
+      "/dns4/bootstrap-na.dep2p.io/udp/4001/quic-v1/p2p/12D3KooWExample3..."
+    ],
+    "refresh_interval": "3m"
+  },
+
+  "relay": {
+    "enable": true,
+    "enable_server": false,
+    "max_reservations": 128,
+    "max_circuits": 16
+  },
+
+  "nat": {
+    "enable": true,
+    "enable_upnp": true,
+    "enable_autonat": true,
+    "stun_servers": [
+      "stun:stun.l.google.com:19302",
+      "stun:stun1.l.google.com:19302"
+    ]
+  },
+
+  "transport": {
+    "max_connections": 100,
+    "max_streams_per_conn": 256,
+    "idle_timeout": "5m",
+    "dial_timeout": "10s",
+    "handshake_timeout": "10s"
+  }
+}
+
