@@ -40,20 +40,23 @@ flowchart TD
 | Item | Content |
 |------|---------|
 | **Error Type** | `realm.ErrNotMember` |
-| **Trigger Condition** | Calling `Send()`, `Request()`, `Publish()` etc. before calling `JoinRealm()` |
+| **Trigger Condition** | Calling `Send()`, `Request()`, `Publish()` etc. before calling `Realm().Join()` |
 | **Root Cause** | DeP2P requires explicit Realm join before using business features |
 
 **Solution**:
 
 ```go
 // ❌ Wrong
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
 err := node.Send(ctx, targetID, "/myapp/1.0.0", data)
 // err = ErrNotMember
 
 // ✓ Correct
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
-realm, _ := node.JoinRealmWithKey(ctx, "my-realm", realmKey)  // Join first
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
+realm, _ := node.Realm("my-realm")  // Get realm first
+_ = realm.Join(ctx)                 // Join first
 messaging := realm.Messaging()
 err := messaging.Send(ctx, targetID, "/myapp/1.0.0", data)    // Then use
 ```
@@ -67,24 +70,27 @@ err := messaging.Send(ctx, targetID, "/myapp/1.0.0", data)    // Then use
 | Item | Content |
 |------|---------|
 | **Error Type** | `realm.ErrAlreadyJoined` |
-| **Trigger Condition** | Repeatedly calling `JoinRealm()` on an already joined Realm |
+| **Trigger Condition** | Repeatedly calling `Realm().Join()` on an already joined Realm |
 | **Root Cause** | Single Realm mode: node can only join one Realm at a time |
 
 **Solution**:
 
 ```go
 // ❌ Wrong
-node.JoinRealmWithKey(ctx, "realm-a", key)
-node.JoinRealmWithKey(ctx, "realm-a", key)  // ErrAlreadyJoined
+realm, _ := node.Realm("realm-a")
+_ = realm.Join(ctx)
+_ = realm.Join(ctx)  // ErrAlreadyJoined
 
 // ✓ Correct: Check current state
 if node.CurrentRealm() == nil {
-    node.JoinRealmWithKey(ctx, "realm-a", key)
+    realm, _ := node.Realm("realm-a")
+    _ = realm.Join(ctx)
 }
 
 // ✓ Or: Leave first then join
 node.LeaveRealm(ctx)
-node.JoinRealmWithKey(ctx, "realm-b", keyB)
+realm, _ := node.Realm("realm-b")
+_ = realm.Join(ctx)
 ```
 
 ---
@@ -171,10 +177,11 @@ conn, err := node.Connect(ctx, targetID)
 
 ```go
 // 1. Enable Relay
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithRelay(true),
 )
+_ = node.Start(ctx)
 
 // 2. Check NAT configuration
 // - Confirm UPnP enabled
@@ -210,7 +217,8 @@ fmt.Printf("Share this Key: %s\n", realmKey.String())
 
 // Other members use the same key
 key, _ := types.ParseRealmKey(sharedKeyString)
-realm, _ := node.JoinRealmWithKey(ctx, "my-realm", key)
+realm, _ := node.Realm("my-realm")
+_ = realm.Join(ctx)
 ```
 
 ---
@@ -344,7 +352,8 @@ node.AddAddresses(targetID, addrs)
 switch {
 case errors.Is(err, realm.ErrNotMember):
     // Need to join Realm first
-    realm, _ := node.JoinRealmWithKey(ctx, "my-realm", key)
+    realm, _ := node.Realm("my-realm")
+    _ = realm.Join(ctx)
     // Retry operation
 
 case errors.Is(err, realm.ErrAuthFailed):

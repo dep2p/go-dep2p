@@ -1,0 +1,88 @@
+// DeP2P Peer Protocol Definitions
+// 节点相关消息定义
+
+syntax = "proto3";
+
+package dep2p.peer;
+
+option go_package = "github.com/dep2p/dep2p/pkg/proto/peer";
+
+// PeerID 节点 ID
+message PeerID {
+  bytes id = 1;
+}
+
+// AddrInfo 节点地址信息
+message AddrInfo {
+  PeerID id = 1;
+  repeated bytes addrs = 2;
+}
+
+// AddressType 地址类型
+//
+// 用于区分不同来源的地址，便于连接策略优化：
+// - DIRECT: 直连地址，优先使用
+// - RELAY: 中继地址，作为兜底
+// - OBSERVED: 观测到的地址（其他节点报告）
+enum AddressType {
+  // ADDRESS_TYPE_UNSPECIFIED 未指定类型（向后兼容）
+  ADDRESS_TYPE_UNSPECIFIED = 0;
+  // ADDRESS_TYPE_DIRECT 直连地址
+  ADDRESS_TYPE_DIRECT = 1;
+  // ADDRESS_TYPE_RELAY 中继地址
+  ADDRESS_TYPE_RELAY = 2;
+  // ADDRESS_TYPE_OBSERVED 观测地址（他人报告）
+  ADDRESS_TYPE_OBSERVED = 3;
+}
+
+// PeerRecord 节点记录
+message PeerRecord {
+  // peer_id 节点 ID
+  bytes peer_id = 1;
+  
+  // seq 序列号
+  uint64 seq = 2;
+  
+  // addresses 地址列表（向后兼容，混合类型）
+  repeated AddressInfo addresses = 3;
+  
+  // direct_addrs 直连地址列表（v2.0 推荐使用）
+  //
+  // 节点的公网或内网可达地址，优先用于连接。
+  repeated bytes direct_addrs = 4;
+  
+  // relay_addrs 中继地址列表（v2.0 推荐使用）
+  //
+  // 通过 Relay 节点可达的地址，格式: /p2p/relay-peer-id/p2p-circuit/p2p/target-peer-id
+  // 当直连失败时作为兜底。
+  repeated bytes relay_addrs = 5;
+}
+
+// AddressInfo 地址信息
+message AddressInfo {
+  // multiaddr 地址（multiaddr 编码）
+  bytes multiaddr = 1;
+  
+  // type 地址类型
+  //
+  // v2.0 新增：用于区分 direct/relay/observed 地址
+  AddressType type = 2;
+  
+  // ttl 地址有效期（秒）
+  //
+  // 0 表示使用默认 TTL
+  uint64 ttl = 3;
+  
+  // certified 是否经过认证
+  //
+  // true 表示地址经过 AutoNAT 或其他机制验证
+  bool certified = 4;
+}
+
+// SignedPeerRecord 签名的节点记录
+message SignedPeerRecord {
+  bytes peer_id = 1;
+  bytes public_key = 2;
+  bytes payload = 3;
+  bytes signature = 4;
+}

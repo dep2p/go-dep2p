@@ -1,416 +1,274 @@
-# 设计文档导航
+# DeP2P 内部设计文档（Design）
 
-本目录包含 DeP2P 项目的设计文档，记录架构决策、协议规范和实现细节。
-
----
-
-## 为什么这样设计？
-
-> 如果你是**用户**，想快速了解 DeP2P 的设计决策对你的影响，从这里开始：
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                      用户需要了解的设计决策                          │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  "为什么必须先 JoinRealm?"                                          │
-│    → INV-002: Realm 成员约束                                        │
-│    → 用户文档: docs/zh/reference/api-defaults.md                    │
-│                                                                      │
-│  "为什么 System Relay 不承载业务数据?"                              │
-│    → INV-003: 控制面/数据面分离                                     │
-│    → ADR-0004: 中继分层设计                                         │
-│                                                                      │
-│  "为什么使用 PSK 而不是证书?"                                       │
-│    → ADR-0002: Realm 隔离设计                                       │
-│    → 用户文档: docs/zh/concepts/core-concepts.md                    │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### 用户文档链接
-
-| 设计决策 | 用户影响 | 用户文档 |
-|----------|----------|----------|
-| [INV-002 Realm 成员约束](invariants/INV-002-realm-membership.md) | 必须先 `JoinRealm()` | [API 约束](../docs/zh/reference/api-defaults.md) |
-| [INV-003 控制/数据分离](invariants/INV-003-control-data-separation.md) | 中继层次理解 | [中继部署](../docs/zh/how-to/relay-deployment-models.md) |
-| [ADR-0001 身份优先](adr/0001-identity-first.md) | NodeID 生成 | [核心概念](../docs/zh/concepts/core-concepts.md) |
-| [ADR-0002 Realm 隔离](adr/0002-realm-isolation.md) | PSK 认证 | [加入 Realm](../docs/zh/getting-started/first-realm.md) |
+> **定位**：DeP2P 的内部 Source of Truth —— 协议规范、架构设计、需求追溯、测试治理、发布管理的统一中心。
+>
+> **更新日期**：2026-01-15
 
 ---
 
-## 概述
-
-设计文档是 DeP2P 项目的技术蓝图，用于：
-
-- **记录决策**：重要的架构和技术决策
-- **规范协议**：网络协议和接口规范
-- **追踪需求**：功能需求和系统约束
-- **指导实现**：从设计到代码的映射
-
-```mermaid
-flowchart TB
-    subgraph DesignDocs [设计文档体系]
-        Roadmap["路线图<br/>roadmap.md"]
-        Disc["讨论记录<br/>discussions/"]
-        Reqs["需求规范<br/>requirements/"]
-        Arch["架构设计<br/>architecture/"]
-        Protos["协议规范<br/>protocols/"]
-        ADR["架构决策<br/>adr/"]
-        Inv["系统不变量<br/>invariants/"]
-        Impl["实现映射<br/>implementation/"]
-        Test["测试追踪<br/>testing/"]
-    end
-    
-    Roadmap --> Reqs
-    Disc -.->|结论沉淀| Arch
-    Disc -.->|结论沉淀| ADR
-    Reqs --> Arch
-    Arch --> Protos
-    Protos --> ADR
-    ADR --> Inv
-    Inv --> Impl
-    Impl --> Test
-```
-
----
-
-## 文档结构
+## 目录结构
 
 ```
 design/
-├── README.md                 # 📍 本文件 - 设计文档导航
-├── roadmap.md                # 版本里程碑（目标/范围）
+├── README.md                      # 本文件：入口与阅读路径
+├── SUMMARY.md                     # 全目录索引
 │
-├── discussions/              # 🔄 设计讨论记录（新增）
-│   ├── README.md             # 讨论记录说明
-│   ├── DISC-1227-api-layer-design.md
-│   └── DISC-1227-relay-isolation.md
+├── 01_context/                    # 【背景】需求 + 参考 + 决策
+│   ├── requirements/              # 需求文档
+│   ├── references/                # 参考研究（iroh、libp2p 分析）
+│   └── decisions/                 # ADR 架构决策记录
 │
-├── requirements/             # 需求规范
-│   ├── README.md             # 需求管理说明
-│   ├── index.yaml            # 需求索引
-│   ├── REQ-CONN-001.md       # 连接需求
-│   └── REQ-REALM-001.md      # Realm 需求
+├── 02_constraints/                # 【约束】协议规范 + 工程标准
+│   ├── protocol/                  # 协议规范（身份、传输、网络、应用）
+│   └── engineering/               # 工程标准（编码、测试规范）
 │
-├── architecture/             # 架构设计
-│   ├── README.md             # 架构文档索引
-│   ├── overview.md           # 架构总览（含整体架构图）
-│   ├── layers.md             # 三层架构详解
-│   ├── components.md         # 核心组件
-│   └── interactions.md       # 组件交互
+├── 03_architecture/               # 【架构】六层结构
+│   ├── L1_overview/               # 系统概览（定位、边界、术语）
+│   ├── L2_structural/             # 结构设计（分层、依赖、C4 可视化）
+│   ├── L3_behavioral/             # 行为设计（流程、状态机）
+│   ├── L4_interfaces/             # 接口契约
+│   ├── L5_models/                 # 领域模型（核心设计）
+│   └── L6_domains/                # 模块设计（代码级，含实现状态）
 │
-├── protocols/                # 协议规范
-│   ├── README.md             # 协议索引
-│   ├── foundation/           # 基础层协议
-│   │   ├── identity.md       # 身份协议
-│   │   └── addressing.md     # 地址协议
-│   ├── transport/            # 传输层协议
-│   │   ├── quic.md           # QUIC 传输
-│   │   ├── relay.md          # 中继协议（含分层中继设计）
-│   │   └── security.md       # 安全协议
-│   ├── network/              # 网络层协议
-│   │   ├── discovery.md      # 发现协议
-│   │   ├── routing.md        # 路由协议
-│   │   └── nat.md            # NAT 穿透
-│   └── application/          # 应用层协议
-│       ├── messaging.md      # 消息协议
-│       ├── realm.md          # Realm 协议
-│       └── pubsub.md         # 发布订阅
+├── 04_delivery/                   # 【交付】测试 + 发布 + 安全
+│   ├── testing/                   # 测试策略与用例
+│   ├── release/                   # 发布流程
+│   └── security/                  # 安全防护
 │
-├── adr/                      # 架构决策记录
-│   ├── README.md             # ADR 模板和索引
-│   ├── 0001-identity-first.md
-│   ├── 0002-realm-isolation.md
-│   └── 0003-relay-first-connect.md
+├── 05_governance/                 # 【治理】提案 + 版本策略
 │
-├── invariants/               # 系统不变量
-│   ├── README.md             # 不变量说明
-│   ├── INV-001-identity-first.md
-│   └── INV-002-realm-membership.md
+├── 06_guides/                     # 【指南】开发指南
 │
-├── implementation/           # 实现映射
-│   ├── README.md             # 实现说明
-│   ├── module-map.md         # 模块映射
-│   ├── status.md             # 实现状态
-│   └── fx-lifecycle.md       # fx 生命周期
-│
-└── testing/                  # 测试追踪
-    ├── README.md             # 测试说明
-    ├── strategy.md           # 测试策略
-    ├── coverage.md           # 覆盖率要求
-    ├── test-plan.md          # 测试分层
-    └── cases/                # 测试用例
-        └── TC-CONN-001.md
+├── templates/                     # 模板库
+├── _discussions/                  # 讨论记录
+└── _archive/                      # 归档
 ```
 
 ---
 
-## 如何阅读设计文档
+## 目录逻辑
 
-### 阅读路径
+```
+01_context/        → 为什么做（需求、参考、决策）
+02_constraints/    → 什么约束（协议规范、工程标准）
+03_architecture/   → 怎么设计（视图、模型、模块、实现状态）
+04_delivery/       → 怎么保障（测试、发布、安全）
+05_governance/     → 怎么治理
+06_guides/         → 怎么开发
+```
 
-根据你的目的选择不同的阅读路径：
+---
+
+## 03_architecture 六层结构
 
 ```mermaid
-flowchart TD
-    Start["开始阅读"] --> Goal{"你的目标?"}
-    
-    Goal -->|了解整体架构| Path1["路径 1: 架构理解"]
-    Goal -->|贡献代码| Path2["路径 2: 开发贡献"]
-    Goal -->|理解决策| Path3["路径 3: 决策追溯"]
-    
-    Path1 --> A1["1. roadmap.md"]
-    A1 --> A2["2. architecture/overview.md"]
-    A2 --> A3["3. architecture/layers.md"]
-    A3 --> A4["4. architecture/components.md"]
-    
-    Path2 --> B1["1. implementation/module-map.md"]
-    B1 --> B2["2. protocols/ 相关协议"]
-    B2 --> B3["3. invariants/ 系统约束"]
-    B3 --> B4["4. testing/strategy.md"]
-    
-    Path3 --> C1["1. adr/README.md"]
-    C1 --> C2["2. 具体 ADR"]
-    C2 --> C3["3. requirements/ 相关需求"]
+flowchart TB
+    L1[L1_overview - 系统概览]
+    L2[L2_structural - 结构设计]
+    L3[L3_behavioral - 行为设计]
+    L4[L4_interfaces - 接口契约]
+    L5[L5_models - 领域模型]
+    L6[L6_domains - 模块设计]
+
+    L1 --> L2 --> L3 --> L4 --> L5 --> L6
 ```
 
-### 路径 1：架构理解
-
-适合：新加入的开发者、想了解项目全貌
-
-1. **[roadmap.md](roadmap.md)** - 了解版本规划和演进方向
-2. **[architecture/overview.md](architecture/overview.md)** - 理解整体架构
-3. **[architecture/layers.md](architecture/layers.md)** - 深入三层架构
-4. **[architecture/components.md](architecture/components.md)** - 了解核心组件
-
-### 路径 2：开发贡献
-
-适合：准备贡献代码的开发者
-
-1. **[implementation/module-map.md](implementation/module-map.md)** - 设计到代码的映射
-2. **[protocols/](protocols/README.md)** - 相关协议规范
-3. **[invariants/](invariants/README.md)** - 必须遵守的系统约束
-4. **[testing/strategy.md](testing/strategy.md)** - 测试要求
-
-### 路径 3：决策追溯
-
-适合：想了解"为什么这样设计"
-
-1. **[adr/README.md](adr/README.md)** - ADR 索引
-2. **具体 ADR** - 决策详情
-3. **[requirements/](requirements/README.md)** - 相关需求
+| 层次 | 目录 | 职责 | 读者 |
+|------|------|------|------|
+| L1 | `L1_overview/` | 系统定位、边界、术语 | 管理层、业务方 |
+| L2 | `L2_structural/` | 结构设计（分层、依赖、C4 可视化） | 架构师 |
+| L3 | `L3_behavioral/` | 行为设计（流程、状态机） | 架构师、开发者 |
+| L4 | `L4_interfaces/` | 接口契约（API、协议） | 开发者、集成方 |
+| L5 | `L5_models/` | 领域模型（核心业务设计） | 核心开发者 |
+| L6 | `L6_domains/` | 模块设计（代码级实现、状态追踪） | 模块开发者 |
 
 ---
 
-## 编号体系
+## 阅读路径
 
-DeP2P 使用统一的编号体系来追踪需求、决策和测试。
+### 新人入门
 
-```mermaid
-flowchart LR
-    subgraph Numbering [编号体系]
-        DISC["DISC-xxxx<br/>讨论记录"]
-        REQ["REQ-xxx<br/>需求"]
-        ADR["ADR-xxxx<br/>架构决策"]
-        INV["INV-xxx<br/>不变量"]
-        TC["TC-xxx<br/>测试用例"]
-    end
-    
-    DISC -.-> ADR
-    REQ --> ADR
-    ADR --> INV
-    INV --> TC
-    REQ --> TC
+1. 阅读 [01_context/decisions/](01_context/decisions/) 了解关键架构决策
+2. 阅读 [03_architecture/L1_overview/](03_architecture/L1_overview/) 了解系统全貌
+3. 阅读 [03_architecture/L2_structural/c4/](03_architecture/L2_structural/c4/) 了解架构图
+
+### 深入架构
+
+1. 阅读 [03_architecture/L2_structural/](03_architecture/L2_structural/) 了解分层和依赖
+2. 阅读 [03_architecture/L3_behavioral/](03_architecture/L3_behavioral/) 了解核心流程
+3. 阅读 [03_architecture/L5_models/](03_architecture/L5_models/) 了解领域设计
+
+### 开发实现
+
+1. 阅读 [02_constraints/](02_constraints/) 了解开发规范
+2. 阅读 [03_architecture/L4_interfaces/](03_architecture/L4_interfaces/) 了解接口契约
+3. 阅读 [03_architecture/L6_domains/](03_architecture/L6_domains/) 了解模块设计和实现状态
+
+---
+
+## 代码目录结构
+
+> 代码目录采用 `internal/` + `pkg/` 分层结构，符合 Go 社区标准实践。
+> 
+> **架构**: 五层架构（API、Protocol、Realm、Core、Discovery）
+
+```
+dep2p/
+├── cmd/                     # 命令入口
+│   ├── dep2p/               # 主程序
+│   └── relay-server/        # 中继服务器
+│
+├── config/                  # 配置管理（统一归口）
+│
+├── pkg/                     # 公开接口（可被外部项目导入）
+│   ├── interfaces/          # 核心接口契约（扁平命名：host.go, messaging.go 等）
+│   ├── types/               # 统一类型定义
+│   ├── proto/               # 协议编码
+│   ├── crypto/              # 加密工具
+│   └── multiaddr/           # 多地址
+│
+├── internal/                # 内部实现（不可被外部导入）
+│   ├── protocol/            # Protocol Layer - 协议层（面向应用）
+│   │   ├── messaging/       # 点对点消息
+│   │   ├── pubsub/          # 发布订阅（GossipSub）
+│   │   ├── streams/         # 流管理
+│   │   └── liveness/        # 存活检测（Ping）
+│   │
+│   ├── realm/               # Realm Layer - 业务隔离层
+│   │   ├── auth/            # 成员认证（PSK/Cert）
+│   │   ├── member/          # 成员管理
+│   │   ├── routing/         # 域内路由
+│   │   └── gateway/         # 域网关（Relay）
+│   │
+│   ├── core/                # Core Layer - P2P 核心能力
+│   │   ├── host/            # 网络主机（门面）
+│   │   ├── identity/        # 身份管理
+│   │   ├── transport/       # 传输层（QUIC/TCP）
+│   │   ├── security/        # 安全层（TLS/Noise）
+│   │   ├── muxer/           # 多路复用
+│   │   ├── swarm/           # 连接群管理
+│   │   ├── connmgr/         # 连接管理
+│   │   ├── relay/           # 中继服务
+│   │   └── nat/             # NAT 穿透
+│   │
+│   └── discovery/           # Discovery Layer - 节点发现与广播
+│       ├── coordinator/     # 发现协调器
+│       ├── dht/             # DHT 发现
+│       ├── bootstrap/       # 引导节点
+│       ├── mdns/            # 局域网发现
+│       └── rendezvous/      # 命名空间发现
+│
+├── examples/                # 示例代码
+├── tests/                   # 集成测试
+├── docs/                    # 对外文档
+└── design/                  # 内部设计（本目录）
 ```
 
-### DISC - 讨论记录编号
+---
 
-**格式**：`DISC-<编号>-<描述>.md`
+## 五层架构概览
 
-- 编号：4 位日期编号（MMDD）或顺序编号
-- 描述：讨论主题的简短描述
-
-示例：
-- `DISC-1227-api-layer-design.md`
-- `DISC-1227-relay-isolation.md`
-
-### REQ - 需求编号
-
-**格式**：`REQ-<类别>-<编号>`
-
-| 类别 | 说明 | 示例 |
-|------|------|------|
-| CONN | 连接相关 | REQ-CONN-001 |
-| REALM | Realm 相关 | REQ-REALM-001 |
-| DISC | 发现相关 | REQ-DISC-001 |
-| NAT | NAT 穿透 | REQ-NAT-001 |
-| MSG | 消息相关 | REQ-MSG-001 |
-| SEC | 安全相关 | REQ-SEC-001 |
-
-### ADR - 架构决策编号
-
-**格式**：`<编号>-<描述>.md`
-
-- 编号：4 位数字，从 0001 开始
-- 描述：简短的决策描述（使用短横线连接）
-
-示例：
-- `0001-identity-first.md`
-- `0002-realm-isolation.md`
-- `0003-relay-first-connect.md`
-
-### INV - 不变量编号
-
-**格式**：`INV-<编号>-<描述>.md`
-
-- 编号：3 位数字，从 001 开始
-- 描述：不变量的简短描述
-
-示例：
-- `INV-001-identity-first.md`
-- `INV-002-realm-membership.md`
-
-### TC - 测试用例编号
-
-**格式**：`TC-<类别>-<编号>.md`
-
-| 类别 | 说明 | 示例 |
-|------|------|------|
-| CONN | 连接测试 | TC-CONN-001 |
-| REALM | Realm 测试 | TC-REALM-001 |
-| E2E | 端到端测试 | TC-E2E-001 |
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         DeP2P 五层架构                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  API Layer (根目录)   面向应用开发者的入口                                    │
+│       ↓              Node / Options / Config                               │
+│                                                                             │
+│  Protocol Layer      面向应用的通信服务                                       │
+│       ↓              Messaging / PubSub / Streams / Liveness               │
+│                                                                             │
+│  Realm Layer         业务隔离与成员管理                                       │
+│       ↓              Auth / Member / Routing / Gateway                     │
+│                                                                             │
+│  Core Layer          P2P 网络核心能力                                         │
+│       ↕              Host / Identity / Transport / Security / Relay / NAT  │
+│                                                                             │
+│  Discovery Layer     节点发现与广播                                           │
+│                      Coordinator / DHT / Bootstrap / mDNS / Rendezvous     │
+│                                                                             │
+│  依赖规则: API → Protocol → Realm → Core ↔ Discovery                        │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 文档类型说明
+## 文档体系定位
 
-### 讨论记录 (discussions/)
-
-记录设计讨论过程，是过程性文档。
-
-**特点**：
-- 记录讨论背景和过程
-- 可演进、可追溯
-- 结论沉淀到正式设计文档
-
-**与其他文档的关系**：
-- 讨论记录 → 结论 → 架构文档/ADR/协议规范
-
-### 需求规范 (requirements/)
-
-定义系统必须满足的功能和非功能需求。
-
-**特点**：
-- 可验证
-- 可追踪
-- 有明确的验收标准
-
-### 架构设计 (architecture/)
-
-描述系统的整体结构和设计决策。
-
-**特点**：
-- 高层视图
-- 组件关系
-- 设计原则
-
-### 协议规范 (protocols/)
-
-定义网络协议和接口规范。
-
-**特点**：
-- 消息格式
-- 状态机
-- 错误处理
-
-### 架构决策 (adr/)
-
-记录重要的架构决策及其背景。
-
-**特点**：
-- 决策上下文
-- 考虑的选项
-- 决策结果和后果
-
-### 系统不变量 (invariants/)
-
-定义系统必须始终满足的约束。
-
-**特点**：
-- 必须遵守
-- 测试必覆盖
-- 违反即 Bug
-
-### 实现映射 (implementation/)
-
-连接设计文档和代码实现。
-
-**特点**：
-- 模块映射
-- 实现状态
-- 生命周期管理
-
-### 测试追踪 (testing/)
-
-定义测试策略和追踪测试用例。
-
-**特点**：
-- 测试分层
-- 覆盖率要求
-- 用例管理
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                        DeP2P 文档分层                               │
+├────────────────────────────────────────────────────────────────────┤
+│  docs/          对外文档（用户手册、API 参考、教程）                  │
+│  ─────────────────────────────────────────────────────────────────  │
+│  design/        内部 Source of Truth（本目录）                       │
+│                 - 协议规范、架构设计、需求注册表                      │
+│                 - 测试策略、发布流程                                 │
+│                 - ADR、系统不变量                                    │
+│  ─────────────────────────────────────────────────────────────────  │
+│  design/_archive/  旧文档归档（_design/ 和 _docs/ 已归档于此）       │
+└────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 快速链接
+## 用户心智模型
 
-| 目录 | 说明 | 链接 |
-|------|------|------|
-| **路线图** | 版本规划 | [roadmap.md](roadmap.md) |
-| **讨论记录** | 设计讨论过程 | [discussions/README.md](discussions/README.md) |
-| **需求** | 需求规范 | [requirements/README.md](requirements/README.md) |
-| **架构** | 架构设计 | [architecture/README.md](architecture/README.md) |
-| **协议** | 协议规范 | [protocols/README.md](protocols/README.md) |
-| **决策** | 架构决策 | [adr/README.md](adr/README.md) |
-| **不变量** | 系统约束 | [invariants/README.md](invariants/README.md) |
-| **实现** | 实现映射 | [implementation/README.md](implementation/README.md) |
-| **测试** | 测试追踪 | [testing/README.md](testing/README.md) |
+用户只需要理解两个核心对象：**Node**（节点）和 **Realm**（域）。
 
----
+```
+用户操作路径（三步）：
+─────────────────────
 
-## 文档状态标注
+Step 1: 启动节点        node := dep2p.Start(ctx, dep2p.Desktop())
+Step 2: 加入域          realm := node.JoinRealm(ctx, key)
+Step 3: 业务通信        realm.Messaging() / realm.PubSub() / realm.Streams()
+```
 
-设计文档使用以下状态标注：
+| 对象 | 职责 | 核心 API |
+|------|------|----------|
+| **Node** | 我是谁、我在哪、加入哪个域 | `ID()`, `Addrs()`, `JoinRealm()`, `Close()` |
+| **Realm** | 域内成员、通信服务入口 | `Members()`, `Messaging()`, `PubSub()`, `Streams()`, `Liveness()` |
 
-| 标记 | 含义 | 说明 |
-|------|------|------|
-| ✅ Implemented | 已实现 | 代码已实现并测试 |
-| 🚧 In Progress | 进行中 | 正在开发 |
-| 📋 Planned | 规划中 | 已设计但未实现 |
-| ❌ Deprecated | 已废弃 | 不再使用 |
+详见 [L1_overview/core_concepts.md](03_architecture/L1_overview/core_concepts.md)
 
 ---
 
-## 贡献设计文档
+## 核心约束
 
-想要贡献设计文档？请参阅：
-
-- [如何贡献](../docs/zh/contributing/README.md)
-- [设计文档指南](../docs/zh/contributing/design-docs.md)
+| 约束 | 说明 |
+|------|------|
+| **单节点单域** | 一个节点只能加入一个 Realm |
+| **多协议支持** | Messaging/Streams 支持多协议，PubSub 支持多主题 |
+| **域内通信** | 所有业务通信必须在 Realm 上下文中 |
+| **隐藏底层** | 用户不接触 DHT、连接池、传输层等 |
+| **域级视图** | 用户只能看到域内的成员，不是全网节点 |
 
 ---
 
-## 相关资源
+## DeP2P 核心概念
 
-### 用户文档（快乐路径）
+DeP2P 是一个现代化的 P2P 网络库，核心设计理念：
 
-- [5 分钟上手](../docs/zh/getting-started/quickstart.md) - 怎么成功
-- [API 默认行为与约束](../docs/zh/reference/api-defaults.md) - 默认行为是什么
-- [错误码参考](../docs/zh/reference/error-codes.md) - 失败为什么、如何修复
-- [故障排查](../docs/zh/how-to/troubleshooting.md) - 遇到问题怎么办
+| 概念 | 说明 |
+|------|------|
+| **身份优先** | 每个节点拥有唯一的密钥对，NodeID = 公钥哈希 |
+| **Realm 隔离** | 逻辑网络隔离，使用 PSK 认证，单节点单域 |
+| **中继分层** | 统一 Relay（控制面/数据面） |
+| **协议命名空间** | 统一的协议 ID 规范 `/dep2p/...` |
+| **五层架构** | API、Protocol、Realm、Core、Discovery 分工明确 |
 
-### 开发资源
+---
 
-- [用户文档](../docs/README.md)
-- [示例代码](../examples/README.md)
-- [GitHub 仓库](https://github.com/dep2p/go-dep2p)
+## 相关文档
+
+- [SUMMARY.md](SUMMARY.md) - 全目录索引
+- [01_context/decisions/](01_context/decisions/) - 架构决策记录
+- [03_architecture/](03_architecture/) - 架构设计（六层结构）
+- [03_architecture/L1_overview/core_concepts.md](03_architecture/L1_overview/core_concepts.md) - 核心概念与用户 API
+
+---
+
+**最后更新**：2026-01-15

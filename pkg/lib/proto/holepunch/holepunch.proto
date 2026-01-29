@@ -1,0 +1,24 @@
+// DeP2P Hole Punch Protocol Definitions
+// NAT 打洞协议消息定义
+// 规范: https://github.com/libp2p/specs/blob/master/relay/DCUtR.md
+
+syntax = "proto3";
+
+package dep2p.holepunch;
+
+option go_package = "github.com/dep2p/dep2p/pkg/proto/holepunch";
+
+// Type 打洞消息类型
+enum Type {
+  CONNECT = 0;  // 连接请求
+  SYNC = 1;     // 同步消息
+}
+
+// HolePunch 打洞消息
+message HolePunch {
+  // type 消息类型
+  Type type = 1;
+  
+  // obs_addrs 观察到的地址列表（multiaddr 格式）
+  repeated bytes obs_addrs = 2;
+}

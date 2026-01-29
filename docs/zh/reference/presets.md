@@ -32,7 +32,8 @@ flowchart TB
 最小配置，适用于资源受限或测试场景。
 
 ```go
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetMinimal))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetMinimal))
+node.Start(ctx)
 ```
 
 **配置详情**：
@@ -59,7 +60,8 @@ node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetMinimal))
 桌面应用默认配置，平衡功能和资源消耗。
 
 ```go
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node.Start(ctx)
 ```
 
 **配置详情**：
@@ -88,7 +90,11 @@ node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
 服务器配置，最大化性能和连接能力。
 
 ```go
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetServer))
+node, _ := dep2p.New(ctx, 
+    dep2p.WithPreset(dep2p.PresetServer),
+    dep2p.WithTrustSTUNAddresses(true),  // 云服务器推荐
+)
+node.Start(ctx)
 ```
 
 **配置详情**：
@@ -117,7 +123,8 @@ node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetServer))
 移动端配置，优化电池和流量消耗。
 
 ```go
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetMobile))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetMobile))
+node.Start(ctx)
 ```
 
 **配置详情**：
@@ -253,19 +260,37 @@ flowchart TD
 
 ```go
 // 基于桌面预设，增加固定端口
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithListenPort(4001),
+)
+```
+
+### 基于预设添加 known_peers
+
+```go
+import "github.com/dep2p/go-dep2p/config"
+
+// 基于桌面预设，配置已知节点直连
+node, _ := dep2p.New(ctx,
+    dep2p.WithPreset(dep2p.PresetDesktop),
+    dep2p.WithKnownPeers(
+        config.KnownPeer{
+            PeerID: "12D3KooWxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            Addrs:  []string{"/ip4/1.2.3.4/udp/4001/quic-v1"},
+        },
+    ),
 )
 ```
 
 ### 基于预设覆盖
 
 ```go
-// 基于服务器预设，启用 Relay 服务器
-node, _ := dep2p.StartNode(ctx,
+// 基于服务器预设，启用 Relay 服务器和 STUN 信任
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetServer),
     dep2p.WithRelayServer(true),
+    dep2p.WithTrustSTUNAddresses(true),
     dep2p.WithListenPort(4001),
 )
 ```
@@ -273,10 +298,11 @@ node, _ := dep2p.StartNode(ctx,
 ### 基于预设禁用功能
 
 ```go
-// 基于桌面预设，禁用 mDNS
-node, _ := dep2p.StartNode(ctx,
+// 基于桌面预设，禁用 mDNS（私有网络场景）
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithMDNS(false),
+    dep2p.WithBootstrapPeers(nil),  // 也禁用公共 Bootstrap
 )
 ```
 
@@ -287,13 +313,22 @@ node, _ := dep2p.StartNode(ctx,
 不使用预设，完全自定义配置：
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+import "github.com/dep2p/go-dep2p/config"
+
+node, _ := dep2p.New(ctx,
     // 身份
-    dep2p.WithIdentity(privateKey),
+    dep2p.WithIdentityFile("./node.key"),
     
     // 网络
     dep2p.WithListenPort(4001),
-    dep2p.WithBootstrapPeers(bootstrapAddrs...),
+    
+    // 已知节点直连（私有网络场景）
+    dep2p.WithKnownPeers(
+        config.KnownPeer{
+            PeerID: "12D3KooWxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            Addrs:  []string{"/ip4/1.2.3.4/udp/4001/quic-v1"},
+        },
+    ),
     
     // 发现
     dep2p.WithDHT(dep2p.DHTServer),
@@ -301,12 +336,11 @@ node, _ := dep2p.StartNode(ctx,
     
     // NAT
     dep2p.WithNAT(true),
-    dep2p.WithAutoNAT(true),
     dep2p.WithHolePunching(true),
+    dep2p.WithTrustSTUNAddresses(true),  // 云服务器场景
     
     // 中继
     dep2p.WithRelay(true),
-    dep2p.WithAutoRelay(true),
     dep2p.WithRelayServer(false),
     
     // 连接

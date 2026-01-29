@@ -72,16 +72,20 @@ func main() {
     ctx := context.Background()
 
     // DHT enabled by default in Desktop/Server presets
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         // DHT auto-configured via preset
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create: %v", err)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     fmt.Println("DHT discovery enabled")
     
@@ -134,16 +138,20 @@ func main() {
     ctx := context.Background()
 
     // mDNS enabled by default in Desktop preset
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         // mDNS auto-discovers same-network nodes
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create: %v", err)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     // Listen for new node discoveries
     node.Endpoint().SetConnectedNotify(func(conn dep2p.Connection) {
@@ -219,15 +227,19 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create: %v", err)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     // Set connection notification
     node.Endpoint().SetConnectedNotify(func(conn dep2p.Connection) {
@@ -270,15 +282,19 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create: %v", err)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     // Target node ID
     targetIDStr := "5Q2STWvBFn..."
@@ -312,9 +328,10 @@ func main() {
 
 ```go
 // 1. Check Bootstrap configuration
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),  // Includes default Bootstrap
 )
+_ = node.Start(ctx)
 
 // 2. Wait for DHT sync
 time.Sleep(10 * time.Second)

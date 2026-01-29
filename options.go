@@ -4,687 +4,989 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dep2p/go-dep2p/internal/config"
-	"github.com/dep2p/go-dep2p/pkg/interfaces/identity"
-	realmif "github.com/dep2p/go-dep2p/pkg/interfaces/realm"
-	"github.com/dep2p/go-dep2p/pkg/types"
+	"go.uber.org/fx"
+
+	"github.com/dep2p/go-dep2p/config"
 )
 
-// Option 用户配置选项函数
-type Option func(*options) error
-
-// options 内部选项结构
-type options struct {
-	// 预设配置
-	preset *Preset
-
-	// 身份配置
-	identityKeyFile string
-	privateKey      identity.PrivateKey
-
-	// Realm 业务域
-	realmID string
-
-	// 监听地址
-	listenAddrs []string
-
-	// 连接配置
-	connectionLimits struct {
-		low  int
-		high int
-	}
-
-	// 发现配置
-	discovery struct {
-		bootstrapPeers    []string
-		bootstrapPeersSet bool // 是否显式设置了 bootstrapPeers（区分空和未设置）
-	}
-
-	// 中继配置
-	relay struct {
-		enable       *bool
-		enableServer *bool
-	}
-
-	// NAT 配置
-	nat struct {
-		enable        *bool
-		externalAddrs []string // 用户显式声明的公网地址（作为候选地址）
-	}
-
-	// Realm 高级配置
-	realm struct {
-		isolateDiscovery *bool
-		isolatePubSub    *bool
-	}
-
-	// Liveness 配置
-	liveness struct {
-		enable            *bool
-		heartbeatInterval *time.Duration
-		heartbeatTimeout  *time.Duration
-		enableGoodbye     *bool
-	}
-
-	// 关闭配置
-	shutdown struct {
-		goodbyeWait time.Duration // Goodbye 消息传播等待时间
-	}
-
-	// 日志配置
-	logFile string
-
-	// 自省服务配置
-	introspect struct {
-		enable *bool
-		addr   string
-	}
-
-	// 用户自定义配置（JSON/文件加载）
-	userConfig *UserConfig
-}
-
-// newOptions 创建默认选项
-func newOptions() *options {
-	return &options{
-		listenAddrs: []string{},
-	}
-}
-
-// toInternalConfig 转换为内部配置
-func (o *options) toInternalConfig() *config.Config {
-	cfg := config.NewConfig()
-
-	// 日志文件配置（必须在最早期应用）
-	cfg.LogFile = o.logFile
-
-	// 应用预设
-	if o.preset != nil {
-		o.preset.Apply(cfg)
-	}
-
-	// 覆盖: Realm
-	if o.realmID != "" {
-		cfg.RealmID = o.realmID
-	}
-
-	// 覆盖: 身份配置
-	if o.identityKeyFile != "" {
-		cfg.Identity.KeyFile = o.identityKeyFile
-	}
-	// 应用直接注入的私钥（WithIdentity 场景）
-	if o.privateKey != nil {
-		cfg.Identity.PrivateKey = o.privateKey
-	}
-
-	// 覆盖: 监听地址
-	if len(o.listenAddrs) > 0 {
-		cfg.ListenAddrs = o.listenAddrs
-	}
-
-	// 覆盖: 连接限制
-	if o.connectionLimits.low > 0 || o.connectionLimits.high > 0 {
-		cfg.ConnectionManager.LowWater = o.connectionLimits.low
-		cfg.ConnectionManager.HighWater = o.connectionLimits.high
-	}
-
-	// 覆盖: Bootstrap peers
-	// 如果显式设置了 bootstrapPeers（包括显式设置为空，用于创世节点）
-	if o.discovery.bootstrapPeersSet {
-		cfg.Discovery.BootstrapPeers = o.discovery.bootstrapPeers
-	}
-
-	// 覆盖: 中继配置
-	if o.relay.enable != nil {
-		cfg.Relay.Enable = *o.relay.enable
-	}
-	if o.relay.enableServer != nil {
-		cfg.Relay.EnableServer = *o.relay.enableServer
-	}
-
-	// 覆盖: NAT 配置
-	if o.nat.enable != nil {
-		cfg.NAT.Enable = *o.nat.enable
-	}
-	if len(o.nat.externalAddrs) > 0 {
-		cfg.NAT.ExternalAddrs = o.nat.externalAddrs
-	}
-
-	// 覆盖: Realm 高级配置
-	if o.realm.isolateDiscovery != nil {
-		cfg.Realm.IsolateDiscovery = *o.realm.isolateDiscovery
-	}
-	if o.realm.isolatePubSub != nil {
-		cfg.Realm.IsolatePubSub = *o.realm.isolatePubSub
-	}
-
-	// 覆盖: Liveness 配置
-	if o.liveness.enable != nil {
-		cfg.Liveness.Enable = *o.liveness.enable
-	}
-	if o.liveness.heartbeatInterval != nil {
-		cfg.Liveness.HeartbeatInterval = *o.liveness.heartbeatInterval
-	}
-	if o.liveness.heartbeatTimeout != nil {
-		cfg.Liveness.HeartbeatTimeout = *o.liveness.heartbeatTimeout
-	}
-	if o.liveness.enableGoodbye != nil {
-		cfg.Liveness.EnableGoodbye = *o.liveness.enableGoodbye
-	}
-
-	// 覆盖: 自省服务配置
-	if o.introspect.enable != nil {
-		cfg.Introspect.Enable = *o.introspect.enable
-	}
-	if o.introspect.addr != "" {
-		cfg.Introspect.Addr = o.introspect.addr
-	}
-
-	return cfg
-}
-
-// ============================================================================
-//                              预设选项
-// ============================================================================
-
-// WithPreset 使用预设配置
+// Option 配置选项函数
 //
-// 预设提供针对不同场景优化的默认配置：
-//   - PresetMobile: 移动端优化，低资源占用
-//   - PresetDesktop: 桌面端默认配置
-//   - PresetServer: 服务器优化，高性能
-//   - PresetMinimal: 最小配置，仅用于测试
-func WithPreset(preset *Preset) Option {
-	return func(o *options) error {
-		if preset == nil {
-			return fmt.Errorf("预设不能为空")
-		}
-		o.preset = preset
-		return nil
-	}
-}
-
-// ============================================================================
-//                              身份选项
-// ============================================================================
-
-// WithIdentityFromFile 从文件加载身份密钥
-//
-// 如果文件不存在，将自动创建新的身份密钥并保存。
-//
-//	dep2p.New(dep2p.WithIdentityFromFile("~/.dep2p/identity.key"))
-func WithIdentityFromFile(path string) Option {
-	return func(o *options) error {
-		if path == "" {
-			return fmt.Errorf("身份密钥文件路径不能为空")
-		}
-		o.identityKeyFile = path
-		return nil
-	}
-}
-
-// WithPrivateKey 使用指定的私钥作为身份
-//
-// 适用于程序化生成或外部管理密钥的场景。
-func WithPrivateKey(key identity.PrivateKey) Option {
-	return func(o *options) error {
-		if key == nil {
-			return fmt.Errorf("私钥不能为空")
-		}
-		o.privateKey = key
-		return nil
-	}
-}
-
-// WithIdentity 使用指定的私钥作为身份
-//
-// 这是 WithPrivateKey 的别名，提供更直观的命名。
-//
-//	key, _ := dep2p.GenerateKey()
-//	dep2p.NewNode(dep2p.WithIdentity(key))
-func WithIdentity(key identity.PrivateKey) Option {
-	return WithPrivateKey(key)
-}
-
-// ============================================================================
-//                              Realm 选项
-// ============================================================================
-
-// WithRealm 设置业务域（Realm）
-//
-// Realm 用于隔离不同业务的 P2P 网络：
-//   - 同一 Realm 的节点互相发现
-//   - 不同 Realm 的节点互不可见
-//
-// 示例:
-//
-//	dep2p.NewNode(dep2p.WithRealm("my-blockchain-mainnet"))
-func WithRealm(realmID string) Option {
-	return func(o *options) error {
-		if realmID == "" {
-			return fmt.Errorf("realm ID 不能为空")
-		}
-		o.realmID = realmID
-		return nil
-	}
-}
-
-// WithRealmIsolation 设置 Realm 隔离策略
-//
-// 参数:
-//   - isolateDiscovery: 是否隔离节点发现（只发现同 Realm 节点）
-//   - isolatePubSub: 是否隔离 Pub-Sub（只订阅同 Realm 主题）
-//
-// 示例:
-//
-//	dep2p.NewNode(
-//	    dep2p.WithRealm("my-realm"),
-//	    dep2p.WithRealmIsolation(true, true),
-//	)
-func WithRealmIsolation(isolateDiscovery, isolatePubSub bool) Option {
-	return func(o *options) error {
-		o.realm.isolateDiscovery = &isolateDiscovery
-		o.realm.isolatePubSub = &isolatePubSub
-		return nil
-	}
-}
-
-// ============================================================================
-//                              Liveness 选项
-// ============================================================================
-
-// WithLiveness 启用/禁用存活检测
-//
-// 启用后，节点将定期检测邻居的存活状态。
-func WithLiveness(enable bool) Option {
-	return func(o *options) error {
-		o.liveness.enable = &enable
-		return nil
-	}
-}
-
-// WithHeartbeat 设置心跳参数
-//
-// 参数:
-//   - interval: 心跳发送间隔
-//   - timeout: 心跳超时时间（超过此时间无响应判定为离线）
-//
-// 示例:
-//
-//	dep2p.NewNode(dep2p.WithHeartbeat(15*time.Second, 30*time.Second))
-func WithHeartbeat(interval, timeout time.Duration) Option {
-	return func(o *options) error {
-		if interval <= 0 {
-			return fmt.Errorf("心跳间隔必须大于 0")
-		}
-		if timeout <= 0 {
-			return fmt.Errorf("心跳超时必须大于 0")
-		}
-		if timeout < interval {
-			return fmt.Errorf("心跳超时不能小于心跳间隔")
-		}
-		o.liveness.heartbeatInterval = &interval
-		o.liveness.heartbeatTimeout = &timeout
-		return nil
-	}
-}
-
-// WithGoodbye 启用/禁用 Goodbye 协议
-//
-// 启用后，节点关闭前会向邻居发送 Goodbye 消息。
-func WithGoodbye(enable bool) Option {
-	return func(o *options) error {
-		o.liveness.enableGoodbye = &enable
-		return nil
-	}
-}
-
-// ============================================================================
-//                              关闭选项
-// ============================================================================
-
-// WithGoodbyeWait 设置 Goodbye 消息传播等待时间
-//
-// 节点关闭时会先发送 Goodbye 消息，然后等待指定时间让消息传播到邻居节点，
-// 最后再断开连接和释放资源。
-//
-// 默认值: 0（不等待）
-// 推荐值: 500ms - 2s
-//
-// 示例:
-//
-//	dep2p.NewNode(dep2p.WithGoodbyeWait(time.Second))
-func WithGoodbyeWait(wait time.Duration) Option {
-	return func(o *options) error {
-		if wait < 0 {
-			return fmt.Errorf("goodbye 等待时间不能为负数")
-		}
-		o.shutdown.goodbyeWait = wait
-		return nil
-	}
-}
-
-// ============================================================================
-//                              日志选项
-// ============================================================================
-
-// WithLogFile 将日志输出重定向到指定文件
-//
-// 默认情况下，dep2p 的结构化日志会输出到 stderr。
-// 使用此选项可以将所有日志写入文件，避免干扰交互式程序的输出。
-//
-// 文件会以追加模式打开（os.O_APPEND），多次运行会累积日志。
-//
-// 示例:
-//
-//	dep2p.NewNode(dep2p.WithLogFile("dep2p.log"))
-func WithLogFile(path string) Option {
-	return func(o *options) error {
-		if path == "" {
-			return fmt.Errorf("日志文件路径不能为空")
-		}
-		o.logFile = path
-		return nil
-	}
-}
-
-// ============================================================================
-//                              监听选项
-// ============================================================================
-
-// WithListenPort 使用指定端口监听所有接口（QUIC）
-//
-// 在 IPv4 和 IPv6 上同时监听指定端口，使用 QUIC 协议。
-// port=0 表示使用系统分配的随机端口。
-//
-// 示例:
-//
-//	dep2p.NewNode(dep2p.WithListenPort(4001))
-func WithListenPort(port int) Option {
-	return func(o *options) error {
-		if port < 0 || port > 65535 {
-			return fmt.Errorf("无效的端口号: %d", port)
-		}
-		// port=0 表示由系统分配随机端口。
-		// 注意：如果同时配置 ip4+ip6 且 port=0，会导致两套监听器拿到不同的随机端口，
-		// 进而让“把 ListenAddrs 作为可拨号地址”的场景（尤其是测试）变得不稳定。
-		// 因此这里在 port=0 时只启用 IPv4 随机端口监听（0.0.0.0:0）。
-		if port == 0 {
-			o.listenAddrs = []string{"/ip4/0.0.0.0/udp/0/quic-v1"}
-			return nil
-		}
-
-		o.listenAddrs = []string{
-			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port),
-			fmt.Sprintf("/ip6/::/udp/%d/quic-v1", port),
-		}
-		return nil
-	}
-}
-
-// WithExtraListenAddrs 追加监听地址（不覆盖已有 WithListenPort/用户配置的 ListenAddrs）。
-//
-// 典型用途：
-// - 为 RelayTransport 增加 /p2p-circuit 监听地址，使节点能够接收中继入站连接。
-//
-// 注意：
-// - 该选项只追加到 listenAddrs 列表；最终由 Endpoint.Listen() 统一启动监听器。
-func WithExtraListenAddrs(addrs ...string) Option {
-	return func(o *options) error {
-		for _, a := range addrs {
-			if a == "" {
-				continue
-			}
-			o.listenAddrs = append(o.listenAddrs, a)
-		}
-		return nil
-	}
-}
-
-// ============================================================================
-//                              连接选项
-// ============================================================================
-
-// WithConnectionLimits 设置连接数限制
-//
-// 参数:
-//   - low: 低水位线，连接数低于此值时停止裁剪
-//   - high: 高水位线，连接数超过此值时触发裁剪
-//
-// 示例:
-//
-//	dep2p.New(dep2p.WithConnectionLimits(50, 100))
-func WithConnectionLimits(low, high int) Option {
-	return func(o *options) error {
-		if low < 0 || high < 0 {
-			return fmt.Errorf("连接限制不能为负数")
-		}
-		if low > high {
-			return fmt.Errorf("低水位线不能大于高水位线")
-		}
-		o.connectionLimits.low = low
-		o.connectionLimits.high = high
-		return nil
-	}
-}
-
-// ============================================================================
-//                              发现选项
-// ============================================================================
-
-// WithBootstrapPeers 设置引导节点
-//
-// 引导节点用于首次加入网络时发现其他节点。
-// 地址格式（必须是完整地址）: /ip4/x.x.x.x/udp/4001/quic-v1/p2p/12D3KooW...
-//
-// REQ-BOOT-001 强制约束：
-//   - Bootstrap seed 必须是 Full Address（含 /p2p/<NodeID>）
-//   - 不允许使用 DialAddr（无 /p2p/ 后缀）
-//   - 不允许使用 RelayCircuitAddress（含 /p2p-circuit/）
-//
-// 特殊用法：
-//   - WithBootstrapPeers(nil) 或 WithBootstrapPeers() 表示创世节点（无 bootstrap）
-//   - 这会覆盖 Preset 中的默认 bootstrap 节点
+// 使用函数式选项模式配置节点。
+// 每个 Option 修改内部配置状态。
 //
 // 示例：
 //
-//	// 创世节点（无 bootstrap）
-//	dep2p.NewNode(dep2p.WithBootstrapPeers(nil))
+//	node, err := dep2p.New(ctx,
+//	    dep2p.WithPreset("server"),
+//	    dep2p.WithListenPort(4001),
+//	    dep2p.WithRelay(true),
+//	)
+type Option func(*nodeConfig) error
+
+// nodeConfig 内部配置
 //
-//	// 使用自定义 bootstrap
-//	dep2p.NewNode(dep2p.WithBootstrapPeers(
-//	    "/ip4/1.2.3.4/udp/4001/quic-v1/p2p/12D3KooW...",
+// 由 Option 函数填充。
+// 包含统一的 config.Config 和额外的运行时配置。
+type nodeConfig struct {
+	// config 统一配置（所有配置的唯一来源）
+	config *config.Config
+
+	// preset 预设名称（记录使用的预设）
+	preset string
+
+	// listenAddrs 监听地址列表（覆盖预设）
+	listenAddrs []string
+
+	// advertiseAddrs 通告地址列表（不绑定，仅对外公告）
+	// 用于云服务器场景：实际监听 0.0.0.0，但对外公告公网 IP
+	advertiseAddrs []string
+
+	// logFile 日志文件路径
+	logFile string
+
+	// dataDir 数据目录路径（覆盖 config.Storage.DataDir）
+	dataDir string
+
+	// trustSTUNAddresses STUN 信任模式
+	// 启用后，STUN 发现的地址将直接标记为已验证
+	trustSTUNAddresses bool
+
+	// userFxOptions 用户自定义 Fx 选项
+	// 允许用户注入自定义模块到依赖注入容器
+	userFxOptions []fx.Option
+}
+
+// newNodeConfig 创建默认的 nodeConfig
+func newNodeConfig() *nodeConfig {
+	return &nodeConfig{
+		config: config.NewConfig(),
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//
+//	预设选项
+//
+// ════════════════════════════════════════════════════════════════════════════
+
+// WithPreset 使用预设配置
+//
+// 预设提供开箱即用的配置组合。
+// 可选预设："mobile", "desktop", "server", "minimal"
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithPreset("server"))
+func WithPreset(presetName string) Option {
+	return func(cfg *nodeConfig) error {
+		if err := config.ApplyPreset(cfg.config, presetName); err != nil {
+			return err
+		}
+		cfg.preset = presetName
+		return nil
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//
+//	网络选项
+//
+// ════════════════════════════════════════════════════════════════════════════
+
+// WithListenPort 设置监听端口
+//
+// 指定 UDP 端口用于 QUIC 传输。
+// 设为 0 时系统自动分配随机可用端口。
+//
+// 注意：在 Linux 系统上，绑定 `0.0.0.0` 时会自动同时监听 IPv4 和 IPv6
+// （当 net.ipv6.bindv6only=0 时），因此无需显式添加 IPv6 地址。
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithListenPort(4001))
+func WithListenPort(port int) Option {
+	return func(cfg *nodeConfig) error {
+		if port < 0 || port > 65535 {
+			return fmt.Errorf("invalid port: %d (must be 0-65535)", port)
+		}
+		// 生成默认监听地址（QUIC）
+		// Linux 双栈机制：绑定 0.0.0.0 会自动包含 IPv6，无需显式添加 [::]
+		cfg.listenAddrs = []string{
+			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port),
+		}
+		return nil
+	}
+}
+
+// WithListenAddrs 设置监听地址
+//
+// 自定义监听地址列表，覆盖预设的默认地址。
+// 地址格式为 multiaddr，例如："/ip4/0.0.0.0/udp/4001/quic-v1"
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithListenAddrs(
+//	    "/ip4/0.0.0.0/udp/4001/quic-v1",
+//	    "/ip6/::/udp/4001/quic-v1",
+//	))
+func WithListenAddrs(addrs ...string) Option {
+	return func(cfg *nodeConfig) error {
+		if len(addrs) == 0 {
+			return fmt.Errorf("at least one address is required")
+		}
+		cfg.listenAddrs = addrs
+		return nil
+	}
+}
+
+// WithDialTimeout 设置拨号超时
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithDialTimeout(30*time.Second))
+func WithDialTimeout(timeout time.Duration) Option {
+	return func(cfg *nodeConfig) error {
+		if timeout <= 0 {
+			return fmt.Errorf("dial timeout must be positive")
+		}
+		cfg.config.Transport.DialTimeout = config.Duration(timeout)
+		return nil
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//
+//	传输选项
+//
+// ════════════════════════════════════════════════════════════════════════════
+
+// WithQUIC 启用或禁用 QUIC 传输
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithQUIC(true))
+func WithQUIC(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Transport.EnableQUIC = enable
+		return nil
+	}
+}
+
+// WithTCP 启用或禁用 TCP 传输
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithTCP(true))
+func WithTCP(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Transport.EnableTCP = enable
+		return nil
+	}
+}
+
+// WithWebSocket 启用或禁用 WebSocket 传输
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithWebSocket(true))
+func WithWebSocket(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Transport.EnableWebSocket = enable
+		return nil
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//
+//	安全选项
+//
+// ════════════════════════════════════════════════════════════════════════════
+
+// WithTLS 启用或禁用 TLS
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithTLS(true))
+func WithTLS(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Security.EnableTLS = enable
+		return nil
+	}
+}
+
+// WithNoise 启用或禁用 Noise
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithNoise(true))
+func WithNoise(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Security.EnableNoise = enable
+		return nil
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//
+//	身份选项
+//
+// ════════════════════════════════════════════════════════════════════════════
+
+// WithIdentityFromFile 从文件加载身份密钥
+//
+// 指定密钥文件路径。
+// 如果文件不存在，将自动生成新密钥并保存。
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithIdentityFromFile("~/.dep2p/identity.key"))
+func WithIdentityFromFile(path string) Option {
+	return func(cfg *nodeConfig) error {
+		if path == "" {
+			return fmt.Errorf("identity key file path cannot be empty")
+		}
+		cfg.config.Identity.KeyFile = path
+		return nil
+	}
+}
+
+// WithIdentityKeyType 设置密钥类型
+//
+// 支持的类型: "Ed25519", "RSA", "ECDSA", "Secp256k1"
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithIdentityKeyType("Ed25519"))
+func WithIdentityKeyType(keyType string) Option {
+	return func(cfg *nodeConfig) error {
+		switch keyType {
+		case "Ed25519", "RSA", "ECDSA", "Secp256k1":
+			cfg.config.Identity.KeyType = keyType
+		default:
+			return fmt.Errorf("invalid key type: %s", keyType)
+		}
+		return nil
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//
+//	发现选项
+//
+// ════════════════════════════════════════════════════════════════════════════
+
+// WithDHT 启用或禁用 DHT
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithDHT(true))
+func WithDHT(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Discovery.EnableDHT = enable
+		return nil
+	}
+}
+
+// WithMDNS 启用或禁用 mDNS
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithMDNS(true))
+func WithMDNS(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Discovery.EnableMDNS = enable
+		return nil
+	}
+}
+
+// WithBootstrapPeers 设置引导节点
+//
+// 引导节点用于初始连接和 DHT 引导。
+// 调用此方法会自动启用 Bootstrap 和 DHT 发现功能。
+// 地址格式为完整的 multiaddr，例如：
+//
+//	"/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ"
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithBootstrapPeers(
+//	    "/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
 //	))
 func WithBootstrapPeers(peers ...string) Option {
-	return func(o *options) error {
-		// REQ-BOOT-001: 解析期强校验
+	return func(cfg *nodeConfig) error {
+		if len(peers) == 0 {
+			return fmt.Errorf("at least one bootstrap peer is required")
+		}
+		cfg.config.Discovery.Bootstrap.Peers = peers
+		// 自动启用 Bootstrap 和 DHT，因为用户明确想要连接引导节点
+		cfg.config.Discovery.EnableBootstrap = true
+		cfg.config.Discovery.EnableDHT = true
+		return nil
+	}
+}
+
+// WithKnownPeers 设置已知节点列表
+//
+// 启动时将直接连接这些节点，不依赖引导节点或 DHT 发现。
+// 适用于云服务器部署、私有网络等已知节点地址的场景。
+//
+// 与 WithBootstrapPeers 的区别：
+//   - WithBootstrapPeers: 用于 DHT 引导，需要引导节点提供服务
+//   - WithKnownPeers: 直接连接已知节点，不依赖任何发现机制
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithKnownPeers(
+//	    config.KnownPeer{
+//	        PeerID: "QmPeer1...",
+//	        Addrs:  []string{"/ip4/1.2.3.4/udp/4001/quic-v1"},
+//	    },
+//	    config.KnownPeer{
+//	        PeerID: "QmPeer2...",
+//	        Addrs:  []string{"/ip4/5.6.7.8/udp/4001/quic-v1"},
+//	    },
+//	))
+func WithKnownPeers(peers ...config.KnownPeer) Option {
+	return func(cfg *nodeConfig) error {
+		if len(peers) == 0 {
+			return fmt.Errorf("at least one known peer is required")
+		}
 		for _, peer := range peers {
-			if peer == "" {
-				continue // 允许空字符串（会被后续过滤）
+			if peer.PeerID == "" {
+				return fmt.Errorf("known peer must have a valid PeerID")
 			}
-
-			ma := types.Multiaddr(peer)
-
-			// 强制 Full Address 校验：必须包含 /p2p/<NodeID>
-			if ma.PeerID().IsEmpty() {
-				return fmt.Errorf("invalid bootstrap peer %q: must be Full Address (with /p2p/<NodeID>)", peer)
-			}
-
-			// 禁止 RelayCircuit 地址作为 seed
-			if ma.IsRelay() {
-				return fmt.Errorf("invalid bootstrap peer %q: RelayCircuitAddress not allowed as bootstrap seed", peer)
+			if len(peer.Addrs) == 0 {
+				return fmt.Errorf("known peer %s must have at least one address", peer.PeerID)
 			}
 		}
-
-		o.discovery.bootstrapPeers = peers
-		o.discovery.bootstrapPeersSet = true // 标记为显式设置
+		cfg.config.KnownPeers = append(cfg.config.KnownPeers, peers...)
 		return nil
 	}
 }
 
-// ============================================================================
-//                              中继选项
-// ============================================================================
-
-// WithRelay 启用/禁用中继客户端
+// EnableBootstrap 启用 Bootstrap 能力（ADR-0009）
 //
-// 启用后，节点可以通过中继服务器与 NAT 后的节点通信。
-func WithRelay(enable bool) Option {
-	return func(o *options) error {
-		o.relay.enable = &enable
+// 将当前节点设置为引导节点，为网络中的新节点提供初始对等方发现服务。
+// 启用后，节点将：
+//   - 维护扩展的节点存储（最多 50,000 个节点）
+//   - 定期探测存储节点的存活状态
+//   - 主动通过 Random Walk 发现新节点
+//   - 响应 FIND_NODE 请求，返回最近 K 个节点
+//
+// 前置条件：
+//   - 节点必须有公网可达地址（非 NAT 后）
+//
+// 所有运营参数使用内置默认值，用户无需也无法配置。
+//
+// 示例：
+//
+//	// 项目方部署引导节点
+//	dep2p.New(ctx, dep2p.EnableBootstrap(true))
+func EnableBootstrap(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Discovery.Bootstrap.EnableService = enable
+		if enable {
+			// 
+			cfg.config.NAT.LockReachabilityPublic = true
+		}
 		return nil
 	}
 }
 
-// WithRelayServer 启用/禁用中继服务器功能
+// EnableInfrastructure 快捷方式：同时启用 Bootstrap 和 Relay
 //
-// 启用后，本节点可以作为中继服务器为其他节点提供中继服务。
-func WithRelayServer(enable bool) Option {
-	return func(o *options) error {
-		o.relay.enableServer = &enable
+// 用于项目方快速部署基础设施节点。
+// 等价于同时调用 EnableBootstrap(true) 和 EnableRelayServer(true)。
+//
+// 前置条件：
+//   - 节点必须有公网可达地址（非 NAT 后）
+//
+// 示例：
+//
+//	// 项目方部署基础设施节点
+//	dep2p.New(ctx, dep2p.EnableInfrastructure(true))
+func EnableInfrastructure(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Discovery.Bootstrap.EnableService = enable
+		cfg.config.Relay.EnableServer = enable
+		if enable {
+			cfg.config.Discovery.EnableMDNS = false // 基础设施节点禁用 mDNS（云服务器无局域网邻居）
+			// 
+			// 基础设施节点配置了公网地址，不应被 AutoNAT 降级为 Private
+			cfg.config.NAT.LockReachabilityPublic = true
+		}
 		return nil
 	}
 }
 
-// ============================================================================
-//                              NAT 选项
-// ============================================================================
-
-// WithNAT 启用/禁用 NAT 穿透
+// ════════════════════════════════════════════════════════════════════════════
 //
-// 启用后，节点将尝试检测 NAT 类型并进行端口映射。
+//	NAT 选项
+//
+// ════════════════════════════════════════════════════════════════════════════
+
+// WithAutoNAT 启用或禁用 AutoNAT
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithAutoNAT(true))
+func WithAutoNAT(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.NAT.EnableAutoNAT = enable
+		return nil
+	}
+}
+
+// WithUPnP 启用或禁用 UPnP
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithUPnP(true))
+func WithUPnP(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.NAT.EnableUPnP = enable
+		return nil
+	}
+}
+
+// WithNATPMP 启用或禁用 NAT-PMP
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithNATPMP(true))
+func WithNATPMP(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.NAT.EnableNATPMP = enable
+		return nil
+	}
+}
+
+// WithHolePunch 启用或禁用 Hole Punching
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithHolePunch(true))
+func WithHolePunch(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.NAT.EnableHolePunch = enable
+		return nil
+	}
+}
+
+// WithNAT 启用或禁用所有 NAT 穿透技术
+//
+// 启用后会自动尝试 UPnP、AutoNAT、打洞等技术。
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithNAT(true))
 func WithNAT(enable bool) Option {
-	return func(o *options) error {
-		o.nat.enable = &enable
+	return func(cfg *nodeConfig) error {
+		cfg.config.NAT.EnableAutoNAT = enable
+		cfg.config.NAT.EnableUPnP = enable
+		cfg.config.NAT.EnableNATPMP = enable
+		cfg.config.NAT.EnableHolePunch = enable
 		return nil
 	}
 }
 
-// WithExternalAddrs 显式声明公网地址（作为候选地址）
+// WithNATPMPTimeout 设置 NAT-PMP 操作超时时间
 //
-// 用于公网服务器场景：当节点有独立公网IP但无法通过UPnP/STUN自动发现时，
-// 用户可以显式声明其公网地址。
+// 21: 添加可配置超时，避免 NAT-PMP 探测长时间阻塞
 //
-// 重要语义（INV-005 兼容）：
-//   - 这些地址将作为 Candidate 输入到 dial-back 验证流程
-//   - 验证成功后才会成为 VerifiedDirect 并发布到 DHT
-//   - 验证需要至少一个已连接的 helper 节点
+// 示例：
 //
-// 根据 IMPL-ADDRESS-UNIFICATION.md 规范，仅支持 multiaddr 格式：
-//   - "/ip4/203.0.113.5/udp/4001/quic-v1"
-//   - "/ip6/::1/udp/4001/quic-v1"
-//   - "/dns4/example.com/udp/4001/quic-v1"
+//	dep2p.New(ctx, dep2p.WithNATPMPTimeout(5*time.Second))
+func WithNATPMPTimeout(timeout time.Duration) Option {
+	return func(cfg *nodeConfig) error {
+		if timeout <= 0 {
+			return fmt.Errorf("NAT-PMP timeout must be positive")
+		}
+		cfg.config.NAT.NATPMP.Timeout = timeout
+		return nil
+	}
+}
+
+// WithUPnPTimeout 设置 UPnP 操作超时时间
 //
-// 如需从 host:port 格式转换，请使用 types.FromHostPort：
+// 示例：
 //
-//	ma, _ := types.FromHostPort("47.95.1.2", 4001, "udp/quic-v1")
-//	dep2p.WithExternalAddrs(ma.String())
+//	dep2p.New(ctx, dep2p.WithUPnPTimeout(5*time.Second))
+func WithUPnPTimeout(timeout time.Duration) Option {
+	return func(cfg *nodeConfig) error {
+		if timeout <= 0 {
+			return fmt.Errorf("UPnP timeout must be positive")
+		}
+		cfg.config.NAT.UPnP.Timeout = timeout
+		return nil
+	}
+}
+
+// WithTrustSTUNAddresses 启用 STUN 信任模式
 //
-// 示例:
+// 启用后，STUN 发现的地址将直接标记为已验证（verified），
+// 无需通过 dial-back 或 witness 验证。
 //
-//	// 阿里云 ECS 等无 UPnP 的公网服务器
-//	dep2p.NewNode(
-//	    dep2p.WithListenPort(4001),
-//	    dep2p.WithExternalAddrs("/ip4/47.95.1.2/udp/4001/quic-v1"),
-//	)
-func WithExternalAddrs(addrs ...string) Option {
-	return func(o *options) error {
-		for _, addr := range addrs {
-			if addr == "" {
-				continue
-			}
-			// 根据 IMPL-ADDRESS-UNIFICATION.md：仅接受 multiaddr 格式
-			ma, err := types.ParseMultiaddr(addr)
-			if err != nil {
-				return fmt.Errorf("无效的公网地址 %q（仅支持 multiaddr 格式，如需 host:port 请使用 types.FromHostPort 转换）: %w", addr, err)
-			}
-			o.nat.externalAddrs = append(o.nat.externalAddrs, ma.String())
+// 适用场景：
+//   - 云服务器部署（VPC 环境，公网 IP 由 NAT Gateway 提供）
+//   - 已知公网可达的环境
+//   - 私有网络部署
+//
+// 风险提示：
+//   - 仅在受控环境中启用
+//   - 如果 STUN 服务器被劫持，可能导致地址欺骗
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithTrustSTUNAddresses(true))
+func WithTrustSTUNAddresses(trust bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.trustSTUNAddresses = trust
+		return nil
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//
+//	中继选项
+//
+// ════════════════════════════════════════════════════════════════════════════
+
+// WithRelay 启用或禁用中继客户端
+//
+// 启用后节点可通过中继节点与 NAT 后的节点通信。
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithRelay(true))
+func WithRelay(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Relay.EnableClient = enable
+		return nil
+	}
+}
+
+// WithRelayServer 启用或禁用中继服务端
+//
+// 启用后节点可以作为中继服务器，帮助其他节点建立连接。
+// 通常用于公网可达的服务器节点。
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithRelayServer(true))
+func WithRelayServer(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Relay.EnableServer = enable
+		return nil
+	}
+}
+
+// EnableRelayServer 启用 Relay 服务能力
+//
+// 将当前节点设置为中继服务器，为 NAT 后的节点提供中继服务。
+//
+// 前置条件：
+//   - 节点必须有公网可达地址（非 NAT 后）
+//
+// 所有资源限制参数使用内置默认值，用户无需也无法配置。
+//
+// 示例：
+//
+//	// 部署 Relay 服务器
+//	dep2p.New(ctx, dep2p.EnableRelayServer(true))
+func EnableRelayServer(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Relay.EnableServer = enable
+		if enable {
+			// 
+			cfg.config.NAT.LockReachabilityPublic = true
 		}
 		return nil
 	}
 }
 
-// ============================================================================
-//                              配置文件选项
-// ============================================================================
-
-// WithConfig 使用 UserConfig 结构体配置
+// WithRelayAddr 设置要使用的 Relay 地址（客户端配置）
 //
-// 适用于从 JSON/YAML 文件加载配置的场景。
-func WithConfig(cfg *UserConfig) Option {
-	return func(o *options) error {
-		if cfg == nil {
-			return fmt.Errorf("配置不能为空")
+// 指定节点应使用的 Relay 地址。
+//
+// 参数：
+//   - addr: Relay 的完整 multiaddr 地址
+//
+// 示例：
+//
+//	// 普通节点使用 Relay
+//	dep2p.New(ctx,
+//	    dep2p.WithRelayAddr("/ip4/relay.dep2p.io/tcp/4001/p2p/QmRelay..."),
+//	)
+func WithRelayAddr(addr string) Option {
+	return func(cfg *nodeConfig) error {
+		if addr == "" {
+			return fmt.Errorf("relay address cannot be empty")
 		}
-		o.userConfig = cfg
+		cfg.config.Relay.RelayAddr = addr
 		return nil
 	}
 }
 
-// ============================================================================
-//                              自省服务选项
-// ============================================================================
-
-// WithIntrospect 启用或禁用本地自省 HTTP 服务
+// WithPublicAddr 设置公网可达地址（通告地址）
 //
-// 自省服务提供 JSON 格式的诊断信息，用于调试和监控：
-//   - GET /debug/introspect      - 完整诊断报告
-//   - GET /debug/introspect/node - 节点信息
-//   - GET /debug/introspect/connections - 连接信息
-//   - GET /debug/introspect/realm - Realm 信息
-//   - GET /debug/introspect/relay - Relay 信息
-//   - GET /debug/pprof/*         - Go pprof 端点
+// 显式声明节点的公网可达地址。此地址仅用于对外通告，不会尝试绑定。
+// 这对于云服务器（如阿里云、AWS）场景非常重要：
+//   - 云服务器内网 IP 与公网 IP 不同
+//   - 节点实际监听 0.0.0.0:port（使用 WithListenPort）
+//   - 但对外公告公网 IP（使用 WithPublicAddr）
 //
-// 默认监听地址: 127.0.0.1:6060（仅本地可访问）
+// 典型场景：
+//   - 部署 Bootstrap 节点时指定对外公开的地址
+//   - 部署 Relay 节点时指定对外公开的地址
+//   - 节点位于 NAT 后，但已通过端口映射配置公网可达
 //
-// 示例:
+// 示例：
 //
-//	node, _ := dep2p.StartNode(ctx,
-//	    dep2p.WithIntrospect(true),
+//	// 基础设施节点：监听 0.0.0.0:4001，对外公告公网 IP
+//	dep2p.New(ctx,
+//	    dep2p.EnableInfrastructure(true),
+//	    dep2p.WithListenPort(4001),  // 监听所有接口
+//	    dep2p.WithPublicAddr("/ip4/1.2.3.4/udp/4001/quic-v1"),  // 公告公网地址
 //	)
-//	// 访问 http://127.0.0.1:6060/debug/introspect
-func WithIntrospect(enable bool) Option {
-	return func(o *options) error {
-		o.introspect.enable = &enable
+func WithPublicAddr(addr string) Option {
+	return func(cfg *nodeConfig) error {
+		if addr == "" {
+			return fmt.Errorf("public address cannot be empty")
+		}
+		cfg.advertiseAddrs = append(cfg.advertiseAddrs, addr)
 		return nil
 	}
 }
 
-// WithIntrospectAddr 设置自省服务监听地址
+// ════════════════════════════════════════════════════════════════════════════
 //
-// 默认值: "127.0.0.1:6060"
+//	连接管理选项
 //
-// 安全警告: 不建议将自省服务暴露到公网，pprof 端点可能泄露敏感信息。
+// ════════════════════════════════════════════════════════════════════════════
+
+// WithConnectionLimits 设置连接限制
 //
-// 示例:
+// low: 低水位线，当连接数低于此值时主动发现并连接新节点
+// high: 高水位线，当连接数超过此值时开始清理低优先级连接
 //
-//	node, _ := dep2p.StartNode(ctx,
-//	    dep2p.WithIntrospect(true),
-//	    dep2p.WithIntrospectAddr("127.0.0.1:9090"),
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithConnectionLimits(50, 100))
+func WithConnectionLimits(low, high int) Option {
+	return func(cfg *nodeConfig) error {
+		if low < 0 {
+			return fmt.Errorf("low water mark must be >= 0, got %d", low)
+		}
+		if high < low {
+			return fmt.Errorf("high water mark (%d) must be >= low water mark (%d)", high, low)
+		}
+		cfg.config.ConnMgr.LowWater = low
+		cfg.config.ConnMgr.HighWater = high
+		return nil
+	}
+}
+
+// WithGracePeriod 设置新连接保护期
+//
+// 新连接在此期间内不会被清理
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithGracePeriod(30*time.Second))
+func WithGracePeriod(period time.Duration) Option {
+	return func(cfg *nodeConfig) error {
+		if period < 0 {
+			return fmt.Errorf("grace period must be non-negative")
+		}
+		cfg.config.ConnMgr.GracePeriod = config.Duration(period)
+		return nil
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//
+//	资源管理选项
+//
+// ════════════════════════════════════════════════════════════════════════════
+
+// WithResourceManager 启用或禁用资源管理
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithResourceManager(true))
+func WithResourceManager(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Resource.EnableResourceManager = enable
+		return nil
+	}
+}
+
+// WithMaxConnections 设置系统最大连接数
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithMaxConnections(1000))
+func WithMaxConnections(max int) Option {
+	return func(cfg *nodeConfig) error {
+		if max <= 0 {
+			return fmt.Errorf("max connections must be positive")
+		}
+		cfg.config.Resource.System.MaxConnections = max
+		return nil
+	}
+}
+
+// WithMaxStreams 设置系统最大流数
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithMaxStreams(10000))
+func WithMaxStreams(max int) Option {
+	return func(cfg *nodeConfig) error {
+		if max <= 0 {
+			return fmt.Errorf("max streams must be positive")
+		}
+		cfg.config.Resource.System.MaxStreams = max
+		return nil
+	}
+}
+
+// WithMaxMemory 设置系统最大内存
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithMaxMemory(1<<30)) // 1 GB
+func WithMaxMemory(max int64) Option {
+	return func(cfg *nodeConfig) error {
+		if max < 0 {
+			return fmt.Errorf("max memory must be non-negative")
+		}
+		cfg.config.Resource.System.MaxMemory = max
+		return nil
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//
+//	消息传递选项
+//
+// ════════════════════════════════════════════════════════════════════════════
+
+// WithPubSub 启用或禁用 PubSub
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithPubSub(true))
+func WithPubSub(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Messaging.EnablePubSub = enable
+		return nil
+	}
+}
+
+// WithStreams 启用或禁用 Streams
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithStreams(true))
+func WithStreams(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Messaging.EnableStreams = enable
+		return nil
+	}
+}
+
+// WithLiveness 启用或禁用 Liveness
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithLiveness(true))
+func WithLiveness(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Messaging.EnableLiveness = enable
+		return nil
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//
+//	Realm 选项
+//
+// ════════════════════════════════════════════════════════════════════════════
+
+// WithRealm 启用或禁用所有 Realm 组件
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithRealm(true))
+func WithRealm(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Realm.EnableGateway = enable
+		cfg.config.Realm.EnableRouting = enable
+		cfg.config.Realm.EnableMember = enable
+		cfg.config.Realm.EnableAuth = enable
+		return nil
+	}
+}
+
+// WithRealmGateway 启用或禁用 Realm Gateway
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithRealmGateway(true))
+func WithRealmGateway(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Realm.EnableGateway = enable
+		return nil
+	}
+}
+
+// WithRealmAuth 启用或禁用 Realm Auth
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithRealmAuth(true))
+func WithRealmAuth(enable bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Realm.EnableAuth = enable
+		return nil
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//
+//	日志选项
+//
+// ════════════════════════════════════════════════════════════════════════════
+
+// WithLogFile 设置日志文件路径
+//
+// 如果不设置，日志输出到 stderr。
+// 设置后日志将写入指定文件。
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithLogFile("/var/log/dep2p.log"))
+func WithLogFile(path string) Option {
+	return func(cfg *nodeConfig) error {
+		if path == "" {
+			return fmt.Errorf("log file path cannot be empty")
+		}
+		cfg.logFile = path
+		return nil
+	}
+}
+
+// WithDataDir 设置数据目录路径
+//
+// 数据目录用于存放 BadgerDB 数据库和其他持久化数据。
+// 所有组件统一使用此目录，通过 Key 前缀隔离数据。
+//
+// 目录结构：
+//
+//	${DataDir}/
+//	├── dep2p.db/           # BadgerDB 主数据库
+//	└── logs/               # 日志目录（可选）
+//
+// 示例：
+//
+//	dep2p.Start(ctx, dep2p.WithDataDir("./myapp/data"))
+func WithDataDir(path string) Option {
+	return func(cfg *nodeConfig) error {
+		if path == "" {
+			return fmt.Errorf("data directory path cannot be empty")
+		}
+		cfg.dataDir = path
+		// 同时更新 config 中的 Storage.DataDir
+		if cfg.config == nil {
+			cfg.config = config.NewConfig()
+		}
+		cfg.config.Storage.DataDir = path
+		return nil
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//
+//	配置文件选项
+//
+// ════════════════════════════════════════════════════════════════════════════
+
+// WithConfig 直接使用完整配置
+//
+// 使用已有的 config.Config 结构体。
+// 通常用于从配置文件加载后应用。
+//
+// 示例：
+//
+//	cfg := config.NewServerConfig()
+//	dep2p.New(ctx, dep2p.WithConfig(cfg))
+func WithConfig(c *config.Config) Option {
+	return func(cfg *nodeConfig) error {
+		if c == nil {
+			return fmt.Errorf("config cannot be nil")
+		}
+		cfg.config = c
+		return nil
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//
+//	Fx 扩展选项
+//
+// ════════════════════════════════════════════════════════════════════════════
+
+// WithFxOption 添加自定义 Fx 模块
+//
+// 允许用户注入自定义 Fx 模块到 DEP2P 的依赖注入容器中。
+// 可用于添加自定义服务、替换内置组件或扩展功能。
+//
+// 示例：
+//
+//	// 添加自定义服务
+//	node, err := dep2p.New(ctx,
+//	    dep2p.WithFxOption(fx.Provide(NewCustomService)),
 //	)
-func WithIntrospectAddr(addr string) Option {
-	return func(o *options) error {
-		o.introspect.addr = addr
+//
+//	// 添加启动钩子
+//	node, err := dep2p.New(ctx,
+//	    dep2p.WithFxOption(fx.Invoke(func(host pkgif.Host) {
+//	        fmt.Println("Node started:", host.ID())
+//	    })),
+//	)
+func WithFxOption(opt fx.Option) Option {
+	return func(cfg *nodeConfig) error {
+		if opt == nil {
+			return fmt.Errorf("fx option cannot be nil")
+		}
+		cfg.userFxOptions = append(cfg.userFxOptions, opt)
 		return nil
 	}
 }
 
-// ============================================================================
-//                              Realm 加入选项（IMPL-1227）
-// ============================================================================
-
-// WithRealmKey 设置 Realm 密钥（加入 Realm 时使用）
+// WithFxOptions 添加多个自定义 Fx 模块
 //
-// 这是 realmif.WithRealmKey 的便捷别名，允许用户直接使用 dep2p.WithRealmKey。
+// 批量添加多个 Fx 选项。
 //
-// 示例:
+// 示例：
 //
-//	realmKey := types.GenerateRealmKey()
-//	realm, err := node.JoinRealm(ctx, "my-realm", dep2p.WithRealmKey(realmKey))
-func WithRealmKey(key types.RealmKey) realmif.RealmOption {
-	return realmif.WithRealmKey(key)
+//	node, err := dep2p.New(ctx,
+//	    dep2p.WithFxOptions(
+//	        fx.Provide(NewServiceA),
+//	        fx.Provide(NewServiceB),
+//	        fx.Invoke(initServices),
+//	    ),
+//	)
+func WithFxOptions(opts ...fx.Option) Option {
+	return func(cfg *nodeConfig) error {
+		for _, opt := range opts {
+			if opt == nil {
+				return fmt.Errorf("fx option cannot be nil")
+			}
+		}
+		cfg.userFxOptions = append(cfg.userFxOptions, opts...)
+		return nil
+	}
 }
-
-// ============================================================================
-//                              辅助函数
-// ============================================================================

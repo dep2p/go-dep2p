@@ -1,0 +1,74 @@
+{
+  "_comment": "DeP2P 基础设施节点配置 - Bootstrap + System Relay",
+  "_usage": "dep2p -config infra.config.json -public-addr /ip4/YOUR_PUBLIC_IP/tcp/4001",
+
+  "identity": {
+    "key_file": "/var/lib/dep2p/identity.key",
+    "key_type": "Ed25519"
+  },
+
+  "transport": {
+    "enable_quic": true,
+    "enable_tcp": true,
+    "dial_timeout": "30s"
+  },
+
+  "security": {
+    "enable_tls": true,
+    "enable_noise": true
+  },
+
+  "discovery": {
+    "enable_dht": true,
+    "enable_mdns": false,
+    "enable_bootstrap": true,
+    "bootstrap": {
+      "enable_service": true,
+      "peers": [],
+      "min_peers": 5,
+      "timeout": "30s"
+    }
+  },
+
+  "nat": {
+    "enable_autonat": true,
+    "enable_upnp": false,
+    "enable_natpmp": false,
+    "enable_holepunch": true
+  },
+
+  "relay": {
+    "enable_client": true,
+    "enable_server": true,
+    "enable_system_relay": true,
+    "system_relay_addr": ""
+  },
+
+  "conn_mgr": {
+    "low_water": 500,
+    "high_water": 1000,
+    "grace_period": "30s"
+  },
+
+  "resource": {
+    "enable_resource_manager": true,
+    "system": {
+      "max_connections": 2000,
+      "max_streams": 20000,
+      "max_memory": 1073741824
+    }
+  },
+
+  "messaging": {
+    "enable_pubsub": true,
+    "enable_streams": true,
+    "enable_liveness": true
+  },
+
+  "realm": {
+    "enable_gateway": true,
+    "enable_routing": true,
+    "enable_member": true,
+    "enable_auth": true
+  }
+}

@@ -37,12 +37,20 @@ Node is a Facade pattern implementation that encapsulates underlying complexity,
 
 ## Creating a Node
 
-### StartNode
+### New
 
-Creates and starts a new node.
+Creates a new node instance.
 
 ```go
-func StartNode(ctx context.Context, opts ...Option) (*Node, error)
+func New(ctx context.Context, opts ...Option) (*Node, error)
+```
+
+### Start
+
+Starts the node.
+
+```go
+func (n *Node) Start(ctx context.Context) error
 ```
 
 **Parameters**:
@@ -61,20 +69,29 @@ func StartNode(ctx context.Context, opts ...Option) (*Node, error)
 
 ```go
 // Create node with preset
-node, err := dep2p.StartNode(ctx,
+node, err := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
 )
 if err != nil {
     log.Fatal(err)
 }
+if err := node.Start(ctx); err != nil {
+    log.Fatal(err)
+}
 defer node.Close()
 
 // Custom configuration
-node, err := dep2p.StartNode(ctx,
+node, err := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetServer),
     dep2p.WithListenPort(4001),
     dep2p.WithBootstrapPeers(bootstrapAddrs...),
 )
+if err != nil {
+    log.Fatal(err)
+}
+if err := node.Start(ctx); err != nil {
+    log.Fatal(err)
+}
 ```
 
 ---
@@ -368,7 +385,8 @@ func (n *Node) Realm() realmif.RealmManager
 
 ```go
 // Join Realm
-node.Realm().JoinRealm(ctx, types.RealmID("my-realm"))
+realm, _ := node.Realm("my-realm")
+_ = realm.Join(ctx)
 
 // Check current Realm
 fmt.Printf("Current Realm: %s\n", node.Realm().CurrentRealm())
@@ -448,7 +466,7 @@ func (n *Node) Liveness() livenessif.LivenessService
 
 ## Messaging APIs
 
-> **Note**: The following APIs must be called after `JoinRealm()`, otherwise they return `ErrNotMember`.
+> **Note**: The following APIs must be called after `Realm().Join()`, otherwise they return `ErrNotMember`.
 
 ### Send
 
@@ -609,6 +627,369 @@ defer node.Close()
 
 ---
 
+## Ready Status API
+
+### ReadyLevel
+
+Returns the current node readiness level.
+
+```go
+func (n *Node) ReadyLevel() ReadyLevel
+```
+
+**ReadyLevel Constants**:
+
+| Level | Value | Description |
+|-------|-------|-------------|
+| `ReadyLevelCreated` | 0 | Node object created, not started |
+| `ReadyLevelNetwork` | 1 | Transport layer ready, can initiate outbound connections |
+| `ReadyLevelDiscovered` | 2 | DHT network join successful, can discover other nodes |
+| `ReadyLevelReachable` | 3 | Reachability verification completed, can be discovered by other nodes |
+| `ReadyLevelRealmReady` | 4 | Realm join completed, Realm members reachable |
+
+**Example**:
+
+```go
+level := node.ReadyLevel()
+if level >= interfaces.ReadyLevelDiscovered {
+    // Can use DHT discovery features
+    fmt.Println("DHT is ready")
+}
+```
+
+---
+
+### WaitReady
+
+Waits for the node to reach the specified readiness level.
+
+```go
+func (n *Node) WaitReady(ctx context.Context, level ReadyLevel) error
+```
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ctx` | `context.Context` | Context, can be used to set timeout or cancellation |
+| `level` | `ReadyLevel` | Target readiness level |
+
+**Returns**:
+| Type | Description |
+|------|-------------|
+| `error` | Returns corresponding error if context is cancelled or timeout occurs |
+
+**Notes**:
+- Blocks until the node reaches the specified readiness level
+- If current level is already >= target level, returns nil immediately
+
+**Example**:
+
+```go
+// Wait for DHT network join to complete, wait up to 30 seconds
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+if err := node.WaitReady(ctx, interfaces.ReadyLevelDiscovered); err != nil {
+    log.Printf("Wait timeout: %v", err)
+}
+fmt.Println("DHT network join completed, can start discovering nodes")
+```
+
+---
+
+### OnReadyLevelChange
+
+Registers a readiness level change callback.
+
+```go
+func (n *Node) OnReadyLevelChange(callback func(level ReadyLevel))
+```
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `callback` | `func(level ReadyLevel)` | Callback function when level changes |
+
+**Notes**:
+- When readiness level changes, the registered callback function will be called
+- Callback is called synchronously when level changes, avoid time-consuming operations in callback
+
+**Example**:
+
+```go
+node.OnReadyLevelChange(func(level interfaces.ReadyLevel) {
+    log.Printf("Readiness level changed: %v", level)
+    if level == interfaces.ReadyLevelRealmReady {
+        fmt.Println("Node fully ready, can start communication")
+    }
+})
+```
+
+---
+
+## Bootstrap Capability
+
+### EnableBootstrap
+
+Enables Bootstrap capability, setting the node as a bootstrap node.
+
+```go
+func (n *Node) EnableBootstrap(ctx context.Context) error
+```
+
+**Notes**:
+After enabling, the node will:
+- Maintain extended node storage (up to 50,000 nodes)
+- Periodically probe stored nodes for liveness
+- Actively discover new nodes through Random Walk
+- Respond to FIND_NODE requests, returning the nearest K nodes
+
+**Prerequisites**:
+- Node must have a publicly reachable address (not behind NAT)
+
+**Example**:
+
+```go
+// Set node as bootstrap node
+if err := node.EnableBootstrap(ctx); err != nil {
+    log.Printf("Failed to enable Bootstrap: %v", err)
+}
+```
+
+---
+
+### DisableBootstrap
+
+Disables Bootstrap capability.
+
+```go
+func (n *Node) DisableBootstrap(ctx context.Context) error
+```
+
+**Notes**:
+- Stops serving as a bootstrap node
+- Retains stored node information (can quickly restore when enabled next time)
+
+---
+
+### IsBootstrapEnabled
+
+Queries whether Bootstrap capability is enabled.
+
+```go
+func (n *Node) IsBootstrapEnabled() bool
+```
+
+---
+
+### BootstrapStats
+
+Gets Bootstrap statistics.
+
+```go
+func (n *Node) BootstrapStats() BootstrapStats
+```
+
+**BootstrapStats Structure**:
+
+```go
+type BootstrapStats struct {
+    Enabled       bool          // Whether enabled
+    PeerCount     int           // Number of stored nodes
+    LastProbeTime time.Time     // Last probe time
+    ProbeInterval time.Duration // Probe interval
+}
+```
+
+---
+
+## Relay Capability
+
+### EnableRelay
+
+Enables Relay capability, setting the node as a relay server.
+
+```go
+func (n *Node) EnableRelay(ctx context.Context) error
+```
+
+**Notes**:
+- Provides relay service for nodes behind NAT
+- All resource limit parameters use built-in default values
+
+**Prerequisites**:
+- Node must have a publicly reachable address (not behind NAT)
+
+**Example**:
+
+```go
+// Set node as relay server
+if err := node.EnableRelay(ctx); err != nil {
+    log.Printf("Failed to enable Relay: %v", err)
+}
+```
+
+---
+
+### DisableRelay
+
+Disables Relay capability.
+
+```go
+func (n *Node) DisableRelay(ctx context.Context) error
+```
+
+**Notes**:
+- Stops serving as relay service
+- Established relay circuits will be gracefully closed
+
+---
+
+### IsRelayEnabled
+
+Queries whether Relay capability is enabled.
+
+```go
+func (n *Node) IsRelayEnabled() bool
+```
+
+---
+
+### SetRelayAddr
+
+Sets the Relay address to use (for client use).
+
+```go
+func (n *Node) SetRelayAddr(addr types.Multiaddr) error
+```
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `addr` | `types.Multiaddr` | Full multiaddr address of the Relay |
+
+**Example**:
+
+```go
+relayAddr := "/ip4/relay.example.com/udp/4001/quic-v1/p2p/12D3KooW..."
+node.SetRelayAddr(types.MustParseMultiaddr(relayAddr))
+```
+
+---
+
+### RemoveRelayAddr
+
+Removes Relay address configuration.
+
+```go
+func (n *Node) RemoveRelayAddr() error
+```
+
+---
+
+### RelayAddr
+
+Gets the currently configured Relay address.
+
+```go
+func (n *Node) RelayAddr() (types.Multiaddr, bool)
+```
+
+**Returns**:
+| Type | Description |
+|------|-------------|
+| `types.Multiaddr` | Relay address |
+| `bool` | Whether configured (false means not configured) |
+
+---
+
+### RelayStats
+
+Gets Relay statistics.
+
+```go
+func (n *Node) RelayStats() RelayStats
+```
+
+**RelayStats Structure**:
+
+```go
+type RelayStats struct {
+    Enabled         bool          // Whether enabled
+    ActiveCircuits  int           // Number of active circuits
+    TotalCircuits   int           // Total number of circuits
+    BytesRelayed    int64         // Bytes relayed
+    LastActivityAt  time.Time     // Last activity time
+}
+```
+
+---
+
+## Network Change Notification
+
+### NetworkChange
+
+Notifies the node that the network may have changed.
+
+```go
+func (n *Node) NetworkChange()
+```
+
+**Notes**:
+- On some platforms (such as Android), the system cannot automatically detect network changes
+- Applications need to call this method when receiving system network change callbacks
+- Calling this method has no side effects even if the network hasn't actually changed
+
+**Use Cases**:
+- WiFi switching
+- Mobile network switching (4G → 5G)
+- VPN connection/disconnection
+
+**Example**:
+
+```go
+// Listen to system network change events on Android and other platforms
+func onSystemNetworkChange() {
+    node.NetworkChange()
+}
+```
+
+---
+
+### OnNetworkChange
+
+Registers a network change callback.
+
+```go
+func (n *Node) OnNetworkChange(callback func(event NetworkChangeEvent))
+```
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `callback` | `func(event NetworkChangeEvent)` | Network change callback function |
+
+**NetworkChangeEvent Structure**:
+
+```go
+type NetworkChangeEvent struct {
+    Type      NetworkChangeType // Change type
+    Timestamp time.Time         // Change time
+    Details   string            // Detailed information
+}
+```
+
+**Example**:
+
+```go
+node.OnNetworkChange(func(event interfaces.NetworkChangeEvent) {
+    log.Printf("Network change: %v", event.Type)
+    // Can perform corresponding handling here, such as re-fetching configuration
+})
+```
+
+---
+
 ## Method List
 
 | Method | Category | Description |
@@ -635,6 +1016,22 @@ defer node.Close()
 | `Request()` | Messaging | Request-response |
 | `Publish()` | Messaging | Publish message |
 | `Subscribe()` | Messaging | Subscribe to topic |
+| `ReadyLevel()` | Ready Status | Returns current readiness level |
+| `WaitReady()` | Ready Status | Waits for specified readiness level |
+| `OnReadyLevelChange()` | Ready Status | Registers readiness level change callback |
+| `EnableBootstrap()` | Bootstrap | Enables Bootstrap capability |
+| `DisableBootstrap()` | Bootstrap | Disables Bootstrap capability |
+| `IsBootstrapEnabled()` | Bootstrap | Queries Bootstrap status |
+| `BootstrapStats()` | Bootstrap | Gets Bootstrap statistics |
+| `EnableRelay()` | Relay | Enables Relay capability |
+| `DisableRelay()` | Relay | Disables Relay capability |
+| `IsRelayEnabled()` | Relay | Queries Relay status |
+| `SetRelayAddr()` | Relay | Sets Relay address |
+| `RemoveRelayAddr()` | Relay | Removes Relay address |
+| `RelayAddr()` | Relay | Gets Relay address |
+| `RelayStats()` | Relay | Gets Relay statistics |
+| `NetworkChange()` | Network Change | Notifies network change |
+| `OnNetworkChange()` | Network Change | Registers network change callback |
 | `Close()` | Lifecycle | Close node |
 
 ---
@@ -643,7 +1040,7 @@ defer node.Close()
 
 | Error | Description | Solution |
 |-------|-------------|----------|
-| `ErrNotMember` | Called messaging API without joining Realm | Call `JoinRealm()` first |
+| `ErrNotMember` | Called messaging API without joining Realm | Call `Realm().Join()` first |
 | `ErrIdentityMismatch` | Identity verification failed during connection | Check NodeID in address |
 | `context deadline exceeded` | Operation timed out | Increase timeout or check network |
 

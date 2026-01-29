@@ -103,7 +103,7 @@ func main() {
 ```bash
 go run main.go
 # 输出:
-# DeP2P 版本: 0.1.0
+# DeP2P 版本: v0.2.0-beta.1
 # 安装成功！
 ```
 
@@ -128,7 +128,7 @@ module your-project
 
 go 1.21
 
-require github.com/dep2p/go-dep2p v0.1.0
+require github.com/dep2p/go-dep2p v0.2.0-beta.1
 ```
 
 ---
@@ -184,4 +184,5 @@ go mod tidy
 
 - [5 分钟上手](quickstart.md) - 快速运行第一个示例
 - [创建第一个节点](first-node.md) - 详细了解节点创建
+- [Hello World 教程](../tutorials/01-hello-world.md) - 完整两节点通信示例
 - [核心概念](../concepts/core-concepts.md) - 深入理解 DeP2P

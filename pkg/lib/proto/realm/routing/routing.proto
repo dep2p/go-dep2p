@@ -1,0 +1,141 @@
+syntax = "proto3";
+
+package realm.routing;
+
+option go_package = "github.com/dep2p/go-dep2p/pkg/lib/proto/realm/routing;routingpb";
+
+// ============================================================================
+//                              路由查询
+// ============================================================================
+
+// RouteQuery 路由查询请求
+message RouteQuery {
+  bytes source_peer_id = 1;
+  bytes target_peer_id = 2;
+  int32 max_hops = 3;
+  int32 max_paths = 4;
+  int32 policy = 5;
+}
+
+// RouteResponse 路由查询响应
+message RouteResponse {
+  repeated RouteInfo routes = 1;
+  bool success = 2;
+  string error = 3;
+}
+
+// RouteInfo 路由信息
+message RouteInfo {
+  bytes target_peer_id = 1;
+  bytes next_hop = 2;
+  repeated bytes path = 3;
+  int64 latency_ms = 4;
+  int32 hops = 5;
+  double score = 6;
+}
+
+// ============================================================================
+//                              路径信息
+// ============================================================================
+
+// PathInfo 路径信息
+message PathInfo {
+  repeated bytes nodes = 1;
+  int64 total_latency_ms = 2;
+  int32 hops = 3;
+  bool valid = 4;
+  int64 created_at = 5;
+}
+
+// PathQuery 路径查询
+message PathQuery {
+  bytes source = 1;
+  bytes target = 2;
+  int32 max_paths = 3;
+}
+
+// PathResponse 路径响应
+message PathResponse {
+  repeated PathInfo paths = 1;
+}
+
+// ============================================================================
+//                              节点指标
+// ============================================================================
+
+// NodeMetrics 节点指标
+message NodeMetrics {
+  bytes peer_id = 1;
+  int64 latency_ms = 2;
+  int32 connection_count = 3;
+  int64 bandwidth_usage = 4;
+  double cpu_usage = 5;
+  bool is_reachable = 6;
+  int64 last_seen = 7;
+}
+
+// NodeMetricsList 节点指标列表
+message NodeMetricsList {
+  repeated NodeMetrics metrics = 1;
+}
+
+// ============================================================================
+//                              负载报告
+// ============================================================================
+
+// LoadReport 负载报告
+message LoadReport {
+  bytes peer_id = 1;
+  int32 connection_count = 2;
+  int64 bandwidth_usage = 3;
+  double cpu_usage = 4;
+  int64 timestamp = 5;
+}
+
+// LoadQuery 负载查询
+message LoadQuery {
+  bytes peer_id = 1;
+}
+
+// LoadResponse 负载响应
+message LoadResponse {
+  LoadReport load = 1;
+  bool found = 2;
+}
+
+// ============================================================================
+//                              Gateway 协作
+// ============================================================================
+
+// RelayRequest 中继请求
+message RelayRequest {
+  bytes source_peer_id = 1;
+  bytes target_peer_id = 2;
+  bytes data = 3;
+  int32 priority = 4;
+}
+
+// RelayResponse 中继响应
+message RelayResponse {
+  bool success = 1;
+  string error = 2;
+  bytes relay_node = 3;
+}
+
+// ReachabilityQuery 可达性查询
+message ReachabilityQuery {
+  string realm_id = 1;
+}
+
+// ReachabilityResponse 可达性响应
+message ReachabilityResponse {
+  repeated bytes reachable_nodes = 1;
+  repeated bytes relay_nodes = 2;
+}
+
+// GatewayStateSync Gateway 状态同步
+message GatewayStateSync {
+  repeated bytes reachable_nodes = 1;
+  repeated bytes relay_nodes = 2;
+  int64 timestamp = 3;
+}

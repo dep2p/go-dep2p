@@ -1,0 +1,656 @@
+// Package addrbook 实现地址簿
+package addrbook
+
+import (
+	"container/heap"
+	"context"
+	"sync"
+	"time"
+
+	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
+	"github.com/dep2p/go-dep2p/pkg/types"
+)
+
+// ============================================================================
+// 事件定义
+// ============================================================================
+
+// AddrAddedEvent 地址添加事件
+type AddrAddedEvent struct {
+	PeerID types.PeerID
+	Addr   types.Multiaddr
+	TTL    time.Duration
+}
+
+// AddrRemovedEvent 地址移除事件
+type AddrRemovedEvent struct {
+	PeerID types.PeerID
+	Addr   types.Multiaddr
+}
+
+// AddrBook 地址簿
+type AddrBook struct {
+	mu sync.RWMutex
+
+	// addrs 地址映射：PeerID → (addr string → *expiringAddr)
+	addrs map[types.PeerID]map[string]*expiringAddr
+
+	// expiringHeap 过期地址堆
+	expiringHeap expiringAddrHeap
+
+	// gcCtx GC 上下文
+	gcCtx    context.Context
+	gcCancel context.CancelFunc
+	
+	// eventbus 事件总线（可选）
+	eventbus pkgif.EventBus
+}
+
+// AddressSource 地址来源枚举
+type AddressSource int
+
+const (
+	// SourceUnknown 未知来源
+	SourceUnknown AddressSource = iota
+	// SourceManual 手动配置
+	SourceManual
+	// SourcePeerstore 本地 Peerstore
+	SourcePeerstore
+	// SourceMemberList MemberList Gossip
+	SourceMemberList
+	// SourceRelay Relay 地址簿查询
+	SourceRelay
+	// SourceDHT DHT 发现
+	SourceDHT
+)
+
+// String 返回来源名称
+func (s AddressSource) String() string {
+	switch s {
+	case SourceManual:
+		return "manual"
+	case SourcePeerstore:
+		return "peerstore"
+	case SourceMemberList:
+		return "memberlist"
+	case SourceRelay:
+		return "relay"
+	case SourceDHT:
+		return "dht"
+	default:
+		return "unknown"
+	}
+}
+
+// AddressWithSource 带来源的地址
+type AddressWithSource struct {
+	Addr   types.Multiaddr
+	Source AddressSource
+	TTL    time.Duration
+}
+
+// expiringAddr 过期地址
+type expiringAddr struct {
+	Addr      types.Multiaddr
+	TTL       time.Duration
+	Expiry    time.Time
+	PeerID    types.PeerID
+	Source    AddressSource // 地址来源
+	heapIndex int
+}
+
+// expiringAddrHeap 过期地址堆（最小堆）
+type expiringAddrHeap []*expiringAddr
+
+func (h expiringAddrHeap) Len() int           { return len(h) }
+func (h expiringAddrHeap) Less(i, j int) bool { return h[i].Expiry.Before(h[j].Expiry) }
+func (h expiringAddrHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].heapIndex = i
+	h[j].heapIndex = j
+}
+
+func (h *expiringAddrHeap) Push(x interface{}) {
+	n := len(*h)
+	item := x.(*expiringAddr)
+	item.heapIndex = n
+	*h = append(*h, item)
+}
+
+func (h *expiringAddrHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	old[n-1] = nil
+	item.heapIndex = -1
+	*h = old[0 : n-1]
+	return item
+}
+
+// New 创建新的地址簿
+func New() *AddrBook {
+	ctx, cancel := context.WithCancel(context.Background())
+	ab := &AddrBook{
+		addrs:        make(map[types.PeerID]map[string]*expiringAddr),
+		expiringHeap: make(expiringAddrHeap, 0),
+		gcCtx:        ctx,
+		gcCancel:     cancel,
+	}
+
+	// 启动 GC
+	go ab.gc()
+
+	return ab
+}
+
+// SetEventBus 设置事件总线
+//
+// 用于在地址变更时发布事件。
+func (ab *AddrBook) SetEventBus(eventbus pkgif.EventBus) {
+	ab.mu.Lock()
+	defer ab.mu.Unlock()
+	ab.eventbus = eventbus
+}
+
+// AddAddr 添加单个地址
+func (ab *AddrBook) AddAddr(peerID types.PeerID, addr types.Multiaddr, ttl time.Duration) {
+	ab.AddAddrs(peerID, []types.Multiaddr{addr}, ttl)
+}
+
+// AddAddrs 添加地址（默认来源为 SourceUnknown）
+func (ab *AddrBook) AddAddrs(peerID types.PeerID, addrs []types.Multiaddr, ttl time.Duration) {
+	ab.addAddrsWithSource(peerID, addrs, ttl, SourceUnknown)
+}
+
+// AddAddrsWithSource 添加带来源的地址
+func (ab *AddrBook) AddAddrsWithSource(peerID types.PeerID, addrs []AddressWithSource) {
+	ab.mu.Lock()
+	defer ab.mu.Unlock()
+
+	if ab.addrs[peerID] == nil {
+		ab.addrs[peerID] = make(map[string]*expiringAddr)
+	}
+
+	for _, aws := range addrs {
+		ab.addAddrLocked(peerID, aws.Addr, aws.TTL, aws.Source)
+	}
+}
+
+// addAddrsWithSource 内部方法：添加带来源的地址
+func (ab *AddrBook) addAddrsWithSource(peerID types.PeerID, addrs []types.Multiaddr, ttl time.Duration, source AddressSource) {
+	ab.mu.Lock()
+	defer ab.mu.Unlock()
+
+	if ab.addrs[peerID] == nil {
+		ab.addrs[peerID] = make(map[string]*expiringAddr)
+	}
+
+	for _, addr := range addrs {
+		ab.addAddrLocked(peerID, addr, ttl, source)
+	}
+}
+
+// addAddrLocked 内部方法：添加单个地址（已持有锁）
+func (ab *AddrBook) addAddrLocked(peerID types.PeerID, addr types.Multiaddr, ttl time.Duration, source AddressSource) {
+	addrStr := addr.String()
+	expiry := time.Now().Add(ttl)
+
+	// 如果地址已存在，更新 TTL 和来源
+	if existing, ok := ab.addrs[peerID][addrStr]; ok {
+		existing.TTL = ttl
+		existing.Expiry = expiry
+		existing.Source = source
+		heap.Fix(&ab.expiringHeap, existing.heapIndex)
+		return
+	}
+
+	// 添加新地址
+	ea := &expiringAddr{
+		Addr:   addr,
+		TTL:    ttl,
+		Expiry: expiry,
+		PeerID: peerID,
+		Source: source,
+	}
+	ab.addrs[peerID][addrStr] = ea
+
+	// 添加到堆中
+	heap.Push(&ab.expiringHeap, ea)
+
+	// 发布地址添加事件
+	if ab.eventbus != nil {
+		go ab.emitAddrAdded(peerID, addr, ttl)
+	}
+}
+
+// SetAddr 设置单个地址
+func (ab *AddrBook) SetAddr(peerID types.PeerID, addr types.Multiaddr, ttl time.Duration) {
+	ab.SetAddrs(peerID, []types.Multiaddr{addr}, ttl)
+}
+
+// SetAddrs 设置地址（覆盖）
+func (ab *AddrBook) SetAddrs(peerID types.PeerID, addrs []types.Multiaddr, ttl time.Duration) {
+	ab.setAddrsWithSource(peerID, addrs, ttl, SourceUnknown)
+}
+
+// SetAddrsWithSource 设置带来源的地址（覆盖）
+func (ab *AddrBook) SetAddrsWithSource(peerID types.PeerID, addrs []AddressWithSource) {
+	ab.mu.Lock()
+	defer ab.mu.Unlock()
+
+	// 清除旧地址
+	ab.clearAddrsLocked(peerID)
+
+	// 设置新地址
+	ab.addrs[peerID] = make(map[string]*expiringAddr)
+	for _, aws := range addrs {
+		expiry := time.Now().Add(aws.TTL)
+		ea := &expiringAddr{
+			Addr:   aws.Addr,
+			TTL:    aws.TTL,
+			Expiry: expiry,
+			PeerID: peerID,
+			Source: aws.Source,
+		}
+		ab.addrs[peerID][aws.Addr.String()] = ea
+		heap.Push(&ab.expiringHeap, ea)
+	}
+}
+
+// setAddrsWithSource 内部方法：设置带来源的地址
+func (ab *AddrBook) setAddrsWithSource(peerID types.PeerID, addrs []types.Multiaddr, ttl time.Duration, source AddressSource) {
+	ab.mu.Lock()
+	defer ab.mu.Unlock()
+
+	// 清除旧地址
+	ab.clearAddrsLocked(peerID)
+
+	// 设置新地址
+	ab.addrs[peerID] = make(map[string]*expiringAddr)
+	expiry := time.Now().Add(ttl)
+	for _, addr := range addrs {
+		ea := &expiringAddr{
+			Addr:   addr,
+			TTL:    ttl,
+			Expiry: expiry,
+			PeerID: peerID,
+			Source: source,
+		}
+		ab.addrs[peerID][addr.String()] = ea
+		heap.Push(&ab.expiringHeap, ea)
+	}
+}
+
+// clearAddrsLocked 内部方法：清除地址（已持有锁）
+func (ab *AddrBook) clearAddrsLocked(peerID types.PeerID) {
+	if old := ab.addrs[peerID]; old != nil {
+		for _, ea := range old {
+			if ea.heapIndex >= 0 {
+				heap.Remove(&ab.expiringHeap, ea.heapIndex)
+			}
+		}
+	}
+}
+
+// UpdateAddrs 更新地址 TTL
+func (ab *AddrBook) UpdateAddrs(peerID types.PeerID, oldTTL time.Duration, newTTL time.Duration) {
+	ab.mu.Lock()
+	defer ab.mu.Unlock()
+
+	peerAddrs := ab.addrs[peerID]
+	if peerAddrs == nil {
+		return
+	}
+
+	newExpiry := time.Now().Add(newTTL)
+	for _, ea := range peerAddrs {
+		if ea.TTL == oldTTL {
+			ea.TTL = newTTL
+			ea.Expiry = newExpiry
+			heap.Fix(&ab.expiringHeap, ea.heapIndex)
+		}
+	}
+}
+
+// ReduceAddrsTTL 降低所有地址的 TTL
+//
+// 
+// 加速过期地址的清理。如果地址当前 TTL 已小于 maxTTL，则保持不变。
+func (ab *AddrBook) ReduceAddrsTTL(peerID types.PeerID, maxTTL time.Duration) int {
+	ab.mu.Lock()
+	defer ab.mu.Unlock()
+
+	peerAddrs := ab.addrs[peerID]
+	if peerAddrs == nil {
+		return 0
+	}
+
+	now := time.Now()
+	newExpiry := now.Add(maxTTL)
+	reducedCount := 0
+
+	for _, ea := range peerAddrs {
+		// 只有当当前过期时间大于新过期时间时才更新
+		if ea.Expiry.After(newExpiry) {
+			ea.TTL = maxTTL
+			ea.Expiry = newExpiry
+			heap.Fix(&ab.expiringHeap, ea.heapIndex)
+			reducedCount++
+		}
+	}
+
+	return reducedCount
+}
+
+// Addrs 获取地址（过滤过期地址）
+func (ab *AddrBook) Addrs(peerID types.PeerID) []types.Multiaddr {
+	ab.mu.RLock()
+	defer ab.mu.RUnlock()
+
+	peerAddrs := ab.addrs[peerID]
+	if peerAddrs == nil {
+		return nil
+	}
+
+	now := time.Now()
+	var result []types.Multiaddr
+	for _, ea := range peerAddrs {
+		if ea.Expiry.After(now) {
+			result = append(result, ea.Addr)
+		}
+	}
+
+	return result
+}
+
+// AddrsWithSource 获取带来源的地址（过滤过期地址）
+func (ab *AddrBook) AddrsWithSource(peerID types.PeerID) []AddressWithSource {
+	ab.mu.RLock()
+	defer ab.mu.RUnlock()
+
+	peerAddrs := ab.addrs[peerID]
+	if peerAddrs == nil {
+		return nil
+	}
+
+	now := time.Now()
+	var result []AddressWithSource
+	for _, ea := range peerAddrs {
+		if ea.Expiry.After(now) {
+			result = append(result, AddressWithSource{
+				Addr:   ea.Addr,
+				Source: ea.Source,
+				TTL:    ea.TTL,
+			})
+		}
+	}
+
+	return result
+}
+
+// GetAddrSource 获取特定地址的来源
+func (ab *AddrBook) GetAddrSource(peerID types.PeerID, addr types.Multiaddr) AddressSource {
+	ab.mu.RLock()
+	defer ab.mu.RUnlock()
+
+	peerAddrs := ab.addrs[peerID]
+	if peerAddrs == nil {
+		return SourceUnknown
+	}
+
+	if ea, ok := peerAddrs[addr.String()]; ok {
+		return ea.Source
+	}
+
+	return SourceUnknown
+}
+
+// AddrStream 返回地址流
+func (ab *AddrBook) AddrStream(ctx context.Context, peerID types.PeerID) <-chan types.Multiaddr {
+	ch := make(chan types.Multiaddr, 16)
+
+	go func() {
+		defer close(ch)
+
+		// 发送现有地址
+		addrs := ab.Addrs(peerID)
+		for _, addr := range addrs {
+			select {
+			case ch <- addr:
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		// 监听新地址（通过订阅 AddrAddedEvent）
+		if ab.eventbus != nil {
+			sub, err := ab.eventbus.Subscribe(&AddrAddedEvent{})
+			if err == nil {
+				defer sub.Close()
+				for {
+					select {
+					case ev := <-sub.Out():
+						if addedEv, ok := ev.(*AddrAddedEvent); ok {
+							if addedEv.PeerID == peerID {
+								select {
+								case ch <- addedEv.Addr:
+								case <-ctx.Done():
+									return
+								}
+							}
+						}
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	return ch
+}
+
+// emitAddrAdded 发布地址添加事件
+func (ab *AddrBook) emitAddrAdded(peerID types.PeerID, addr types.Multiaddr, ttl time.Duration) {
+	emitter, err := ab.eventbus.Emitter(&AddrAddedEvent{})
+	if err != nil {
+		return
+	}
+	defer emitter.Close()
+	
+	emitter.Emit(&AddrAddedEvent{
+		PeerID: peerID,
+		Addr:   addr,
+		TTL:    ttl,
+	})
+}
+
+// emitAddrRemoved 发布地址移除事件
+func (ab *AddrBook) emitAddrRemoved(peerID types.PeerID, addr types.Multiaddr) {
+	emitter, err := ab.eventbus.Emitter(&AddrRemovedEvent{})
+	if err != nil {
+		return
+	}
+	defer emitter.Close()
+	
+	emitter.Emit(&AddrRemovedEvent{
+		PeerID: peerID,
+		Addr:   addr,
+	})
+}
+
+// ClearAddrs 清除地址
+func (ab *AddrBook) ClearAddrs(peerID types.PeerID) {
+	ab.mu.Lock()
+	
+	peerAddrs := ab.addrs[peerID]
+	if peerAddrs == nil {
+		ab.mu.Unlock()
+		return
+	}
+
+	// 从堆中移除
+	for _, ea := range peerAddrs {
+		if ea.heapIndex >= 0 {
+			heap.Remove(&ab.expiringHeap, ea.heapIndex)
+		}
+		
+		// 发布地址移除事件
+		if ab.eventbus != nil {
+			go ab.emitAddrRemoved(peerID, ea.Addr)
+		}
+	}
+	
+	// BUG FIX #B44: delete 必须在锁内，否则与其他操作并发访问 map 会导致 Race 和 fatal error
+	delete(ab.addrs, peerID)
+	
+	ab.mu.Unlock()
+}
+
+// ClearAddrsBySource 清除指定来源的地址
+//
+// 只移除来源匹配的地址，保留其他来源的地址。
+// 这对于成员离开 Realm 时清理 MemberList 来源的地址特别有用，
+// 同时保留通过其他途径（如 DHT、手动配置）获取的地址。
+func (ab *AddrBook) ClearAddrsBySource(peerID types.PeerID, source AddressSource) {
+	ab.mu.Lock()
+	defer ab.mu.Unlock()
+
+	peerAddrs := ab.addrs[peerID]
+	if peerAddrs == nil {
+		return
+	}
+
+	// 收集需要移除的地址键
+	toRemove := make([]string, 0)
+	for addrKey, ea := range peerAddrs {
+		if ea.Source == source {
+			toRemove = append(toRemove, addrKey)
+			
+			// 从堆中移除
+			if ea.heapIndex >= 0 {
+				heap.Remove(&ab.expiringHeap, ea.heapIndex)
+			}
+			
+			// 发布地址移除事件
+			if ab.eventbus != nil {
+				go ab.emitAddrRemoved(peerID, ea.Addr)
+			}
+		}
+	}
+
+	// 从映射中移除
+	for _, addrKey := range toRemove {
+		delete(peerAddrs, addrKey)
+	}
+
+	// 如果该 peer 已没有地址，清理映射
+	if len(peerAddrs) == 0 {
+		delete(ab.addrs, peerID)
+	}
+}
+
+// PeersWithAddrs 返回拥有地址的节点列表
+func (ab *AddrBook) PeersWithAddrs() []types.PeerID {
+	ab.mu.RLock()
+	defer ab.mu.RUnlock()
+
+	peers := make([]types.PeerID, 0, len(ab.addrs))
+	for peerID := range ab.addrs {
+		peers = append(peers, peerID)
+	}
+
+	return peers
+}
+
+// gc GC 清理过期地址
+func (ab *AddrBook) gc() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			ab.gcOnce()
+		case <-ab.gcCtx.Done():
+			return
+		}
+	}
+}
+
+// gcOnce 执行一次 GC
+func (ab *AddrBook) gcOnce() {
+	ab.mu.Lock()
+	defer ab.mu.Unlock()
+
+	now := time.Now()
+
+	// 从堆中移除过期地址
+	for ab.expiringHeap.Len() > 0 {
+		ea := ab.expiringHeap[0]
+		if ea.Expiry.After(now) {
+			break
+		}
+
+		heap.Pop(&ab.expiringHeap)
+
+		// 从 addrs map 中删除
+		if peerAddrs := ab.addrs[ea.PeerID]; peerAddrs != nil {
+			delete(peerAddrs, ea.Addr.String())
+
+			// 如果节点没有任何地址了，删除节点
+			if len(peerAddrs) == 0 {
+				delete(ab.addrs, ea.PeerID)
+			}
+		}
+	}
+}
+
+// GCNow 立即执行一次 GC
+//
+// 用于网络变化时立即清除过期地址，
+// 确保下次连接使用新的地址探测。
+func (ab *AddrBook) GCNow() {
+	ab.gcOnce()
+}
+
+// ResetTemporaryAddrs 重置临时地址
+//
+// 清除所有短期 TTL 的地址（TTL < 10 分钟），
+// 保留长期/永久地址。用于网络变化时重置端点状态。
+func (ab *AddrBook) ResetTemporaryAddrs() int {
+	ab.mu.Lock()
+	defer ab.mu.Unlock()
+
+	now := time.Now()
+	threshold := 10 * time.Minute
+	removedCount := 0
+
+	for peerID, peerAddrs := range ab.addrs {
+		for addrKey, ea := range peerAddrs {
+			// 检查地址的 TTL 是否较短（临时地址）
+			ttl := ea.Expiry.Sub(now)
+			if ttl > 0 && ttl < threshold {
+				// 从堆中移除
+				if ea.heapIndex >= 0 {
+					heap.Remove(&ab.expiringHeap, ea.heapIndex)
+				}
+				delete(peerAddrs, addrKey)
+				removedCount++
+			}
+		}
+
+		// 如果节点没有任何地址了，删除节点条目
+		if len(peerAddrs) == 0 {
+			delete(ab.addrs, peerID)
+		}
+	}
+
+	return removedCount
+}
+
+// Close 关闭地址簿
+func (ab *AddrBook) Close() error {
+	ab.gcCancel()
+	return nil
+}

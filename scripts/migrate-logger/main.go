@@ -81,7 +81,7 @@ func processFile(path string) error {
 	if modified != original {
 		fmt.Printf("修改: %s\n", path)
 		if !dryRun {
-			return os.WriteFile(path, []byte(modified), 0644)
+			return os.WriteFile(path, []byte(modified), 0600)
 		}
 	}
 

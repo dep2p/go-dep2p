@@ -174,7 +174,6 @@ flowchart TD
 每个需求（REQ-xxx）对应具体的 API 设计：
 
 ```
-REQ-CONN-001 → pkg/interfaces/endpoint/endpoint.go
 REQ-REALM-001 → pkg/interfaces/realm/realm.go
 ```
 

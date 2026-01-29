@@ -159,11 +159,14 @@ func main() {
     // Step 1: Create node
     // ========================================
     fmt.Println("Starting node...")
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         // mDNS auto-enabled for LAN discovery
     )
     if err != nil {
+        log.Fatalf("Failed to create node: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
         log.Fatalf("Failed to start node: %v", err)
     }
     defer node.Close()
@@ -174,8 +177,12 @@ func main() {
     // ========================================
     // Step 2: Join Realm
     // ========================================
-    realmID := types.RealmID("chat-room")
-    if err := node.Realm().JoinRealm(ctx, realmID); err != nil {
+    realmID := "chat-room"
+    realm, err := node.Realm(realmID)
+    if err != nil {
+        log.Fatalf("Failed to get Realm: %v", err)
+    }
+    if err := realm.Join(ctx); err != nil {
         log.Fatalf("Failed to join Realm: %v", err)
     }
     fmt.Printf("Joined chat room: %s\n", realmID)

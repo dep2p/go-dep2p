@@ -1,0 +1,41 @@
+// DeP2P Key Protocol Definitions
+// 密钥相关消息定义
+
+syntax = "proto3";
+
+package dep2p.key;
+
+option go_package = "github.com/dep2p/dep2p/pkg/proto/key";
+
+// KeyType 密钥类型
+enum KeyType {
+  KEY_TYPE_UNSPECIFIED = 0;
+  RSA = 1;
+  Ed25519 = 2;
+  Secp256k1 = 3;
+  ECDSA = 4;
+}
+
+// PublicKey 公钥
+message PublicKey {
+  KeyType type = 1;
+  bytes data = 2;
+}
+
+// PrivateKey 私钥
+message PrivateKey {
+  KeyType type = 1;
+  bytes data = 2;
+}
+
+// KeyPair 密钥对
+message KeyPair {
+  PublicKey public_key = 1;
+  PrivateKey private_key = 2;
+}
+
+// Signature 签名
+message Signature {
+  KeyType type = 1;
+  bytes data = 2;
+}

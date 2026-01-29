@@ -24,11 +24,17 @@ flowchart TB
 DeP2P uses functional options pattern for configuration:
 
 ```go
-node, err := dep2p.StartNode(ctx,
+node, err := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithListenPort(4001),
     dep2p.WithBootstrapPeers(bootstrapAddrs...),
 )
+if err != nil {
+    log.Fatal(err)
+}
+if err := node.Start(ctx); err != nil {
+    log.Fatal(err)
+}
 ```
 
 ---
@@ -54,7 +60,8 @@ func WithPreset(preset Preset) Option
 **Example**:
 
 ```go
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
 ```
 
 ---
@@ -76,11 +83,13 @@ func WithIdentity(identity crypto.PrivKey) Option
 ```go
 // Use existing private key
 privKey, _ := crypto.UnmarshalPrivateKey(keyBytes)
-node, _ := dep2p.StartNode(ctx, dep2p.WithIdentity(privKey))
+node, _ := dep2p.New(ctx, dep2p.WithIdentity(privKey))
+_ = node.Start(ctx)
 
 // Load from file
 key, _ := dep2p.LoadIdentity("node.key")
-node, _ := dep2p.StartNode(ctx, dep2p.WithIdentity(key))
+node, _ := dep2p.New(ctx, dep2p.WithIdentity(key))
+_ = node.Start(ctx)
 ```
 
 ---
@@ -100,7 +109,8 @@ func WithListenPort(port int) Option
 **Example**:
 
 ```go
-node, _ := dep2p.StartNode(ctx, dep2p.WithListenPort(4001))
+node, _ := dep2p.New(ctx, dep2p.WithListenPort(4001))
+_ = node.Start(ctx)
 ```
 
 ---
@@ -120,12 +130,13 @@ func WithListenAddrs(addrs ...string) Option
 **Example**:
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithListenAddrs(
         "/ip4/0.0.0.0/udp/4001/quic-v1",
         "/ip6/::/udp/4001/quic-v1",
     ),
 )
+_ = node.Start(ctx)
 ```
 
 ---
@@ -149,9 +160,10 @@ func WithConnectionLimits(low, high int) Option
 **Example**:
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithConnectionLimits(50, 100),
 )
+_ = node.Start(ctx)
 ```
 
 ---
@@ -167,9 +179,10 @@ func WithConnectionTimeout(d time.Duration) Option
 **Example**:
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithConnectionTimeout(30*time.Second),
 )
+_ = node.Start(ctx)
 ```
 
 ---
@@ -188,9 +201,10 @@ func WithIdleTimeout(d time.Duration) Option
 **Example**:
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithIdleTimeout(5*time.Minute),
 )
+_ = node.Start(ctx)
 ```
 
 ---
@@ -216,9 +230,10 @@ bootstrapAddrs := []string{
     "/ip4/104.131.131.82/udp/4001/quic-v1/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
     "/dnsaddr/bootstrap.dep2p.io/p2p/12D3KooWLQj...",
 }
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithBootstrapPeers(bootstrapAddrs...),
 )
+_ = node.Start(ctx)
 ```
 
 ---
@@ -241,9 +256,10 @@ func WithDHT(mode DHTMode) Option
 **Example**:
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithDHT(dep2p.DHTServer),
 )
+_ = node.Start(ctx)
 ```
 
 ---
@@ -263,9 +279,10 @@ func WithMDNS(enabled bool) Option
 **Example**:
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithMDNS(true),
 )
+_ = node.Start(ctx)
 ```
 
 ---
@@ -283,9 +300,10 @@ func WithNAT(enabled bool) Option
 **Example**:
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithNAT(true),
 )
+_ = node.Start(ctx)
 ```
 
 ---
@@ -325,9 +343,10 @@ func WithExternalAddrs(addrs ...string) Option
 **Example**:
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithExternalAddrs("/ip4/203.0.113.1/udp/4001/quic-v1"),
 )
+_ = node.Start(ctx)
 ```
 
 ---
@@ -343,12 +362,13 @@ func WithSTUNServers(servers ...string) Option
 **Example**:
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithSTUNServers(
         "stun.l.google.com:19302",
         "stun.dep2p.io:3478",
     ),
 )
+_ = node.Start(ctx)
 ```
 
 ---
@@ -369,17 +389,18 @@ func WithRelay(enabled bool) Option
 
 ---
 
-### WithAutoRelay
+### WithRelayMap (v2.0)
 
-Enables auto relay.
+Configures RelayMap (required in v2.0).
 
 ```go
-func WithAutoRelay(enabled bool) Option
+func WithRelayMap(relayMap *relayif.RelayMap) Option
 ```
 
 **Notes**:
-- Automatically discovers and uses relay nodes
-- Recommended for nodes behind NAT
+- Mandatory in v2.0, replaces old `WithAutoRelay` and `WithStaticRelays`
+- Must contain at least 2 relay servers for redundancy
+- Automatically probes latency at startup and selects optimal Home Relay
 
 ---
 
@@ -399,35 +420,39 @@ func WithRelayServer(enabled bool) Option
 
 ```go
 // Configure as relay server
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetServer),
     dep2p.WithRelayServer(true),
     dep2p.WithListenPort(4001),
 )
+_ = node.Start(ctx)
 ```
 
 ---
 
-### WithStaticRelays
+### ~~WithStaticRelays~~ (Deprecated)
 
-Sets static relay nodes.
+> **Deprecated**: Removed in v2.0, use `WithRelayMap` instead.
+
+Sets static relay nodes (v1.x API).
 
 ```go
+// ❌ Deprecated, use WithRelayMap
 func WithStaticRelays(addrs ...string) Option
 ```
 
-**Notes**:
-- Prioritizes specified relay nodes
-- Suitable for private deployments
+**Migration Guide**:
+Use `WithRelayMap` instead, configuring complete RelayMapEntry list.
 
 **Example**:
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithStaticRelays(
         "/ip4/relay1.example.com/udp/4001/quic-v1/p2p/12D3KooW...",
     ),
 )
+_ = node.Start(ctx)
 ```
 
 ---
@@ -495,10 +520,10 @@ func WithRealmAuthTimeout(d time.Duration) Option
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `WithRelay` | `bool` | `true` | Relay client |
-| `WithAutoRelay` | `bool` | `true` | Auto relay |
+| `WithRelayMap` | `*relayif.RelayMap` | - | **v2.0 required**: RelayMap config |
 | `WithRelayServer` | `bool` | `false` | Relay server |
-| `WithStaticRelays` | `[]string` | - | Static relays |
+| ~~`WithAutoRelay`~~ | - | - | Deprecated, use `WithRelayMap` |
+| ~~`WithStaticRelays`~~ | - | - | Deprecated, use `WithRelayMap` |
 
 ---
 
@@ -507,44 +532,63 @@ func WithRealmAuthTimeout(d time.Duration) Option
 ### Minimal Configuration
 
 ```go
-node, _ := dep2p.StartNode(ctx)
+node, _ := dep2p.New(ctx)
+_ = node.Start(ctx)
 ```
 
 ### Desktop Application
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithMDNS(true),
 )
+_ = node.Start(ctx)
 ```
 
 ### Server Configuration
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetServer),
     dep2p.WithListenPort(4001),
     dep2p.WithDHT(dep2p.DHTServer),
     dep2p.WithRelayServer(true),
 )
+_ = node.Start(ctx)
 ```
 
 ### Mobile Configuration
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+// v2.0: Must configure RelayMap
+relayMap := &relayif.RelayMap{
+    Entries: []relayif.RelayMapEntry{
+        {NodeID: relay1ID, Addrs: []string{"/ip4/1.2.3.4/udp/4001/quic-v1"}},
+        {NodeID: relay2ID, Addrs: []string{"/ip4/5.6.7.8/udp/4001/quic-v1"}},
+    },
+}
+
+node, _ := dep2p.New(
     dep2p.WithPreset(dep2p.PresetMobile),
-    dep2p.WithAutoRelay(true),
+    dep2p.WithRelayMap(relayMap),
 )
 ```
 
 ### Private Network
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+// Private Relay configuration
+privateRelayMap := &relayif.RelayMap{
+    Entries: []relayif.RelayMapEntry{
+        {NodeID: privateRelay1, Addrs: []string{"/ip4/10.0.0.1/udp/4001/quic-v1"}},
+        {NodeID: privateRelay2, Addrs: []string{"/ip4/10.0.0.2/udp/4001/quic-v1"}},
+    },
+}
+
+node, _ := dep2p.New(
     dep2p.WithBootstrapPeers(privateBootstraps...),
-    dep2p.WithStaticRelays(privateRelays...),
+    dep2p.WithRelayMap(privateRelayMap),
     dep2p.WithMDNS(false),  // Disable public discovery
 )
 ```

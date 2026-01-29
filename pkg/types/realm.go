@@ -1,155 +1,229 @@
+// Package types 定义 DeP2P 公共类型
+//
+// 本文件定义 Realm 相关类型。
+// Realm 是 DeP2P 的核心创新，提供隔离的 P2P 子网络。
 package types
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"time"
 )
 
 // ============================================================================
-//                              Realm 访问级别
+//                              RealmInfo - Realm 信息
 // ============================================================================
 
-// AccessLevel Realm 访问级别
-type AccessLevel int
-
-const (
-	// AccessLevelPublic 公开 - 任何人可加入，节点可被发现
-	AccessLevelPublic AccessLevel = iota
-	// AccessLevelProtected 受保护 - 需要 JoinKey 加入，节点可被同 Realm 发现
-	AccessLevelProtected
-	// AccessLevelPrivate 私有 - 需要 JoinKey 加入，节点不可被外部发现
-	AccessLevelPrivate
-)
-
-// String 返回访问级别的字符串表示
-func (a AccessLevel) String() string {
-	switch a {
-	case AccessLevelPublic:
-		return "public"
-	case AccessLevelProtected:
-		return "protected"
-	case AccessLevelPrivate:
-		return "private"
-	default:
-		return "unknown"
-	}
-}
-
-// ============================================================================
-//                              Realm 元数据
-// ============================================================================
-
-// RealmMetadata Realm 元数据
-type RealmMetadata struct {
+// RealmInfo Realm 信息
+type RealmInfo struct {
 	// ID Realm 唯一标识
 	ID RealmID
 
-	// Name Realm 名称（人类可读）
+	// Name Realm 名称（可选，用于显示）
 	Name string
 
-	// CreatorID 创建者节点 ID
-	CreatorID NodeID
+	// Created 创建时间
+	Created time.Time
 
-	// AccessLevel 访问级别
-	AccessLevel AccessLevel
+	// MemberCount 成员数量
+	MemberCount int
 
-	// CreatedAt 创建时间
-	CreatedAt time.Time
+	// OnlineCount 在线成员数量
+	OnlineCount int
 
-	// Description 描述
-	Description string
+	// AuthMode 认证模式
+	AuthMode RealmAuthMode
+
+	// RelayEnabled 是否启用 Realm 中继
+	RelayEnabled bool
 }
 
 // ============================================================================
-//                              Realm 成员信息
+//                              RealmMember - Realm 成员
 // ============================================================================
 
-// RealmMembership 节点的 Realm 成员身份
-type RealmMembership struct {
-	// RealmID 所属 Realm
-	RealmID RealmID
+// RealmMember Realm 成员信息
+type RealmMember struct {
+	// PeerID 节点 ID
+	PeerID PeerID
 
-	// NodeID 节点 ID
-	NodeID NodeID
+	// Role 角色
+	Role RealmRole
 
 	// JoinedAt 加入时间
 	JoinedAt time.Time
 
-	// Role 角色（可选，用于权限控制）
-	Role string
+	// LastSeen 最后活跃时间
+	LastSeen time.Time
+
+	// Online 是否在线
+	Online bool
+
+	// Metadata 成员元数据
+	Metadata map[string]string
+}
+
+// IsOnline 检查成员是否在线
+func (m RealmMember) IsOnline() bool {
+	return m.Online
+}
+
+// IsAdmin 检查成员是否为管理员
+func (m RealmMember) IsAdmin() bool {
+	return m.Role == RoleAdmin
+}
+
+// IsRelay 检查成员是否为中继节点
+func (m RealmMember) IsRelay() bool {
+	return m.Role == RoleRelay
 }
 
 // ============================================================================
-//                              Realm DHT Key
+//                              RealmConfig - Realm 配置
 // ============================================================================
 
-// RealmDHTKey 计算 Realm 感知的 DHT Key
-//
-// v1.1（以设计为准）：
-//   - 无 Realm: Key = SHA256("dep2p/v1/sys/peer/{nodeID}")
-//   - 有 Realm: Key = SHA256("dep2p/v1/realm/{realmID}/peer/{nodeID}")
-//
-// 这确保不同 Realm 的节点在 DHT 中隔离。
-func RealmDHTKey(realmID RealmID, nodeID NodeID) []byte {
-	nodeIDStr := nodeID.String()
+// RealmConfig Realm 配置
+type RealmConfig struct {
+	// Name 名称
+	Name string
 
-	// 与 docs/05-iterations/2025-12-22-user-simplicity-gap-analysis.md 第 6 章一致：
-	// Key = SHA256("dep2p/v1/{scope}/{type}/[{realmID}/]{payload}")
-	var keyString string
-	if realmID == DefaultRealmID || realmID == "" {
-		keyString = "dep2p/v1/sys/peer/" + nodeIDStr
-	} else {
-		keyString = "dep2p/v1/realm/" + string(realmID) + "/peer/" + nodeIDStr
+	// PSK 预共享密钥
+	PSK PSK
+
+	// MaxMembers 最大成员数（0 表示无限制）
+	MaxMembers int
+
+	// AuthMode 认证模式
+	AuthMode RealmAuthMode
+
+	// RelayEnabled 是否启用中继
+	RelayEnabled bool
+
+	// RelayPeer 指定中继节点（可选）
+	RelayPeer PeerID
+
+	// Metadata Realm 元数据
+	Metadata map[string]string
+}
+
+// Validate 验证配置有效性
+func (c RealmConfig) Validate() error {
+	if c.PSK.IsEmpty() {
+		return ErrEmptyPSK
 	}
+	if len(c.PSK) != PSKLength {
+		return ErrInvalidPSKLength
+	}
+	return nil
+}
 
-	hash := sha256.Sum256([]byte(keyString))
-	return hash[:]
+// DeriveRealmID 从配置派生 RealmID
+func (c RealmConfig) DeriveRealmID() RealmID {
+	return RealmIDFromPSK(c.PSK)
+}
+
+// DefaultRealmConfig 返回默认 Realm 配置
+func DefaultRealmConfig() RealmConfig {
+	return RealmConfig{
+		AuthMode:     AuthModePSK,
+		MaxMembers:   0, // 无限制
+		RelayEnabled: false,
+	}
 }
 
 // ============================================================================
-//                              RealmID 派生
+//                              RealmStats - Realm 统计
 // ============================================================================
 
-// DeriveRealmID 从 realmKey 派生 RealmID
-//
-// 公式: RealmID = SHA256("dep2p-realm-id-v1" || H(realmKey))
-//
-// 返回：完整 SHA256 哈希的十六进制字符串（64字符）
-//
-// 设计决策（见 DISC-1227-api-layer-design.md）：
-//   - RealmID 与 Name 解耦，绑定 realmKey
-//   - 不可枚举：无法从 name 推测 realmID
-//   - 可升级：通过修改前缀版本号
-//   - 同名不同 key → 不同 realmID（不会冲突）
-func DeriveRealmID(realmKey RealmKey) RealmID {
-	// 先对 realmKey 做一次哈希，确保即使 realmID 泄露也无法反推 key
-	keyHash := sha256.Sum256(realmKey[:])
+// RealmStats Realm 统计信息
+type RealmStats struct {
+	// RealmID Realm ID
+	RealmID RealmID
 
-	// 再加上版本前缀做第二次哈希
-	h := sha256.New()
-	h.Write([]byte("dep2p-realm-id-v1"))
-	h.Write(keyHash[:])
-	hash := h.Sum(nil)
+	// MemberCount 成员数量
+	MemberCount int
 
-	// 返回完整 32 字节 = 64 字符 hex
-	return RealmID(hex.EncodeToString(hash))
+	// OnlineCount 在线数量
+	OnlineCount int
+
+	// MessageCount 消息数量
+	MessageCount int64
+
+	// BytesSent 发送字节数
+	BytesSent int64
+
+	// BytesReceived 接收字节数
+	BytesReceived int64
+
+	// Uptime Realm 运行时间
+	Uptime time.Duration
 }
 
-// Deprecated: GenerateRealmID 已废弃，请使用 DeriveRealmID
-//
-// 此函数基于创建者公钥和名称生成 RealmID，存在以下问题：
-//   - 可枚举：name 带业务语义，hash 可被字典枚举
-//   - 冲突/混淆：同名但不同 key 会被混为同一 Realm
-//
-// 新设计使用 DeriveRealmID(realmKey)，基于高熵密钥派生。
-func GenerateRealmID(creatorPubKey []byte, realmName string) RealmID {
-	h := sha256.New()
-	h.Write(creatorPubKey)
-	h.Write([]byte(realmName))
-	hash := h.Sum(nil)
-	// 使用前16字节的十六进制作为 RealmID（32字符）
-	return RealmID(string(hash[:16]))
+// ============================================================================
+//                              RelayConfig - 中继配置（统一 Relay v2.0）
+// ============================================================================
+
+// RelayConfig 中继配置（统一 Relay v2.0）
+type RelayConfig struct {
+	// Enabled 是否启用
+	Enabled bool
+
+	// RelayPeer 中继节点
+	RelayPeer PeerID
+
+	// MaxBandwidth 最大带宽（字节/秒，0 表示无限制）
+	MaxBandwidth int64
+
+	// MaxDuration 最大连接时长
+	MaxDuration time.Duration
 }
 
+// RealmRelayConfig 是 RelayConfig 的别名（保持向后兼容）
+// Deprecated: 请使用 RelayConfig
+type RealmRelayConfig = RelayConfig
 
+// ============================================================================
+//                              RealmJoinOptions - 加入选项
+// ============================================================================
+
+// RealmJoinOptions 加入 Realm 的选项
+type RealmJoinOptions struct {
+	// Timeout 加入超时
+	Timeout time.Duration
+
+	// Role 期望角色
+	Role RealmRole
+
+	// Metadata 成员元数据
+	Metadata map[string]string
+}
+
+// DefaultRealmJoinOptions 返回默认加入选项
+func DefaultRealmJoinOptions() RealmJoinOptions {
+	return RealmJoinOptions{
+		Timeout: 30 * time.Second,
+		Role:    RoleMember,
+	}
+}
+
+// ============================================================================
+//                              RealmFindOptions - 查找选项
+// ============================================================================
+
+// RealmFindOptions 查找 Realm 成员的选项
+type RealmFindOptions struct {
+	// Limit 返回数量限制
+	Limit int
+
+	// OnlineOnly 仅返回在线成员
+	OnlineOnly bool
+
+	// Role 过滤角色
+	Role *RealmRole
+}
+
+// DefaultRealmFindOptions 返回默认查找选项
+func DefaultRealmFindOptions() RealmFindOptions {
+	return RealmFindOptions{
+		Limit:      100,
+		OnlineOnly: false,
+	}
+}

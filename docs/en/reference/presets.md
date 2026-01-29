@@ -32,7 +32,8 @@ flowchart TB
 Minimal configuration for resource-constrained or testing scenarios.
 
 ```go
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetMinimal))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetMinimal))
+_ = node.Start(ctx)
 ```
 
 **Configuration Details**:
@@ -59,7 +60,8 @@ node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetMinimal))
 Default configuration for desktop applications, balancing features and resources.
 
 ```go
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
 ```
 
 **Configuration Details**:
@@ -88,7 +90,8 @@ node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
 Server configuration, maximizing performance and connection capacity.
 
 ```go
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetServer))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetServer))
+_ = node.Start(ctx)
 ```
 
 **Configuration Details**:
@@ -117,7 +120,8 @@ node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetServer))
 Mobile configuration, optimizing battery and data consumption.
 
 ```go
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetMobile))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetMobile))
+_ = node.Start(ctx)
 ```
 
 **Configuration Details**:
@@ -253,31 +257,34 @@ Presets can be combined with other options:
 
 ```go
 // Based on desktop preset, add fixed port
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithListenPort(4001),
 )
+_ = node.Start(ctx)
 ```
 
 ### Overriding Preset Settings
 
 ```go
 // Based on server preset, enable relay server
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetServer),
     dep2p.WithRelayServer(true),
     dep2p.WithListenPort(4001),
 )
+_ = node.Start(ctx)
 ```
 
 ### Disabling Features from Preset
 
 ```go
 // Based on desktop preset, disable mDNS
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithMDNS(false),
 )
+_ = node.Start(ctx)
 ```
 
 ---
@@ -287,7 +294,7 @@ node, _ := dep2p.StartNode(ctx,
 Without using presets, fully custom configuration:
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     // Identity
     dep2p.WithIdentity(privateKey),
     
@@ -304,14 +311,14 @@ node, _ := dep2p.StartNode(ctx,
     dep2p.WithAutoNAT(true),
     dep2p.WithHolePunching(true),
     
-    // Relay
-    dep2p.WithRelay(true),
-    dep2p.WithAutoRelay(true),
+    // Relay (v2.0: RelayMap required)
+    dep2p.WithRelayMap(relayMap),  // See RelayMap configuration below
     dep2p.WithRelayServer(false),
     
     // Connections
     dep2p.WithConnectionLimits(100, 200),
 )
+_ = node.Start(ctx)
 ```
 
 ---

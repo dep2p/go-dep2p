@@ -82,18 +82,23 @@ func main() {
     defer cancel()
 
     // Genesis node: explicitly pass nil for no Bootstrap
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetServer),
         dep2p.WithBootstrapPeers(nil),  // Key: no Bootstrap
         dep2p.WithListenPort(4001),     // Fixed port
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
+    }
 
     // Join Realm
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     fmt.Println("Genesis node started")
     fmt.Printf("NodeID: %s\n", node.ID())
@@ -132,16 +137,21 @@ func main() {
     ctx := context.Background()
 
     // PresetDesktop/PresetServer includes default Bootstrap nodes
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),  // Includes default Bootstrap
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
+    }
 
     // Join Realm
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     fmt.Printf("Node started: %s\n", node.ID().ShortString())
     fmt.Println("Automatically connected to default Bootstrap nodes")
@@ -185,16 +195,21 @@ func main() {
         "/dns4/bootstrap.example.com/udp/4001/quic-v1/p2p/5Q2STWvBFn...",
     }
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithBootstrapPeers(bootstrapPeers...),  // Override default Bootstrap
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     fmt.Printf("Node started: %s\n", node.ID().ShortString())
 }
@@ -242,15 +257,20 @@ func main() {
     ctx := context.Background()
 
     // Use Minimal preset (no default Bootstrap)
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetMinimal),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     // Direct connect to known address
     targetAddr := "/ip4/192.168.1.100/udp/4001/quic-v1/p2p/5Q2STWvBFn..."
@@ -286,15 +306,20 @@ func main() {
     ctx := context.Background()
 
     // mDNS is enabled by default
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     // Set connection notification
     node.Endpoint().SetConnectedNotify(func(conn dep2p.Connection) {
@@ -366,13 +391,18 @@ func main() {
         fmt.Println("Using default Bootstrap nodes")
     }
 
-    node, err := dep2p.StartNode(ctx, opts...)
+    node, err := dep2p.New(ctx, opts...)
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     fmt.Printf("Node started: %s\n", node.ID().ShortString())
 }
@@ -415,12 +445,13 @@ if !strings.Contains(addr, "/p2p/") {
 // nc -uzv 1.2.3.4 4001
 
 // 3. Use multiple Bootstrap nodes
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithBootstrapPeers(
         "/ip4/1.2.3.4/udp/4001/quic-v1/p2p/...",
         "/ip4/5.6.7.8/udp/4001/quic-v1/p2p/...",  // Backup
     ),
 )
+_ = node.Start(ctx)
 ```
 
 ### Problem 2: Cannot Discover Other Nodes
@@ -436,8 +467,8 @@ node, _ := dep2p.StartNode(ctx,
 
 ```go
 // 1. Ensure Realm consistency
-realmID := types.RealmID("my-network")
-node.Realm().JoinRealm(ctx, realmID)
+realm, _ := node.Realm("my-network")
+_ = realm.Join(ctx)
 
 // 2. Wait for DHT sync
 time.Sleep(5 * time.Second)
@@ -459,11 +490,12 @@ fmt.Printf("Current connections: %d\n", node.ConnectionCount())
 
 ```go
 // 1. Use public address
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetServer),
     dep2p.WithListenPort(4001),
     dep2p.WithExternalAddrs("/ip4/PUBLIC_IP/udp/4001/quic-v1"),
 )
+_ = node.Start(ctx)
 
 // 2. Get shareable address
 addrs, _ := node.WaitShareableAddrs(ctx)

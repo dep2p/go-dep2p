@@ -45,9 +45,54 @@ flowchart TB
 
 | 机制 | 范围 | 优点 | 缺点 |
 |------|------|------|------|
+| **known_peers** | 直连 | 启动即连接、无依赖 | 需要预配置地址 |
 | **DHT** | 全网 | 去中心化、可扩展 | 需要初始连接 |
 | **mDNS** | 局域网 | 自动、无需配置 | 仅限本地网络 |
 | **Bootstrap** | 全网 | 可靠、快速 | 需要预配置 |
+
+---
+
+## DHT 权威模型（v2.0）
+
+DeP2P v2.0 采用 **DHT 权威模型**：DHT 是权威目录，其他缓存层加速访问。
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    地址查询优先级（v2.0）                             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  优先级 0: KnownPeers（启动配置，立即可用）                           │
+│      ↓                                                               │
+│  优先级 1: Peerstore（本地地址缓存）                                  │
+│      ↓                                                               │
+│  优先级 2: MemberList（Gossip 同步的成员列表）                        │
+│      ↓                                                               │
+│  优先级 3: DHT 查询（权威来源，存储签名 PeerRecord）                   │
+│      ↓                                                               │
+│  优先级 4: Relay 地址簿（缓存回退）                                   │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### PeerRecord 签名机制
+
+DHT 中存储的地址记录必须签名，防止投毒攻击：
+
+```go
+// PeerRecord 结构（简化）
+type PeerRecord struct {
+    NodeID    types.NodeID   // 节点 ID
+    Addrs     []Multiaddr    // 地址列表
+    Timestamp time.Time      // 时间戳
+    Signature []byte         // Ed25519 签名
+}
+```
+
+**验证流程**：
+1. 从 DHT 获取 PeerRecord
+2. 验证签名（使用 NodeID 对应的公钥）
+3. 检查时间戳（防止重放攻击）
+4. 缓存到本地 Peerstore
 
 ---
 
@@ -72,16 +117,20 @@ func main() {
     ctx := context.Background()
 
     // DHT 在 Desktop/Server 预设中默认启用
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         // DHT 通过预设自动配置
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     fmt.Println("DHT 发现已启用")
     
@@ -134,16 +183,20 @@ func main() {
     ctx := context.Background()
 
     // mDNS 在 Desktop 预设中默认启用
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         // mDNS 自动发现同网络节点
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     // 监听新节点发现
     node.Endpoint().SetConnectedNotify(func(conn dep2p.Connection) {
@@ -219,15 +272,19 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     // 设置连接通知
     node.Endpoint().SetConnectedNotify(func(conn dep2p.Connection) {
@@ -270,15 +327,19 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     // 目标节点 ID
     targetIDStr := "5Q2STWvBFn..."
@@ -312,9 +373,10 @@ func main() {
 
 ```go
 // 1. 检查 Bootstrap 配置
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),  // 包含默认 Bootstrap
 )
+_ = node.Start(ctx)
 
 // 2. 等待 DHT 同步
 time.Sleep(10 * time.Second)

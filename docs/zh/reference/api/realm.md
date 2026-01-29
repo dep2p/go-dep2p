@@ -9,34 +9,38 @@ RealmManager 和 Realm 对象提供业务隔离域的管理功能，实现多租
 ```mermaid
 flowchart TB
     subgraph Node [Node]
-        JoinRealmWithKey["JoinRealmWithKey()"]
+        Realm["Realm()"]
         CurrentRealm["CurrentRealm()"]
     end
     
-    subgraph Realm [Realm 对象]
+    subgraph RealmObj [Realm 对象]
+        Join["Join()"]
         Name["Name()"]
         ID["ID()"]
-        Key["Key()"]
         Members["Members()"]
+        OnMemberJoin["OnMemberJoin()"]
+        OnMemberLeave["OnMemberLeave()"]
+        Connect["Connect()"]
+        Health["Health()"]
         Messaging["Messaging()"]
         PubSub["PubSub()"]
         Streams["Streams()"]
-        Relay["Relay()"]
+        Liveness["Liveness()"]
     end
     
     subgraph Services [Layer 3 服务]
         Msg["Messaging"]
         PS["PubSub"]
-        SM["StreamManager"]
-        RR["RealmRelay"]
+        SM["Streams"]
+        LV["Liveness"]
     end
     
-    Node --> |"返回"| Realm
-    Realm --> Services
+    Node --> |"返回"| RealmObj
+    RealmObj --> Services
 ```
 
 **IMPL-1227 核心变化**：
-- `JoinRealmWithKey()` 返回 `Realm` 对象（而非 error）
+- `Realm()` 返回 `Realm` 对象，然后调用 `Join()` 加入
 - 所有 Layer 3 服务从 `Realm` 对象获取
 - 使用 `realmKey` (32字节 PSK) 进行成员认证
 - `RealmID` 从 `realmKey` 哈希派生，不可枚举
@@ -56,21 +60,18 @@ realmMgr := node.Realm()
 
 ## Realm 成员管理 API（IMPL-1227 更新）
 
-### JoinRealmWithKey（推荐）
+### Realm（推荐）
 
-使用 realmKey 加入指定 Realm。
+获取或创建指定 Realm。
 
 ```go
-func (m RealmManager) JoinRealmWithKey(ctx context.Context, name string, realmKey types.RealmKey, opts ...RealmOption) (Realm, error)
+func (n *Node) Realm(id string) (Realm, error)
 ```
 
 **参数**：
 | 参数 | 类型 | 描述 |
 |------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `name` | `string` | Realm 显示名称 |
-| `realmKey` | `types.RealmKey` | 32字节 PSK 密钥 |
-| `opts` | `...RealmOption` | 加入选项 |
+| `id` | `string` | Realm 标识符 |
 
 **返回值**：
 | 类型 | 描述 |
@@ -78,11 +79,43 @@ func (m RealmManager) JoinRealmWithKey(ctx context.Context, name string, realmKe
 | `Realm` | Realm 对象（用于获取 Layer 3 服务） |
 | `error` | 错误信息 |
 
+### Join
+
+加入 Realm。
+
+```go
+func (r *Realm) Join(ctx context.Context) error
+```
+
+**参数**：
+| 参数 | 类型 | 描述 |
+|------|------|------|
+| `ctx` | `context.Context` | 上下文 |
+
+**返回值**：
+| 类型 | 描述 |
+|------|------|
+| `error` | 错误信息 |
+
 **说明**：
 - `realmKey` 是 32 字节的高熵随机数，用于 PSK 成员认证
 - `RealmID` 从 `realmKey` 哈希派生：`SHA256("dep2p-realm-id-v1" || H(realmKey))`
 - 相同 `realmKey` 派生相同 `RealmID`，只有持有 `realmKey` 的节点才能加入
 - 如果已加入其他 Realm，返回 `ErrAlreadyJoined`
+
+**入口节点（EntryPeerID）**：
+- 可在配置中设置 `Realm.EntryPeerID`，用于 Join 协议的入口节点
+- 配置后，Realm 启动会自动向入口节点发起 Join 请求并同步成员列表
+- 未配置时，Join 协议保持兼容行为（不会主动发起）
+
+**配置示例**：
+```json
+{
+  "Realm": {
+    "EntryPeerID": "12D3KooW...入口节点PeerID..."
+  }
+}
+```
 
 **示例**：
 
@@ -95,7 +128,11 @@ fmt.Printf("RealmKey: %s\n", realmKey.String()) // 保存并分享给成员
 realmKey, _ := types.RealmKeyFromHex("abcdef1234...")
 
 // 加入 Realm
-realm, err := node.JoinRealmWithKey(ctx, "my-business-network", realmKey)
+realm, err := node.Realm("my-business-network")
+if err != nil {
+    log.Fatal(err)
+}
+err = realm.Join(ctx)
 if err != nil {
     if errors.Is(err, realm.ErrAlreadyJoined) {
         log.Println("已加入其他 Realm，请先离开")
@@ -109,7 +146,9 @@ messaging := realm.Messaging()
 pubsub := realm.PubSub()
 ```
 
-### JoinRealm
+### JoinRealm（已废弃）
+
+> **注意**：此方法已废弃，请使用 `Realm()` + `Join()` 模式。
 
 加入指定 Realm（使用 Option 提供 realmKey）。
 
@@ -117,12 +156,17 @@ pubsub := realm.PubSub()
 func (m RealmManager) JoinRealm(ctx context.Context, name string, opts ...RealmOption) (Realm, error)
 ```
 
-**示例**：
+**示例（新 API）**：
 
 ```go
-realm, err := node.Realm().JoinRealm(ctx, "my-realm",
-    dep2p.WithRealmKey(realmKey),
-)
+realm, err := node.Realm("my-realm")
+if err != nil {
+    log.Fatal(err)
+}
+err = realm.Join(ctx)
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 ---
@@ -232,7 +276,7 @@ type Realm interface {
     PubSub() PubSub                 // 发布订阅服务
     Streams() StreamManager         // 流管理服务
     Discovery() RealmDiscovery      // Realm 内发现服务
-    Relay() RealmRelayService       // Realm 中继服务
+    Gateway() Gateway               // Realm 网关服务
     
     // PSK 认证
     PSKAuth() PSKAuthenticator      // PSK 成员验证器
@@ -316,29 +360,264 @@ for msg := range sub.Messages() {
 }
 ```
 
-### RealmRelayService
+### Gateway（Realm 网关）
 
 ```go
-type RealmRelayService interface {
-    Serve() error           // 开始提供 Realm 中继服务
+type Gateway interface {
+    Serve() error           // 开始提供 Realm 网关服务
     StopServing() error     // 停止提供服务
-    Stats() RelayStats      // 获取统计信息
-    FindRelays(ctx context.Context) ([]RelayInfo, error)  // 发现可用中继
+    Stats() GatewayStats    // 获取统计信息
 }
 ```
 
 **示例**：
 
 ```go
-relay := realm.Relay()
+gw := realm.Gateway()
 
-// 成为 Realm 中继节点
-relay.Serve()
+// 成为 Realm 网关节点
+gw.Serve()
 
 // 查看统计
-stats := relay.Stats()
-fmt.Printf("活跃电路: %d\n", stats.ActiveCircuits)
+stats := gw.Stats()
+fmt.Printf("活跃会话: %d\n", stats.ActiveSessions)
 ```
+
+> **注意**：统一 Relay v2.0 架构下，节点级中继由 `node.Relay()` 管理，
+> Realm 内部的网关转发由 `realm.Gateway()` 管理。
+
+## 成员事件监听 API
+
+### OnMemberJoin
+
+注册成员加入回调。
+
+```go
+func (r *Realm) OnMemberJoin(handler func(peerID string)) error
+```
+
+**参数**：
+| 参数 | 类型 | 描述 |
+|------|------|------|
+| `handler` | `func(peerID string)` | 成员加入时的回调函数 |
+
+**返回值**：
+| 类型 | 描述 |
+|------|------|
+| `error` | 错误信息 |
+
+**说明**：
+- 当有新成员加入 Realm 时调用回调函数
+- 回调在后台 goroutine 中执行，不会阻塞事件处理
+- 回调函数应该快速返回，避免长时间阻塞
+- 如需执行耗时操作，请在回调中启动新的 goroutine
+
+**示例**：
+
+```go
+realm.OnMemberJoin(func(peerID string) {
+    fmt.Printf("新成员加入: %s\n", peerID[:16])
+    // 可以在这里发送欢迎消息等
+})
+```
+
+---
+
+### OnMemberLeave
+
+注册成员离开回调。
+
+```go
+func (r *Realm) OnMemberLeave(handler func(peerID string)) error
+```
+
+**参数**：
+| 参数 | 类型 | 描述 |
+|------|------|------|
+| `handler` | `func(peerID string)` | 成员离开时的回调函数 |
+
+**返回值**：
+| 类型 | 描述 |
+|------|------|
+| `error` | 错误信息 |
+
+**说明**：
+- 当成员离开 Realm 时调用回调函数
+- 回调在后台 goroutine 中执行，不会阻塞事件处理
+- 回调函数应该快速返回，避免长时间阻塞
+
+**示例**：
+
+```go
+realm.OnMemberLeave(func(peerID string) {
+    fmt.Printf("成员离开: %s\n", peerID[:16])
+    // 可以在这里清理相关资源等
+})
+```
+
+---
+
+### EventBus
+
+返回事件总线（用于订阅成员事件）。
+
+```go
+func (r *Realm) EventBus() EventBus
+```
+
+**返回值**：
+| 类型 | 描述 |
+|------|------|
+| `EventBus` | 事件总线接口 |
+
+**支持的事件类型**：
+| 事件类型 | 描述 |
+|----------|------|
+| `types.EvtRealmMemberJoined` | 成员加入事件 |
+| `types.EvtRealmMemberLeft` | 成员离开事件 |
+
+**说明**：
+- `OnMemberJoin` 和 `OnMemberLeave` 是基于 EventBus 的便捷方法
+- 如需更细粒度的控制，可以直接使用 EventBus
+
+**示例**：
+
+```go
+// 使用便捷方法（推荐）
+realm.OnMemberJoin(func(peerID string) {
+    fmt.Println("成员加入:", peerID)
+})
+
+// 或直接使用 EventBus（高级用法）
+sub, _ := realm.EventBus().Subscribe(new(types.EvtRealmMemberJoined))
+go func() {
+    for evt := range sub.Out() {
+        if e, ok := evt.(*types.EvtRealmMemberJoined); ok {
+            fmt.Println("成员加入:", e.MemberID)
+        }
+    }
+}()
+```
+
+---
+
+## 连接管理 API
+
+### Connect
+
+连接 Realm 成员或潜在成员。
+
+```go
+func (r *Realm) Connect(ctx context.Context, target string) (Connection, error)
+```
+
+**参数**：
+| 参数 | 类型 | 描述 |
+|------|------|------|
+| `ctx` | `context.Context` | 上下文 |
+| `target` | `string` | 目标（支持多种格式） |
+
+**支持的 target 格式**：
+- **ConnectionTicket**: `dep2p://base64...`（便于分享的票据）
+- **Full Address**: `/ip4/x.x.x.x/udp/port/quic-v1/p2p/12D3KooW...`
+- **纯 NodeID**: `12D3KooW...`（通过 DHT 自动发现地址）
+
+**连接流程**：
+1. 解析 target，提取 NodeID 和地址提示
+2. 如果目标已是成员，直接连接
+3. 如果目标不是成员，先建立底层连接，等待 PSK 认证完成
+4. 认证完成后返回已认证的连接
+
+**连接优先级**：直连 → 打洞 → Relay 保底
+
+**示例**：
+
+```go
+// 使用票据连接（推荐，便于分享）
+conn, err := realm.Connect(ctx, "dep2p://eyJ...")
+
+// 使用完整地址连接
+conn, err := realm.Connect(ctx, "/ip4/1.2.3.4/udp/4001/quic-v1/p2p/12D3KooW...")
+
+// 使用纯 NodeID 连接（需要 DHT 发现）
+conn, err := realm.Connect(ctx, "12D3KooWA...")
+```
+
+---
+
+### ConnectWithHint
+
+使用地址提示连接 Realm 成员。
+
+```go
+func (r *Realm) ConnectWithHint(ctx context.Context, target string, hints []string) (Connection, error)
+```
+
+**参数**：
+| 参数 | 类型 | 描述 |
+|------|------|------|
+| `ctx` | `context.Context` | 上下文 |
+| `target` | `string` | 目标 NodeID |
+| `hints` | `[]string` | 地址提示列表 |
+
+**说明**：
+- 与 Connect 类似，但允许提供地址提示来加速连接
+- 提示地址会被优先尝试，如果失败则回退到自动发现流程
+
+**示例**：
+
+```go
+hints := []string{"/ip4/192.168.1.100/udp/4001/quic-v1"}
+conn, err := realm.ConnectWithHint(ctx, "12D3KooWA...", hints)
+```
+
+---
+
+## 健康状态 API
+
+### Health
+
+返回域健康状态。
+
+```go
+func (r *Realm) Health() *RealmHealth
+```
+
+**返回值**：
+| 类型 | 描述 |
+|------|------|
+| `*RealmHealth` | 域健康状态 |
+
+**RealmHealth 结构**：
+
+```go
+type RealmHealth struct {
+    Status         string  // 状态: healthy, minimal, isolated
+    MemberCount    int     // 成员数量
+    ActivePeers    int     // 活跃连接数（暂未实现）
+    MessagesPerSec float64 // 消息吞吐率（暂未实现）
+}
+```
+
+**状态说明**：
+| 状态 | 条件 | 描述 |
+|------|------|------|
+| `isolated` | MemberCount == 0 | 没有其他成员 |
+| `minimal` | MemberCount == 1 | 只有自己 |
+| `healthy` | MemberCount > 1 | 正常状态 |
+
+**示例**：
+
+```go
+health := realm.Health()
+fmt.Printf("状态: %s, 成员数: %d\n", health.Status, health.MemberCount)
+
+if health.Status == "isolated" {
+    fmt.Println("警告: 没有其他成员可以通信")
+}
+```
+
+---
 
 ## Realm 成员信息 API
 
@@ -412,7 +691,8 @@ func WithJoinKey(key []byte) JoinOption
 **示例**：
 
 ```go
-node.Realm().JoinRealm(ctx, realmID, realm.WithJoinKey([]byte("secret")))
+realm, _ := node.Realm(realmID)
+_ = realm.Join(ctx)
 ```
 
 ---
@@ -428,7 +708,10 @@ func WithTimeout(d time.Duration) JoinOption
 **示例**：
 
 ```go
-node.Realm().JoinRealm(ctx, realmID, realm.WithTimeout(30*time.Second))
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+realm, _ := node.Realm(realmID)
+_ = realm.Join(ctx)
 ```
 
 ---
@@ -447,9 +730,8 @@ func WithPrivateBootstrapPeers(peers []string) JoinOption
 bootstrapAddrs := []string{
     "/ip4/192.168.1.100/udp/4001/quic-v1/p2p/12D3KooW...",
 }
-node.Realm().JoinRealm(ctx, realmID,
-    realm.WithPrivateBootstrapPeers(bootstrapAddrs),
-)
+realm, _ := node.Realm(realmID)
+_ = realm.Join(ctx)
 ```
 
 ---
@@ -465,10 +747,8 @@ func WithSkipDHTRegistration() JoinOption
 **示例**：
 
 ```go
-node.Realm().JoinRealm(ctx, realmID,
-    realm.WithPrivateBootstrapPeers(addrs),
-    realm.WithSkipDHTRegistration(),
-)
+realm, _ := node.Realm(realmID)
+_ = realm.Join(ctx)
 ```
 
 ---
@@ -505,7 +785,8 @@ flowchart LR
 **使用场景**：公开聊天室、公共服务
 
 ```go
-node.Realm().JoinRealm(ctx, types.RealmID("public-chat"))
+realm, _ := node.Realm("public-chat")
+_ = realm.Join(ctx)
 ```
 
 ---
@@ -519,10 +800,8 @@ node.Realm().JoinRealm(ctx, types.RealmID("public-chat"))
 **使用场景**：付费服务、会员专区
 
 ```go
-node.Realm().JoinRealm(ctx,
-    types.RealmID("premium-service"),
-    realm.WithJoinKey(membershipKey),
-)
+realm, _ := node.Realm("premium-service")
+_ = realm.Join(ctx)
 ```
 
 ---
@@ -536,12 +815,8 @@ node.Realm().JoinRealm(ctx,
 **使用场景**：企业内网、私密通信
 
 ```go
-node.Realm().JoinRealm(ctx,
-    types.RealmID("company-internal"),
-    realm.WithJoinKey(employeeKey),
-    realm.WithPrivateBootstrapPeers(internalBootstraps),
-    realm.WithSkipDHTRegistration(),
-)
+realm, _ := node.Realm("company-internal")
+_ = realm.Join(ctx)
 ```
 
 ---
@@ -551,9 +826,9 @@ node.Realm().JoinRealm(ctx,
 ```mermaid
 stateDiagram-v2
     [*] --> NoRealm: 节点启动
-    NoRealm --> InRealm: JoinRealm()
+    NoRealm --> InRealm: Realm().Join()
     InRealm --> NoRealm: LeaveRealm()
-    InRealm --> InRealm: JoinRealm() → ErrAlreadyJoined
+    InRealm --> InRealm: Realm().Join() → ErrAlreadyJoined
     NoRealm --> NoRealm: LeaveRealm() → ErrNotMember
 ```
 
@@ -563,7 +838,7 @@ stateDiagram-v2
 
 | 错误 | 描述 | 解决方案 |
 |------|------|----------|
-| `ErrNotMember` | 未加入任何 Realm | 先调用 `JoinRealm()` |
+| `ErrNotMember` | 未加入任何 Realm | 先调用 `Realm().Join()` |
 | `ErrAlreadyJoined` | 已加入其他 Realm | 先调用 `LeaveRealm()` |
 | `ErrInvalidJoinKey` | JoinKey 无效 | 检查密钥是否正确 |
 | `ErrRealmNotFound` | Realm 不存在 | 检查 RealmID 是否正确 |
@@ -571,13 +846,18 @@ stateDiagram-v2
 **示例**：
 
 ```go
-err := node.Realm().JoinRealm(ctx, realmID)
+realm, err := node.Realm(realmID)
+if err != nil {
+    log.Fatal(err)
+}
+err = realm.Join(ctx)
 if err != nil {
     switch {
     case errors.Is(err, realm.ErrAlreadyJoined):
         // 先离开当前 Realm
         node.Realm().LeaveRealm()
-        node.Realm().JoinRealm(ctx, realmID)
+        realm, _ := node.Realm(realmID)
+        _ = realm.Join(ctx)
     case errors.Is(err, realm.ErrInvalidJoinKey):
         log.Println("密钥错误")
     default:
@@ -592,13 +872,23 @@ if err != nil {
 
 | 方法 | 分类 | 描述 |
 |------|------|------|
-| `JoinRealm()` | 成员管理 | 加入 Realm |
+| `Realm()` | 成员管理 | 获取或创建 Realm |
+| `Join()` | 成员管理 | 加入 Realm |
 | `LeaveRealm()` | 成员管理 | 离开 Realm |
 | `CurrentRealm()` | 成员管理 | 返回当前 Realm |
 | `IsMember()` | 成员管理 | 检查是否已加入 |
-| `IsMemberOf()` | 成员管理 | 检查是否是指定成员 |
-| `RealmPeers()` | 节点管理 | 返回节点列表 |
-| `RealmPeerCount()` | 节点管理 | 返回节点数量 |
+| `Members()` | 成员信息 | 返回成员列表 |
+| `MemberCount()` | 成员信息 | 返回成员数量 |
+| `OnMemberJoin()` | 事件监听 | 注册成员加入回调 |
+| `OnMemberLeave()` | 事件监听 | 注册成员离开回调 |
+| `EventBus()` | 事件监听 | 返回事件总线 |
+| `Connect()` | 连接管理 | 连接 Realm 成员 |
+| `ConnectWithHint()` | 连接管理 | 使用地址提示连接 |
+| `Health()` | 健康状态 | 返回域健康状态 |
+| `Messaging()` | 通信服务 | 返回消息服务 |
+| `PubSub()` | 通信服务 | 返回发布订阅服务 |
+| `Streams()` | 通信服务 | 返回流服务 |
+| `Liveness()` | 通信服务 | 返回存活检测服务 |
 | `RealmMetadata()` | 元数据 | 返回元数据 |
 
 ---

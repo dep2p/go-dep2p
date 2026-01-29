@@ -81,7 +81,7 @@ func main() {
     ctx := context.Background()
 
     // Single Relay server
-    relay, err := dep2p.StartNode(ctx,
+    relay, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetServer),
         dep2p.WithRelayServer(true),
         dep2p.WithListenPort(4001),
@@ -89,12 +89,16 @@ func main() {
         dep2p.WithConnectionLimits(100, 200),
     )
     if err != nil {
-        log.Fatalf("Start failed: %v", err)
+        log.Fatalf("Create failed: %v", err)
     }
     defer relay.Close()
+    if err := relay.Start(ctx); err != nil {
+        log.Fatalf("Start failed: %v", err)
+    }
 
-    // Join Realm (optional, for Realm Relay)
-    relay.Realm().JoinRealm(ctx, types.RealmID("my-realm"))
+    // Join Realm (optional, for Realm internal routing)
+    realm, _ := relay.Realm("my-realm")
+    _ = realm.Join(ctx)
 
     log.Printf("Relay started: %s", relay.ID())
     select {}
@@ -167,19 +171,21 @@ flowchart TB
 
 ```go
 // relay_cn.go
-relay, _ := dep2p.StartNode(ctx,
+relay, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetServer),
     dep2p.WithRelayServer(true),
     dep2p.WithListenPort(4001),
 )
-relay.Realm().JoinRealm(ctx, types.RealmID("my-realm"))
+_ = relay.Start(ctx)
+realm, _ := relay.Realm("my-realm")
+_ = realm.Join(ctx)
 ```
 
 #### Client Configuration
 
 ```go
 // Configure multiple Relays as Bootstrap
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithBootstrapPeers(
         "/ip4/cn-relay.example.com/udp/4001/quic-v1/p2p/...",
@@ -188,6 +194,7 @@ node, _ := dep2p.StartNode(ctx,
     ),
     dep2p.WithRelay(true),
 )
+_ = node.Start(ctx)
 ```
 
 ### Client Discovery Mechanism
@@ -311,7 +318,7 @@ flowchart TB
 │  ✅ Provides single-instance Relay Server implementation            │
 │  ✅ Provides Relay Client implementation                            │
 │  ✅ Provides AutoRelay discovery mechanism                          │
-│  ✅ Supports System Relay / Realm Relay layering                    │
+│  ✅ Supports unified Relay v2.0 architecture                        │
 │                                                                      │
 │  DeP2P **Does Not Provide**:                                        │
 │  ❌ Multi-instance Relay state synchronization                     │

@@ -98,11 +98,14 @@ func main() {
     // Step 1: Create and start node
     // ========================================
     fmt.Println("Step 1: Starting node...")
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithListenPort(8001), // Fixed port for easy connection
     )
     if err != nil {
+        log.Fatalf("Failed to create node: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
         log.Fatalf("Failed to start node: %v", err)
     }
     defer node.Close()
@@ -116,8 +119,12 @@ func main() {
     // Step 2: Join Realm
     // ========================================
     fmt.Println("Step 2: Joining Realm...")
-    realmID := types.RealmID("hello-world-demo")
-    if err := node.Realm().JoinRealm(ctx, realmID); err != nil {
+    realmID := "hello-world-demo"
+    realm, err := node.Realm(realmID)
+    if err != nil {
+        log.Fatalf("Failed to get Realm: %v", err)
+    }
+    if err := realm.Join(ctx); err != nil {
         log.Fatalf("Failed to join Realm: %v", err)
     }
     fmt.Printf("✅ Joined Realm: %s\n", realmID)
@@ -216,10 +223,13 @@ func main() {
     // Step 1: Create and start node
     // ========================================
     fmt.Println("Step 1: Starting node...")
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
+        log.Fatalf("Failed to create node: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
         log.Fatalf("Failed to start node: %v", err)
     }
     defer node.Close()
@@ -232,8 +242,12 @@ func main() {
     // Step 2: Join Realm (must match Node A)
     // ========================================
     fmt.Println("Step 2: Joining Realm...")
-    realmID := types.RealmID("hello-world-demo")
-    if err := node.Realm().JoinRealm(ctx, realmID); err != nil {
+    realmID := "hello-world-demo"
+    realm, err := node.Realm(realmID)
+    if err != nil {
+        log.Fatalf("Failed to get Realm: %v", err)
+    }
+    if err := realm.Join(ctx); err != nil {
         log.Fatalf("Failed to join Realm: %v", err)
     }
     fmt.Printf("✅ Joined Realm: %s\n", realmID)
@@ -434,8 +448,9 @@ Protocol identifiers distinguish different message types, typically in the forma
 ### 2. Realm Isolation
 
 ```go
-realmID := types.RealmID("hello-world-demo")
-node.Realm().JoinRealm(ctx, realmID)
+realmID := "hello-world-demo"
+realm, _ := node.Realm(realmID)
+_ = realm.Join(ctx)
 ```
 
 Both nodes must join the **same Realm** to communicate.

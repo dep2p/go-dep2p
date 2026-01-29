@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package realm.memberleave;
+
+option go_package = "github.com/dep2p/go-dep2p/pkg/lib/proto/realm/memberleave;memberleavepb";
+
+// ============================================================================
+//                         成员离开通知协议
+// ============================================================================
+//
+// MemberLeave 协议用于成员优雅断开时的主动通知，是快速断开检测机制的第二层。
+// 
+// 协议 ID: /dep2p/app/{realmID}/memberleave/1.0.0
+//
+// 参考：
+//   - design/02_constraints/protocol/L4_application/liveness.md
+//   - design/03_architecture/L3_behavioral/disconnect_detection.md
+//
+// ============================================================================
+
+// LeaveReason 离开原因
+enum LeaveReason {
+  // LEAVE_REASON_UNKNOWN 未知原因
+  LEAVE_REASON_UNKNOWN = 0;
+  // LEAVE_REASON_GRACEFUL 优雅离开（主动关闭）
+  LEAVE_REASON_GRACEFUL = 1;
+  // LEAVE_REASON_KICKED 被踢出（管理员操作）
+  LEAVE_REASON_KICKED = 2;
+  // LEAVE_REASON_WITNESS 见证人报告（其他成员检测到断开）
+  LEAVE_REASON_WITNESS = 3;
+}
+
+// MemberLeave 成员离开消息
+//
+// 当成员优雅离开 Realm 时广播此消息，通知其他成员立即更新成员列表。
+// 检测延迟目标：< 100ms
+//
+// 安全约束：
+//   - 必须包含发送者签名
+//   - 时间戳有效期：30s
+//   - 防重放：每个 peer_id + realm_id + timestamp 组合只处理一次
+message MemberLeave {
+  // peer_id 离开成员的 Peer ID（bytes 格式）
+  bytes peer_id = 1;
+  
+  // realm_id Realm ID（bytes 格式，与成员管理协议一致）
+  bytes realm_id = 2;
+  
+  // reason 离开原因
+  LeaveReason reason = 3;
+  
+  // timestamp 消息时间戳（Unix 纳秒）
+  int64 timestamp = 4;
+  
+  // signature 签名（使用 peer_id 对应的私钥签名）
+  // 签名内容：peer_id || realm_id || reason || timestamp
+  bytes signature = 5;
+}
+
+// MemberLeaveAck 成员离开确认
+//
+// 可选的确认消息，用于验证离开通知已被接收。
+message MemberLeaveAck {
+  // peer_id 发送确认的 Peer ID
+  bytes peer_id = 1;
+  
+  // leaving_peer_id 离开的 Peer ID
+  bytes leaving_peer_id = 2;
+  
+  // timestamp 确认时间戳
+  int64 timestamp = 3;
+}

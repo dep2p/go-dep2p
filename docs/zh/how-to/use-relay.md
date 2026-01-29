@@ -2,6 +2,10 @@
 
 本指南解答：**如何在 NAT 后使用中继连接其他节点？**
 
+> **版本说明**: 本文档基于 dep2p v2.0/v2.1 中继架构。
+> - **v2.0**: 引入强制性的 `RelayMap` 配置，废弃了旧的 `WithStaticRelays` 和 `WithAutoRelay` API。
+> - **v2.1**: 引入动态发现、区域感知选路、AuthMode 公私分离。
+
 ---
 
 ## 问题
@@ -13,7 +17,7 @@
 │                                                                      │
 │  "我在 NAT 后面，无法被其他节点直接连接，怎么办？"                   │
 │  "如何配置中继服务器？"                                              │
-│  "如何使用 AutoRelay 自动发现中继？"                                 │
+│  "v2.0 的 RelayMap 如何配置？"                                       │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -21,6 +25,8 @@
 ---
 
 ## Relay 概述
+
+### 工作原理
 
 ```mermaid
 flowchart LR
@@ -41,18 +47,100 @@ flowchart LR
     NodeA <-.->|"3. 通过 Relay 通信"| NodeB
 ```
 
+### 连接建立流程
+
+```mermaid
+sequenceDiagram
+    participant A as 节点 A<br/>拨号方
+    participant DHT as DHT<br/>地址发现
+    participant Relay as Relay 服务器
+    participant B as 节点 B<br/>被拨号方
+    
+    Note over B,Relay: 1. Reservation 阶段（节点 B 启动时）
+    B->>Relay: Reserve()
+    Relay-->>B: Reservation OK
+    
+    Note over B,DHT: 2. 地址发布阶段
+    B->>DHT: 发布 Relay 地址<br/>/p2p/Relay/p2p-circuit/p2p/B
+    
+    Note over A,Relay: 3. 连接建立阶段（节点 A 连接 B）
+    A->>DHT: FindPeer(B)
+    DHT-->>A: 返回 B 的地址<br/>（含 Relay 地址）
+    A->>Relay: Connect(B)
+    Relay->>Relay: 检查 B 的 Reservation
+    Relay->>B: 建立 Relay 连接
+    B-->>Relay: 连接确认
+    Relay-->>A: 连接成功
+    
+    A<-->B: 通过 Relay 通信
+```
+
 ### 两种角色
 
 | 角色 | 说明 | 配置 |
 |------|------|------|
-| **Relay Client** | 使用中继连接其他节点 | `WithRelay(true)` |
+| **Relay Client** | 使用中继连接其他节点 | `WithRelayMap(...)` (v2.0/v2.1) |
 | **Relay Server** | 为其他节点提供中继服务 | `WithRelayServer(true)` |
+
+### v2.0/v2.1 架构概览
+
+```mermaid
+graph TB
+    subgraph "配置层"
+        RelayMap[RelayMap<br/>必选配置<br/>至少 2 个 Relay]
+    end
+    
+    subgraph "RelayManager（核心）"
+        Probe[延迟探测<br/>启动时并发测试]
+        Select[Home Relay 选择<br/>最低延迟]
+        Reserve[Reservation<br/>Home + Backup]
+        Health[健康监控<br/>30s 间隔]
+        Switch[自动切换<br/>故障时触发]
+    end
+    
+    subgraph "v2.1 增强"
+        Discovery[DHT 动态发现<br/>候选池合并]
+        GeoIP[GeoIP 区域感知<br/>自动检测区域]
+        AuthMode[AuthMode 隔离<br/>公私分离]
+    end
+    
+    subgraph "地址发布"
+        Publish[地址发布<br/>Home Relay 优先]
+        DHT[DHT/PeerRecord<br/>其他节点可发现]
+    end
+    
+    RelayMap --> Probe
+    Probe --> Select
+    Select --> Reserve
+    Reserve --> Health
+    Health --> Switch
+    Switch --> Reserve
+    
+    Discovery --> Select
+    GeoIP --> Select
+    AuthMode --> Publish
+    
+    Reserve --> Publish
+    Publish --> DHT
+    
+    style RelayMap fill:#e1f5ff
+    style Probe fill:#fff4e1
+    style Select fill:#fff4e1
+    style Reserve fill:#fff4e1
+    style Health fill:#90ee90
+    style Switch fill:#90ee90
+    style Discovery fill:#e1f5ff
+    style GeoIP fill:#e1f5ff
+    style AuthMode fill:#e1f5ff
+```
 
 ---
 
-## 启用 Relay 客户端
+## 启用 Relay 客户端 (v2.0)
 
 ### 基础配置
+
+v2.0 要求必须显式配置 `RelayMap`，至少包含 2 个 Relay 服务器以确保冗余。
 
 ```go
 package main
@@ -63,23 +151,43 @@ import (
     "log"
 
     "github.com/dep2p/go-dep2p"
+    relayif "github.com/dep2p/go-dep2p/pkg/interfaces/relay"
     "github.com/dep2p/go-dep2p/pkg/types"
 )
 
 func main() {
     ctx := context.Background()
 
-    // 启用 Relay 客户端（默认已启用）
-    node, err := dep2p.StartNode(ctx,
-        dep2p.WithPreset(dep2p.PresetDesktop),
-        dep2p.WithRelay(true),  // 启用 Relay
+    // v2.0: 必须配置 RelayMap（至少 2 个 Relay）
+    relayMap := &relayif.RelayMap{
+        Version: "2025.1",
+        Entries: []relayif.RelayMapEntry{
+            {
+                NodeID: parseNodeID("12D3KooWRelay1..."),
+                Addrs:  []string{"/ip4/relay1.example.com/udp/4001/quic-v1"},
+                Region: "us-east",
+            },
+            {
+                NodeID: parseNodeID("12D3KooWRelay2..."),
+                Addrs:  []string{"/ip4/relay2.example.com/udp/4001/quic-v1"},
+                Region: "eu-west",
+            },
+        },
+    }
+
+    node, err := dep2p.New(ctx,
+        dep2p.WithRelayMap(relayMap),  // v2.0 必选
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     fmt.Printf("节点已启动: %s\n", node.ID().ShortString())
     fmt.Println("Relay 客户端已启用，可以通过中继连接其他节点")
@@ -121,17 +229,21 @@ func main() {
     defer cancel()
 
     // 配置 Relay 服务器
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetServer),
         dep2p.WithRelayServer(true),    // 启用 Relay 服务
         dep2p.WithListenPort(4001),     // 固定端口
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("relay-network"))
+    realm := node.Realm("relay-network")
+    realm.Join(ctx)
 
     fmt.Println("╔════════════════════════════════════════╗")
     fmt.Println("║         Relay 服务器已启动             ║")
@@ -154,7 +266,120 @@ func main() {
 
 ---
 
-## AutoRelay 自动发现
+## v2.1 增强功能
+
+### 区域感知选路
+
+v2.1 支持基于地理区域的 Relay 选择，优先选择同区域的 Relay 以降低延迟。
+
+```go
+// 配置带区域信息的 RelayMap
+relayMap := &relayif.RelayMap{
+    Version: "2025.1",
+    Entries: []relayif.RelayMapEntry{
+        {
+            NodeID:   asiaRelayID,
+            Addrs:    []string{"/ip4/1.2.3.4/udp/4001/quic-v1"},
+            Region:   "AS", // 亚洲区域
+            AuthMode: relayif.AuthModePublic,
+        },
+        {
+            NodeID:   usRelayID,
+            Addrs:    []string{"/ip4/5.6.7.8/udp/4001/quic-v1"},
+            Region:   "NA", // 北美区域
+            AuthMode: relayif.AuthModePublic,
+        },
+    },
+}
+
+// 可选：配置 GeoIP 数据库以自动检测本地区域
+geoipConfig := &geoipif.Config{
+    Enabled: true,
+    DBPath:  "/path/to/GeoLite2-City.mmdb",
+}
+
+node, err := dep2p.New(ctx,
+    dep2p.WithRelayMap(relayMap),
+    dep2p.WithGeoIP(geoipConfig),
+)
+if err != nil {
+    log.Fatalf("创建节点失败: %v", err)
+}
+if err := node.Start(ctx); err != nil {
+    log.Fatalf("启动节点失败: %v", err)
+}
+```
+
+### AuthMode 公私分离
+
+v2.1 支持 Relay 的公私分离：
+
+- **public**: 公共 Relay，任何节点可用
+- **realm_psk**: 私域 Relay，仅同 Realm 成员可用
+
+```go
+relayMap := &relayif.RelayMap{
+    Version: "2025.1",
+    Entries: []relayif.RelayMapEntry{
+        // 公共 Relay
+        {
+            NodeID:   publicRelayID,
+            Addrs:    []string{"/ip4/1.2.3.4/udp/4001/quic-v1"},
+            AuthMode: relayif.AuthModePublic,
+        },
+        // 私域 Relay（仅 "my-realm" 成员可用）
+        {
+            NodeID:   realmRelayID,
+            Addrs:    []string{"/ip4/10.0.0.1/udp/4001/quic-v1"},
+            AuthMode: relayif.AuthModeRealmPSK,
+            RealmID:  "my-realm",
+        },
+    },
+}
+
+node, err := dep2p.New(ctx,
+    dep2p.WithRelayMap(relayMap),
+)
+if err != nil {
+    log.Fatalf("创建节点失败: %v", err)
+}
+if err := node.Start(ctx); err != nil {
+    log.Fatalf("启动节点失败: %v", err)
+}
+
+// 获取连接用的 Relay
+rm := node.RelayManager()
+
+// 系统连接：只返回 public Relay
+systemRelay := rm.GetRelayForContext("")
+
+// Realm 连接：只返回匹配的 realm_psk Relay
+realmRelay := rm.GetRelayForContext("my-realm")
+```
+
+### 动态发现
+
+v2.1 支持从 DHT 动态发现 Relay 节点，与配置的 RelayMap 合并使用。
+
+```go
+// RelayManager 启动时会自动从 DHT 发现 Relay
+// 发现的 Relay 会与 RelayMap 合并到候选池
+
+rm := node.RelayManager()
+
+// 查看当前候选池
+candidates := rm.GetCandidates()
+for _, c := range candidates {
+    fmt.Printf("候选: %s, 来源: %s, 区域: %s\n",
+        c.NodeID.ShortString(), c.Source, c.Region)
+}
+```
+
+---
+
+## AutoRelay 自动发现 (已废弃)
+
+> **注意**: v2.0 已废弃 AutoRelay，请使用 `WithRelayMap()` 配置。
 
 DeP2P 会自动发现并使用网络中的 Relay 节点。
 
@@ -175,16 +400,20 @@ func main() {
     ctx := context.Background()
 
     // AutoRelay 在 Desktop/Server 预设中默认启用
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         // AutoRelay 会自动发现并连接 Relay 节点
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     // 等待 AutoRelay 发现 Relay 节点
     fmt.Println("等待 Relay 节点发现...")
@@ -224,17 +453,21 @@ func main() {
     // 指定 Relay 节点作为 Bootstrap
     relayAddr := "/ip4/1.2.3.4/udp/4001/quic-v1/p2p/5Q2STWvBRelayNode..."
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithBootstrapPeers(relayAddr),  // Relay 节点也可作为 Bootstrap
         dep2p.WithRelay(true),
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     fmt.Printf("节点已启动: %s\n", node.ID().ShortString())
     fmt.Println("将使用指定的 Relay 节点")
@@ -322,17 +555,21 @@ func main() {
     ctx, cancel := context.WithCancel(context.Background())
     defer cancel()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetServer),
         dep2p.WithRelayServer(true),
         dep2p.WithListenPort(4001),
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("demo-network"))
+    realm := node.Realm("demo-network")
+    realm.Join(ctx)
 
     fmt.Printf("Relay 服务器: %s\n", node.ID())
     for _, addr := range node.ListenAddrs() {
@@ -366,17 +603,21 @@ func main() {
 
     relayAddr := os.Getenv("RELAY_ADDR") // 从环境变量获取 Relay 地址
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithBootstrapPeers(relayAddr),
         dep2p.WithRelay(true),
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("demo-network"))
+    realm := node.Realm("demo-network")
+    realm.Join(ctx)
 
     fmt.Printf("节点 A: %s\n", node.ID())
     fmt.Println("等待节点 B 连接...")
@@ -416,17 +657,21 @@ func main() {
     relayAddr := os.Getenv("RELAY_ADDR")
     nodeAID := os.Getenv("NODE_A_ID")
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithBootstrapPeers(relayAddr),
         dep2p.WithRelay(true),
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("demo-network"))
+    realm := node.Realm("demo-network")
+    realm.Join(ctx)
 
     fmt.Printf("节点 B: %s\n", node.ID())
 
@@ -474,12 +719,13 @@ if err != nil {
 }
 
 // 3. 使用多个 Relay
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithBootstrapPeers(
         "/ip4/1.2.3.4/udp/4001/quic-v1/p2p/...",
         "/ip4/5.6.7.8/udp/4001/quic-v1/p2p/...",
     ),
 )
+_ = node.Start(ctx)
 ```
 
 ### 问题 2：通过 Relay 连接延迟很高
@@ -498,11 +744,12 @@ node, _ := dep2p.StartNode(ctx,
 ```go
 // 限制 Relay 连接数
 // 在 Relay 服务器配置中设置
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetServer),
     dep2p.WithRelayServer(true),
     dep2p.WithConnectionLimits(100, 200),  // 限制连接数
 )
+_ = node.Start(ctx)
 ```
 
 ---

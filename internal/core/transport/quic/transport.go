@@ -1,4 +1,4 @@
-// Package quic 提供基于 QUIC 的传输层实现
+// Package quic 实现 QUIC 传输
 package quic
 
 import (
@@ -6,442 +6,372 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
-	"strings"
 	"sync"
-	"sync/atomic"
+	"time"
 
+	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
+	"github.com/dep2p/go-dep2p/pkg/types"
 	"github.com/quic-go/quic-go"
-
-	"github.com/dep2p/go-dep2p/pkg/interfaces/endpoint"
-	identityif "github.com/dep2p/go-dep2p/pkg/interfaces/identity"
-	transportif "github.com/dep2p/go-dep2p/pkg/interfaces/transport"
 )
 
-// Transport QUIC 传输层实现
+// 确保实现了接口
+var _ pkgif.Transport = (*Transport)(nil)
+
+// Transport QUIC 传输
+//
+// 使用共享的 UDP socket 进行监听和拨号，这对于 NAT 打洞至关重要：
+// - 打洞时需要使用与监听相同的本地端口
+// - quic.Transport 支持在同一个 socket 上同时监听和拨号
 type Transport struct {
-	config    transportif.Config
-	identity  identityif.Identity
-	tlsConfig *tls.Config
+	mu sync.RWMutex
 
-	listeners   map[string]*Listener
-	listenersMu sync.RWMutex
+	localPeer     types.PeerID
+	identity      pkgif.Identity
+	serverTLSConf *tls.Config
+	clientTLSConf *tls.Config
+	config        *quic.Config
 
-	conns   map[string]*Conn
-	connsMu sync.RWMutex
+	// 共享的 QUIC Transport 和 UDP socket
+	// 用于在同一端口上监听和拨号，提高 NAT 打洞成功率
+	quicTransport *quic.Transport
+	udpConn       *net.UDPConn
 
-	// 0-RTT 支持
-	sessionStore *SessionStore
-	enable0RTT   atomic.Bool
+	listeners map[string]*Listener
+	closed    bool
 
-	// 连接迁移支持
-	migrator   *ConnectionMigrator
-	migratorMu sync.RWMutex
-
-	closed atomic.Bool
+	// rebind 支持
+	rebindSupport *RebindSupport
 }
 
-// 确保实现 transport.Transport 接口
-var _ transportif.Transport = (*Transport)(nil)
+// New 创建 QUIC 传输
+//
+// 参数：
+//   - localPeer: 本地节点 ID
+//   - identity: 节点身份（用于生成 TLS 配置）
+//
+// 返回：
+//   - *Transport: QUIC 传输实例
+func New(localPeer types.PeerID, identity pkgif.Identity) *Transport {
+	var serverTLS, clientTLS *tls.Config
 
-// NewTransport 创建 QUIC 传输层
-func NewTransport(config transportif.Config, identity identityif.Identity) (*Transport, error) {
-	// 生成 TLS 配置
-	tlsConfigGen := NewTLSConfig(identity)
-	tlsConfig, err := tlsConfigGen.GenerateConfig()
-	if err != nil {
-		return nil, fmt.Errorf("生成 TLS 配置失败: %w", err)
+	// 从 Identity 生成 TLS 配置
+	if identity != nil {
+		var err error
+		serverTLS, clientTLS, err = NewTLSConfig(identity)
+		if err != nil {
+			// 回退到简化配置（仅用于测试）
+			serverTLS = &tls.Config{
+				MinVersion: tls.VersionTLS13,
+				NextProtos: []string{"dep2p"},
+			}
+			clientTLS = serverTLS
+		}
+	} else {
+		// 如果没有 Identity，使用默认配置（不推荐）
+		serverTLS = &tls.Config{
+			MinVersion: tls.VersionTLS13,
+			NextProtos: []string{"dep2p"},
+		}
+		clientTLS = serverTLS
 	}
-
-	// 每个 Transport 使用独立的 Session Store，避免不同节点间的会话混淆
-	// 注意：在测试场景中，多个节点可能运行在同一进程中，
-	// 如果共享 Session Store，会导致错误的会话恢复
-	sessionStore := NewSessionStore(DefaultSessionStoreConfig())
-
-	// 配置 TLS Session Cache
-	tlsConfig.ClientSessionCache = sessionStore
 
 	t := &Transport{
-		config:       config,
-		identity:     identity,
-		tlsConfig:    tlsConfig,
-		listeners:    make(map[string]*Listener),
-		conns:        make(map[string]*Conn),
-		sessionStore: sessionStore,
+		localPeer:     localPeer,
+		identity:      identity,
+		serverTLSConf: serverTLS,
+		clientTLSConf: clientTLS,
+		config: &quic.Config{
+			// MaxIdleTimeout: 连接空闲超时时间
+			// 快速断开检测：设置为 6s，确保非优雅断开能在 ~9s 内检测到
+			// 计算：KeepAlivePeriod(3s) + MaxIdleTimeout(6s) ≈ 9s 最大检测延迟
+			// 参考：design/02_constraints/protocol/L2_transport/quic.md
+			MaxIdleTimeout: 6 * time.Second,
+			// KeepAlivePeriod: 客户端发送 KeepAlive 的间隔
+			// 快速断开检测：设置为 3s，确保连接活跃性
+			// 网络开销：~20 bytes/packet，100连接 = ~667 bytes/s，可忽略不计
+			KeepAlivePeriod:       3 * time.Second,
+			MaxIncomingStreams:    1024,
+			MaxIncomingUniStreams: 1024,
+			EnableDatagrams:       true,
+			Allow0RTT:             true,
+		},
+		listeners:     make(map[string]*Listener),
+		rebindSupport: NewRebindSupport(),
 	}
-	t.enable0RTT.Store(true)
-	return t, nil
+
+	// 设置 rebind 函数
+	t.rebindSupport.SetRebindFunc(t.doRebind)
+
+	return t
 }
 
-// NewTransportWith0RTT 创建支持 0-RTT 的 QUIC 传输层
-func NewTransportWith0RTT(config transportif.Config, identity identityif.Identity, sessionStoreConfig SessionStoreConfig) (*Transport, error) {
-	// 生成 TLS 配置
-	tlsConfigGen := NewTLSConfig(identity)
-	tlsConfig, err := tlsConfigGen.GenerateConfig()
-	if err != nil {
-		return nil, fmt.Errorf("生成 TLS 配置失败: %w", err)
+// Dial 拨号连接
+//
+// 使用共享的 quic.Transport 拨号，复用监听端口。
+// 这对于 NAT 打洞至关重要：打洞时需要使用与监听相同的本地端口，
+// 否则 NAT 会分配新的外部端口映射，导致打洞失败。
+func (t *Transport) Dial(ctx context.Context, raddr types.Multiaddr, peerID types.PeerID) (pkgif.Connection, error) {
+	t.mu.Lock()
+	if t.closed {
+		t.mu.Unlock()
+		return nil, ErrTransportClosed
 	}
 
-	// 创建自定义 Session Store
-	sessionStore := NewSessionStore(sessionStoreConfig)
-
-	// 配置 TLS Session Cache
-	tlsConfig.ClientSessionCache = sessionStore
-
-	t := &Transport{
-		config:       config,
-		identity:     identity,
-		tlsConfig:    tlsConfig,
-		listeners:    make(map[string]*Listener),
-		conns:        make(map[string]*Conn),
-		sessionStore: sessionStore,
-	}
-	t.enable0RTT.Store(true)
-	return t, nil
-}
-
-// NewTransportWithTLS 使用自定义 TLS 配置创建传输层
-func NewTransportWithTLS(config transportif.Config, tlsConfig *tls.Config) *Transport {
-	return &Transport{
-		config:    config,
-		tlsConfig: tlsConfig,
-		listeners: make(map[string]*Listener),
-		conns:     make(map[string]*Conn),
-	}
-}
-
-// Dial 建立出站连接
-func (t *Transport) Dial(ctx context.Context, addr endpoint.Address) (transportif.Conn, error) {
-	return t.DialWithOptions(ctx, addr, transportif.DefaultDialOptions())
-}
-
-// DialWithOptions 使用选项建立连接
-func (t *Transport) DialWithOptions(ctx context.Context, addr endpoint.Address, opts transportif.DialOptions) (transportif.Conn, error) {
-	if t.closed.Load() {
-		return nil, fmt.Errorf("传输层已关闭")
-	}
-
-	// 转换地址
-	quicAddr, ok := addr.(*Address)
-	if !ok {
-		// 尝试从字符串解析
-		addrStr := addr.String()
-		var err error
-
-		// 尝试解析多地址格式 (/ip4/127.0.0.1/udp/8080/quic-v1)
-		if strings.HasPrefix(addrStr, "/") {
-			quicAddr, err = ParseMultiaddr(addrStr)
-		} else {
-			// 尝试普通地址格式 (127.0.0.1:8080)
-			quicAddr, err = ParseAddress(addrStr)
-		}
+	// 如果还没有 quicTransport（没有先 Listen），创建一个使用随机端口
+	if t.quicTransport == nil {
+		conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
 		if err != nil {
-			return nil, fmt.Errorf("无效的地址格式: %w", err)
+			t.mu.Unlock()
+			return nil, fmt.Errorf("listen udp for dial: %w", err)
 		}
+		t.udpConn = conn
+		t.quicTransport = &quic.Transport{Conn: conn}
 	}
 
-	// 解析 UDP 地址
-	udpAddr, err := quicAddr.ToUDPAddr()
+	quicTransport := t.quicTransport
+	t.mu.Unlock()
+
+	// 解析地址
+	udpAddr, err := parseMultiaddr(raddr)
 	if err != nil {
-		return nil, fmt.Errorf("解析 UDP 地址失败: %w", err)
+		return nil, fmt.Errorf("parse address: %w", err)
 	}
 
-	// 设置超时
-	if opts.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
-		defer cancel()
-	}
-
-	// 创建 QUIC 配置
-	quicConfig := t.getQuicConfig()
-
-	// 建立 QUIC 连接
-	quicConn, err := quic.DialAddr(ctx, udpAddr.String(), t.getClientTLSConfig(), quicConfig)
+	// 使用共享 quic.Transport 拨号（复用监听端口！）
+	quicConn, err := quicTransport.Dial(ctx, udpAddr, t.clientTLSConf, t.config)
 	if err != nil {
-		return nil, fmt.Errorf("QUIC 拨号失败: %w", err)
+		return nil, fmt.Errorf("dial: %w", err)
 	}
 
-	// 创建连接封装
-	conn := NewConn(quicConn, t)
-
-	// 保存连接
-	t.connsMu.Lock()
-	t.conns[quicAddr.String()] = conn
-	t.connsMu.Unlock()
-
-	return conn, nil
+	return newConnection(quicConn, t.localPeer, peerID, raddr, pkgif.DirOutbound), nil
 }
 
-// Listen 监听入站连接
-func (t *Transport) Listen(addr endpoint.Address) (transportif.Listener, error) {
-	return t.ListenWithOptions(addr, transportif.DefaultListenOptions())
+// CanDial 检查是否支持拨号
+func (t *Transport) CanDial(addr types.Multiaddr) bool {
+	// 检查是否为 QUIC 地址
+	_, err := addr.ValueForProtocol(types.ProtocolQUIC_V1)
+	return err == nil
 }
 
-// ListenWithOptions 使用选项监听
-func (t *Transport) ListenWithOptions(addr endpoint.Address, _ transportif.ListenOptions) (transportif.Listener, error) {
-	if t.closed.Load() {
-		return nil, fmt.Errorf("传输层已关闭")
+// Listen 监听地址
+//
+// 使用共享 UDP socket 和 quic.Transport，使得后续 Dial 可以复用同一端口。
+// 这对于 NAT 打洞至关重要：打洞时需要使用与监听相同的本地端口。
+func (t *Transport) Listen(laddr types.Multiaddr) (pkgif.Listener, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.closed {
+		return nil, ErrTransportClosed
 	}
 
-	// 转换地址
-	quicAddr, ok := addr.(*Address)
-	if !ok {
-		// 尝试从字符串解析
-		addrStr := addr.String()
-		var err error
+	// 解析地址
+	udpAddr, err := parseMultiaddr(laddr)
+	if err != nil {
+		return nil, fmt.Errorf("parse address: %w", err)
+	}
 
-		// 尝试解析多地址格式 (/ip4/127.0.0.1/udp/8080/quic-v1)
-		if strings.HasPrefix(addrStr, "/") {
-			quicAddr, err = ParseMultiaddr(addrStr)
-		} else {
-			// 尝试普通地址格式 (127.0.0.1:8080)
-			quicAddr, err = ParseAddress(addrStr)
-		}
+	// 首次监听时创建共享 UDP socket 和 quic.Transport
+	if t.udpConn == nil {
+		conn, err := net.ListenUDP("udp", udpAddr)
 		if err != nil {
-			return nil, fmt.Errorf("无效的地址格式: %w", err)
+			return nil, fmt.Errorf("listen udp: %w", err)
 		}
+		t.udpConn = conn
+		t.quicTransport = &quic.Transport{Conn: conn}
 	}
 
-	// 解析 UDP 地址
-	udpAddr, err := quicAddr.ToUDPAddr()
+	// 使用共享 quic.Transport 监听
+	quicListener, err := t.quicTransport.Listen(t.serverTLSConf, t.config)
 	if err != nil {
-		return nil, fmt.Errorf("解析 UDP 地址失败: %w", err)
+		return nil, fmt.Errorf("listen: %w", err)
 	}
 
-	// 根据地址类型选择正确的网络协议
-	network := "udp4"
-	if quicAddr.Network() == "ip6" || (udpAddr.IP != nil && udpAddr.IP.To4() == nil) {
-		network = "udp6"
+	// 获取实际监听地址（可能端口为 0 时动态分配）
+	actualAddr := t.udpConn.LocalAddr().(*net.UDPAddr)
+	var actualAddrStr string
+	if ip4 := actualAddr.IP.To4(); ip4 != nil {
+		actualAddrStr = fmt.Sprintf("/ip4/%s/udp/%d/quic-v1", ip4.String(), actualAddr.Port)
+	} else if actualAddr.IP.IsUnspecified() {
+		actualAddrStr = fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", actualAddr.Port)
+	} else {
+		actualAddrStr = fmt.Sprintf("/ip6/%s/udp/%d/quic-v1", actualAddr.IP.String(), actualAddr.Port)
+	}
+	actualMultiaddr, _ := types.NewMultiaddr(actualAddrStr)
+
+	listener := &Listener{
+		quicListener: quicListener,
+		localAddr:    actualMultiaddr,
+		localPeer:    t.localPeer,
+		transport:    t,
 	}
 
-	// 监听 UDP
-	udpConn, err := net.ListenUDP(network, udpAddr)
-	if err != nil {
-		return nil, fmt.Errorf("监听 UDP 失败: %w", err)
-	}
-
-	// 创建 QUIC 配置
-	quicConfig := t.getQuicConfig()
-
-	// 创建 QUIC 监听器
-	quicListener, err := quic.Listen(udpConn, t.tlsConfig, quicConfig)
-	if err != nil {
-		udpConn.Close()
-		return nil, fmt.Errorf("创建 QUIC 监听器失败: %w", err)
-	}
-
-	// 获取实际监听地址
-	actualAddr := udpConn.LocalAddr().(*net.UDPAddr)
-	listenAddr := NewAddress(actualAddr.IP.String(), actualAddr.Port)
-
-	// 创建监听器封装
-	listener := NewListener(quicListener, listenAddr, t)
-
-	// 保存监听器
-	t.listenersMu.Lock()
-	t.listeners[listenAddr.String()] = listener
-	t.listenersMu.Unlock()
+	t.listeners[actualAddrStr] = listener
 
 	return listener, nil
 }
 
 // Protocols 返回支持的协议
-func (t *Transport) Protocols() []string {
-	return []string{"quic", "quic-v1"}
+func (t *Transport) Protocols() []int {
+	return []int{types.ProtocolQUIC_V1}
 }
 
-// CanDial 检查是否可以拨号到指定地址
-func (t *Transport) CanDial(addr endpoint.Address) bool {
-	if addr == nil {
-		return false
-	}
-
-	// QUIC 支持 IPv4 和 IPv6
-	network := addr.Network()
-	return network == "ip4" || network == "ip6" || network == "udp" || network == "udp4" || network == "udp6"
-}
-
-// Proxy 返回是否为代理传输
-//
-// QUIC 是直连传输，不通过中间节点转发
-func (t *Transport) Proxy() bool {
-	return false
-}
-
-// Close 关闭传输层
+// Close 关闭传输
 func (t *Transport) Close() error {
-	if t.closed.Swap(true) {
-		return nil // 已经关闭
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.closed {
+		return nil
 	}
 
-	var errs []error
-
-	// 关闭所有连接
-	t.connsMu.Lock()
-	for _, conn := range t.conns {
-		if err := conn.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	t.conns = make(map[string]*Conn)
-	t.connsMu.Unlock()
+	t.closed = true
 
 	// 关闭所有监听器
-	t.listenersMu.Lock()
-	for _, listener := range t.listeners {
-		if err := listener.Close(); err != nil {
-			errs = append(errs, err)
-		}
+	for _, l := range t.listeners {
+		l.Close()
 	}
-	t.listeners = make(map[string]*Listener)
-	t.listenersMu.Unlock()
 
-	// 关闭连接迁移器
-	t.migratorMu.Lock()
-	if t.migrator != nil {
-		if err := t.migrator.Stop(); err != nil {
-			errs = append(errs, err)
-		}
+	// 关闭共享的 quicTransport（会关闭所有连接）
+	if t.quicTransport != nil {
+		t.quicTransport.Close()
+		t.quicTransport = nil
 	}
-	t.migratorMu.Unlock()
 
-	// 注意：sessionStore 可能是全局共享的，不在这里关闭
-	// 如果是自定义的非全局 sessionStore，调用者应负责关闭
-
-	if len(errs) > 0 {
-		return fmt.Errorf("关闭时发生 %d 个错误: %v", len(errs), errs[0])
+	// 关闭 UDP socket
+	if t.udpConn != nil {
+		t.udpConn.Close()
+		t.udpConn = nil
 	}
 
 	return nil
 }
 
-// getQuicConfig 获取 QUIC 配置
-func (t *Transport) getQuicConfig() *quic.Config {
-	config := &quic.Config{
-		MaxIdleTimeout:        t.config.IdleTimeout,
-		KeepAlivePeriod:       t.config.IdleTimeout / 2,
-		MaxIncomingStreams:    int64(t.config.MaxStreamsPerConn),
-		MaxIncomingUniStreams: int64(t.config.MaxStreamsPerConn / 2),
+// Rebind 重新绑定 socket
+//
+// 当网络接口变化时（如 4G→WiFi），需要重新绑定 socket 到新的网络接口。
+// 参考 iroh-main 的实现：关闭旧 socket，创建新 socket 绑定到新地址。
+func (t *Transport) Rebind(ctx context.Context) error {
+	if t.rebindSupport == nil {
+		return nil
+	}
+	return t.rebindSupport.Rebind(ctx)
+}
+
+// doRebind 执行实际的 rebind 操作
+//
+// 重新创建共享 UDP socket 和 quic.Transport：
+// 1. 保存当前监听地址
+// 2. 关闭旧的 quicTransport 和 udpConn
+// 3. 创建新的 UDP socket 和 quic.Transport
+// 4. 重新创建监听器
+func (t *Transport) doRebind(_ context.Context) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.closed {
+		return ErrTransportClosed
 	}
 
-	// 启用 0-RTT
-	if t.enable0RTT.Load() {
-		config.Allow0RTT = true
+	// 收集所有监听地址
+	addrs := make([]types.Multiaddr, 0, len(t.listeners))
+	for _, l := range t.listeners {
+		addrs = append(addrs, l.localAddr)
 	}
 
-	return config
-}
+	// 关闭所有旧监听器
+	for _, l := range t.listeners {
+		l.Close()
+	}
+	t.listeners = make(map[string]*Listener)
 
-// getClientTLSConfig 获取客户端 TLS 配置
-func (t *Transport) getClientTLSConfig() *tls.Config {
-	// 复制 TLS 配置，客户端不需要 ClientAuth
-	clientConfig := t.tlsConfig.Clone()
-	clientConfig.ClientAuth = tls.NoClientCert
-
-	// 使用 Session Cache 实现 0-RTT
-	if t.sessionStore != nil {
-		clientConfig.ClientSessionCache = t.sessionStore
+	// 关闭旧的 quicTransport（会关闭所有连接）
+	if t.quicTransport != nil {
+		t.quicTransport.Close()
+		t.quicTransport = nil
 	}
 
-	return clientConfig
-}
-
-// SessionStore 返回 Session Store
-func (t *Transport) SessionStore() *SessionStore {
-	return t.sessionStore
-}
-
-// Is0RTTEnabled 检查是否启用 0-RTT
-func (t *Transport) Is0RTTEnabled() bool {
-	return t.enable0RTT.Load()
-}
-
-// Enable0RTT 启用 0-RTT（线程安全）
-func (t *Transport) Enable0RTT(enable bool) {
-	t.enable0RTT.Store(enable)
-}
-
-// ============================================================================
-//                              连接迁移
-// ============================================================================
-
-// Migrator 返回连接迁移器
-func (t *Transport) Migrator() *ConnectionMigrator {
-	t.migratorMu.RLock()
-	defer t.migratorMu.RUnlock()
-	return t.migrator
-}
-
-// EnableMigration 启用连接迁移
-func (t *Transport) EnableMigration(ctx context.Context, config MigratorConfig) error {
-	t.migratorMu.Lock()
-	if t.migrator == nil {
-		t.migrator = NewConnectionMigrator(t)
+	// 关闭旧的 UDP socket
+	if t.udpConn != nil {
+		t.udpConn.Close()
+		t.udpConn = nil
 	}
-	migrator := t.migrator
-	t.migratorMu.Unlock()
 
-	return migrator.Start(ctx, config)
-}
+	// 为每个地址创建新的共享 socket 和监听器
+	var lastErr error
+	for _, addr := range addrs {
+		// 解析地址
+		udpAddr, err := parseMultiaddr(addr)
+		if err != nil {
+			lastErr = err
+			continue
+		}
 
-// OnAddressChange 注册地址变更回调
-func (t *Transport) OnAddressChange(callback AddressChangeCallback) {
-	t.migratorMu.Lock()
-	if t.migrator == nil {
-		t.migrator = NewConnectionMigrator(t)
+		// 创建新的 UDP socket（仅首次）
+		if t.udpConn == nil {
+			conn, err := net.ListenUDP("udp", udpAddr)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			t.udpConn = conn
+			t.quicTransport = &quic.Transport{Conn: conn}
+		}
+
+		// 使用共享 quic.Transport 创建监听器
+		quicListener, err := t.quicTransport.Listen(t.serverTLSConf, t.config)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		listener := &Listener{
+			quicListener: quicListener,
+			localAddr:    addr,
+			localPeer:    t.localPeer,
+			transport:    t,
+		}
+
+		t.listeners[addr.String()] = listener
 	}
-	migrator := t.migrator
-	t.migratorMu.Unlock()
 
-	migrator.OnAddressChange(callback)
+	// 更新 rebind 支持的当前地址
+	if t.udpConn != nil && t.rebindSupport != nil {
+		t.rebindSupport.UpdateAddr(t.udpConn.LocalAddr().(*net.UDPAddr))
+	}
+
+	return lastErr
 }
 
-// GetListener 获取指定地址的监听器
-func (t *Transport) GetListener(addr string) *Listener {
-	t.listenersMu.RLock()
-	defer t.listenersMu.RUnlock()
-	return t.listeners[addr]
+// GetRebindSupport 获取 rebind 支持
+func (t *Transport) GetRebindSupport() *RebindSupport {
+	return t.rebindSupport
 }
 
-// GetConn 获取指定地址的连接
-func (t *Transport) GetConn(addr string) *Conn {
-	t.connsMu.RLock()
-	defer t.connsMu.RUnlock()
-	return t.conns[addr]
-}
+// parseMultiaddr 解析 Multiaddr 到 UDP 地址
+func parseMultiaddr(addr types.Multiaddr) (*net.UDPAddr, error) {
+	// 提取 IP
+	ip, err := addr.ValueForProtocol(types.ProtocolIP4)
+	if err != nil {
+		// 尝试 IPv6
+		ip, err = addr.ValueForProtocol(types.ProtocolIP6)
+		if err != nil {
+			return nil, fmt.Errorf("no IP in address")
+		}
+	}
 
-// RemoveConn 移除连接
-func (t *Transport) RemoveConn(addr string) {
-	t.connsMu.Lock()
-	defer t.connsMu.Unlock()
-	delete(t.conns, addr)
-}
+	// 提取 UDP 端口
+	portStr, err := addr.ValueForProtocol(types.ProtocolUDP)
+	if err != nil {
+		return nil, fmt.Errorf("no UDP port in address")
+	}
 
-// Identity 返回身份
-func (t *Transport) Identity() identityif.Identity {
-	return t.identity
-}
+	// 解析端口
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
 
-// Config 返回配置
-func (t *Transport) Config() transportif.Config {
-	return t.config
-}
-
-// IsClosed 检查传输层是否已关闭
-func (t *Transport) IsClosed() bool {
-	return t.closed.Load()
-}
-
-// ListenersCount 返回监听器数量
-func (t *Transport) ListenersCount() int {
-	t.listenersMu.RLock()
-	defer t.listenersMu.RUnlock()
-	return len(t.listeners)
-}
-
-// ConnsCount 返回连接数量
-func (t *Transport) ConnsCount() int {
-	t.connsMu.RLock()
-	defer t.connsMu.RUnlock()
-	return len(t.conns)
+	return &net.UDPAddr{
+		IP:   net.ParseIP(ip),
+		Port: port,
+	}, nil
 }

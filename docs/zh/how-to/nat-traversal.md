@@ -93,16 +93,20 @@ func main() {
     ctx := context.Background()
 
     // NAT 穿透在 Desktop 预设中默认启用
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithNAT(true),  // 显式启用 NAT
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     fmt.Printf("节点已启动: %s\n", node.ID().ShortString())
     fmt.Println("NAT 穿透已启用")
@@ -140,17 +144,21 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithNAT(true),
         // UPnP 和 NAT-PMP 在 NAT 启用时自动使用
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     // 等待 NAT 映射完成
     time.Sleep(5 * time.Second)
@@ -186,17 +194,21 @@ func main() {
 
     // 自定义 STUN 服务器（可选）
     // 默认使用 Google STUN 服务器
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithNAT(true),
         // STUN 服务器通过内部配置指定
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     fmt.Printf("节点已启动: %s\n", node.ID().ShortString())
 }
@@ -231,16 +243,20 @@ func main() {
     ctx := context.Background()
 
     // Hole Punching 在 Desktop 预设中默认启用
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         // EnableHolePunching 通过预设自动配置
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     fmt.Println("Hole Punching 已启用")
     fmt.Println("当通过 Relay 连接时，系统会自动尝试打洞升级为直连")
@@ -269,17 +285,21 @@ func main() {
     ctx := context.Background()
 
     // 公网服务器可以显式声明外部地址
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetServer),
         dep2p.WithListenPort(4001),
         dep2p.WithExternalAddrs("/ip4/203.0.113.5/udp/4001/quic-v1"),
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     fmt.Println("已声明外部地址")
     fmt.Println("通告地址:")
@@ -288,6 +308,55 @@ func main() {
     }
 }
 ```
+
+---
+
+## STUN 即验证策略（v1.2）
+
+DeP2P v1.2 采用 **STUN 即验证策略**：STUN 协议本身即为第三方验证机制。
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    STUN 即验证策略                                    │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  问题：冷启动时的"鸡和蛋"困境                                        │
+│  ─────────────────────────────                                      │
+│  • 需要验证地址才能发布到 DHT                                        │
+│  • 但验证需要其他节点来 dial-back                                    │
+│  • 冷启动时没有其他节点连接                                          │
+│                                                                     │
+│  解决方案：STUN 发现的地址直接标记为已验证                            │
+│  ─────────────────────────────────────────                          │
+│  • STUN 服务器是可信第三方                                           │
+│  • STUN 返回的公网地址可直接使用                                      │
+│  • dial-back 验证作为可选增强                                        │
+│                                                                     │
+│  地址优先级（v2.0）                                                  │
+│  ──────────────────                                                 │
+│  • VerifiedDirect: 100（dial-back 验证成功）                        │
+│  • STUNDiscovered:  75（STUN 发现，默认可信）                        │
+│  • RelayAddress:    50（Relay 中继地址）                             │
+│  • Unverified:       0（未验证）                                     │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### trust_stun_addresses 配置
+
+对于云服务器，可以启用完全信任 STUN 地址：
+
+```go
+node, _ := dep2p.New(ctx,
+    dep2p.WithPreset(dep2p.PresetServer),
+    dep2p.WithTrustSTUNAddresses(true),  // STUN 地址立即可用
+)
+```
+
+**效果**：
+- STUN 探测的地址立即标记为公开可用
+- 跳过入站连接验证步骤
+- 加速地址发布到 DHT
 
 ---
 
@@ -374,10 +443,11 @@ sequenceDiagram
 
 ```go
 // 确保启用中继作为备选
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithRelay(true),  // 确保启用 Relay
 )
+_ = node.Start(ctx)
 ```
 
 ### 问题 3：无法获取公网地址
@@ -394,9 +464,10 @@ node, _ := dep2p.StartNode(ctx,
 // 系统会自动获取 Relay 地址
 
 // 2. 手动声明地址（如果知道公网 IP）
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithExternalAddrs("/ip4/公网IP/udp/4001/quic-v1"),
 )
+_ = node.Start(ctx)
 
 // 3. 检查地址
 candidates := node.BootstrapCandidates()
@@ -404,6 +475,60 @@ for _, c := range candidates {
     fmt.Printf("候选地址: %s (%s)\n", c.Addr, c.Type)
 }
 ```
+
+---
+
+## QUIC 共享 Socket 打洞
+
+DeP2P 使用 QUIC 共享 Socket 优化打洞成功率：
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    QUIC 共享 Socket 打洞                             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  传统方式：                                                          │
+│  ├─ Listen Socket  ────► 监听端口                                   │
+│  └─ Dial Socket    ────► 随机端口（与监听端口不同）                  │
+│                                                                     │
+│  DeP2P 共享 Socket：                                                │
+│  └─ quic.Transport ────► 同一端口同时 Listen 和 Dial               │
+│                                                                     │
+│  优势：                                                              │
+│  • 打洞成功率提高（端口映射一致）                                     │
+│  • 减少 NAT 映射数量                                                 │
+│  • 更好的对称 NAT 支持                                               │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## STUN 信任模式（云服务器）
+
+对于有真实公网 IP 的云服务器，可以启用 STUN 信任模式：
+
+```go
+node, _ := dep2p.New(ctx,
+    dep2p.WithPreset(dep2p.PresetServer),
+    dep2p.WithTrustSTUNAddresses(true),  // 信任 STUN 地址
+)
+```
+
+**工作原理**：
+1. STUN 探测发现公网地址
+2. 立即将地址标记为公开可用
+3. 跳过入站连接验证步骤
+4. 加速其他节点发现
+
+**适用场景**：
+- 云服务器（AWS、阿里云、腾讯云等）
+- 有真实公网 IP
+- 网络配置确保入站流量可达
+
+**不适用**：
+- NAT 后的节点
+- 网络环境复杂（防火墙规则多变）
 
 ---
 
@@ -444,4 +569,5 @@ for _, c := range candidates {
 - [如何使用中继](use-relay.md)
 - [如何分享地址](share-address.md)
 - [如何 Bootstrap 网络](bootstrap-network.md)
-- [跨 NAT 连接教程](../tutorials/03-cross-nat-connect.md)
+- [云服务器部署教程](../tutorials/03-cloud-deploy.md)
+- [配置参考](../reference/configuration.md)

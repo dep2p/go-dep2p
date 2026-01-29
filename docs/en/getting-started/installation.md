@@ -103,7 +103,7 @@ Run the test:
 ```bash
 go run main.go
 # Output:
-# DeP2P Version: 0.1.0
+# DeP2P Version: v0.2.0-beta.1
 # Installation successful!
 ```
 
@@ -128,7 +128,7 @@ module your-project
 
 go 1.21
 
-require github.com/dep2p/go-dep2p v0.1.0
+require github.com/dep2p/go-dep2p v0.2.0-beta.1
 ```
 
 ---

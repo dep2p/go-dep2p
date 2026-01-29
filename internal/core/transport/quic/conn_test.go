@@ -6,254 +6,526 @@ import (
 	"time"
 
 	"github.com/dep2p/go-dep2p/internal/core/identity"
-	identityif "github.com/dep2p/go-dep2p/pkg/interfaces/identity"
-	transportif "github.com/dep2p/go-dep2p/pkg/interfaces/transport"
+	"github.com/dep2p/go-dep2p/pkg/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// TestConnBasicProperties 测试连接基本属性
-func TestConnBasicProperties(t *testing.T) {
-	clientConn, serverConn, cleanup := setupTestConnectionForConn(t)
-	defer cleanup()
+// TestConnection_NewStream 测试创建流
+func TestConnection_NewStream(t *testing.T) {
+	// 需要建立真实的 QUIC 连接才能测试 NewStream
+	// 使用完整的端到端测试
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
 
-	// 测试本地地址
-	if clientConn.LocalAddr() == nil {
-		t.Error("客户端本地地址不应为 nil")
-	}
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
 
-	// 测试远程地址
-	if clientConn.RemoteAddr() == nil {
-		t.Error("客户端远程地址不应为 nil")
-	}
+	// 创建传输（使用完整身份配置）
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
 
-	// 测试 net.Addr
-	if clientConn.LocalNetAddr() == nil {
-		t.Error("LocalNetAddr 不应为 nil")
-	}
-	if clientConn.RemoteNetAddr() == nil {
-		t.Error("RemoteNetAddr 不应为 nil")
-	}
+	// Peer2 监听
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
 
-	// 测试传输协议名称
-	if clientConn.Transport() != "quic" {
-		t.Errorf("传输协议应为 quic，实际为 %s", clientConn.Transport())
-	}
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
 
-	// 测试关闭状态
-	if clientConn.IsClosed() {
-		t.Error("新连接不应处于关闭状态")
-	}
+	actualAddr := listener.Addr()
 
-	// 测试 Context
-	ctx := clientConn.Context()
-	if ctx == nil {
-		t.Error("Context 不应为 nil")
-	}
-
-	// 测试 ConnectionState
-	state := clientConn.ConnectionState()
-	t.Logf("连接状态: Protocol=%s, Version=%s, CipherSuite=%s", state.Protocol, state.Version, state.CipherSuite)
-
-	// 测试 QuicConn
-	if clientConn.QuicConn() == nil {
-		t.Error("QuicConn 不应为 nil")
-	}
-
-	_ = serverConn // 使用变量
-}
-
-// TestConnClose 测试连接关闭
-func TestConnClose(t *testing.T) {
-	clientConn, _, cleanup := setupTestConnectionForConn(t)
-	defer cleanup()
-
-	// 关闭连接
-	if err := clientConn.Close(); err != nil {
-		t.Errorf("关闭连接失败: %v", err)
-	}
-
-	// 验证已关闭
-	if !clientConn.IsClosed() {
-		t.Error("连接应处于关闭状态")
-	}
-
-	// 重复关闭不应报错
-	if err := clientConn.Close(); err != nil {
-		t.Errorf("重复关闭不应报错: %v", err)
-	}
-}
-
-// TestConnReadWrite 测试连接读写
-func TestConnReadWrite(t *testing.T) {
-	clientConn, serverConn, cleanup := setupTestConnectionForConn(t)
-	defer cleanup()
-
-	testData := []byte("Hello, Connection!")
-	done := make(chan struct{})
-
-	// 服务端读取
-	go func() {
-		defer close(done)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		stream, err := serverConn.AcceptStream(ctx)
-		if err != nil {
-			t.Logf("接受流失败: %v", err)
-			return
-		}
-		defer func() { _ = stream.Close() }()
-
-		buf := make([]byte, len(testData))
-		n, err := stream.Read(buf)
-		if err != nil {
-			t.Logf("读取失败: %v", err)
-			return
-		}
-
-		if string(buf[:n]) != string(testData) {
-			t.Errorf("数据不匹配: 期望 %s，实际 %s", testData, buf[:n])
-		}
-	}()
-
-	// 客户端写入
-	time.Sleep(50 * time.Millisecond)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	stream, err := clientConn.OpenStream(ctx)
-	if err != nil {
-		t.Fatalf("打开流失败: %v", err)
-	}
-
-	_, err = stream.Write(testData)
-	if err != nil {
-		t.Fatalf("写入失败: %v", err)
-	}
-	stream.Close()
-
-	<-done
-}
-
-// TestConnDeadline 测试连接超时设置
-func TestConnDeadline(t *testing.T) {
-	clientConn, _, cleanup := setupTestConnectionForConn(t)
-	defer cleanup()
-
-	deadline := time.Now().Add(time.Second)
-
-	// 测试设置统一超时
-	err := clientConn.SetDeadline(deadline)
-	if err != nil {
-		t.Logf("设置超时: %v", err)
-	}
-
-	// 测试设置读超时
-	err = clientConn.SetReadDeadline(deadline)
-	if err != nil {
-		t.Logf("设置读超时: %v", err)
-	}
-
-	// 测试设置写超时
-	err = clientConn.SetWriteDeadline(deadline)
-	if err != nil {
-		t.Logf("设置写超时: %v", err)
-	}
-}
-
-// TestConnOpenAcceptStream 测试流操作
-func TestConnOpenAcceptStream(t *testing.T) {
-	clientConn, serverConn, cleanup := setupTestConnectionForConn(t)
-	defer cleanup()
-
-	done := make(chan struct{})
-
-	// 服务端接受流
+	// 接受连接的 goroutine
+	acceptCh := make(chan error, 1)
+	var acceptedConn *Connection
 	go func() {
-		defer close(done)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		stream, err := serverConn.AcceptStream(ctx)
+		conn, err := listener.Accept()
 		if err != nil {
-			t.Logf("接受流失败: %v", err)
+			acceptCh <- err
 			return
 		}
-		stream.Close()
+		acceptedConn = conn.(*Connection)
+		acceptCh <- nil
 	}()
 
-	// 客户端打开流
-	time.Sleep(50 * time.Millisecond)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// Peer1 拨号
+	dialedConn, err := transport1.Dial(ctx, actualAddr, peer2)
+	require.NoError(t, err)
+	defer dialedConn.Close()
 
-	stream, err := clientConn.OpenStream(ctx)
-	if err != nil {
-		t.Fatalf("打开流失败: %v", err)
+	// 等待接受连接
+	select {
+	case err := <-acceptCh:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("等待连接超时")
 	}
-	stream.Write([]byte("test"))
-	stream.Close()
+	defer acceptedConn.Close()
 
-	<-done
+	// 测试创建流
+	stream, err := dialedConn.NewStream(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, stream)
+	defer stream.Close()
+
+	t.Log("✅ NewStream 成功")
 }
 
-// setupTestConnectionForConn 创建测试连接
-func setupTestConnectionForConn(t *testing.T) (*Conn, *Conn, func()) {
-	t.Helper()
+// TestConnection_NewStream_Closed 测试在关闭的连接上创建流
+func TestConnection_NewStream_Closed(t *testing.T) {
+	// 需要建立真实的 QUIC 连接
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
 
-	// 创建服务端
-	mgr := identity.NewManager(identityif.DefaultConfig())
-	serverID, _ := mgr.Create()
-	serverTransport, _ := NewTransport(transportif.DefaultConfig(), serverID)
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
 
-	listener, err := serverTransport.Listen(NewAddress("127.0.0.1", 0))
-	if err != nil {
-		t.Fatalf("监听失败: %v", err)
-	}
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
 
-	actualAddr := listener.Addr().(*Address)
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
 
-	// 创建客户端
-	clientID, _ := mgr.Create()
-	clientTransport, _ := NewTransport(transportif.DefaultConfig(), clientID)
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	actualAddr := listener.Addr()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
 	// 接受连接
-	var serverConn transportif.Conn
-	var acceptErr error
-	acceptDone := make(chan struct{})
 	go func() {
-		defer close(acceptDone)
-		serverConn, acceptErr = listener.Accept()
+		conn, _ := listener.Accept()
+		if conn != nil {
+			conn.Close()
+		}
 	}()
 
-	// 客户端连接
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// 拨号
+	dialedConn, err := transport1.Dial(ctx, actualAddr, peer2)
+	require.NoError(t, err)
 
-	clientConn, err := clientTransport.Dial(ctx, actualAddr)
-	if err != nil {
-		t.Fatalf("拨号失败: %v", err)
-	}
+	// 关闭连接
+	dialedConn.Close()
 
-	// 等待服务端
-	select {
-	case <-acceptDone:
-		if acceptErr != nil {
-			t.Fatalf("接受连接失败: %v", acceptErr)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("接受连接超时")
-	}
+	// 尝试在关闭的连接上创建流
+	_, err = dialedConn.NewStream(ctx)
+	assert.Error(t, err)
+	assert.Equal(t, ErrConnectionClosed, err)
 
-	cleanup := func() {
-		clientConn.Close()
-		if serverConn != nil {
-			serverConn.Close()
-		}
-		listener.Close()
-		clientTransport.Close()
-		serverTransport.Close()
-	}
-
-	return clientConn.(*Conn), serverConn.(*Conn), cleanup
+	t.Log("✅ 关闭连接后 NewStream 返回错误")
 }
 
+// TestConnection_AcceptStream 测试接受流
+func TestConnection_AcceptStream(t *testing.T) {
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
+
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
+
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
+
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
+
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	actualAddr := listener.Addr()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 接受连接并等待流
+	streamCh := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			streamCh <- err
+			return
+		}
+		defer conn.Close()
+
+		// 接受流
+		stream, err := conn.AcceptStream()
+		if err != nil {
+			streamCh <- err
+			return
+		}
+		defer stream.Close()
+		streamCh <- nil
+	}()
+
+	// 拨号并创建流
+	dialedConn, err := transport1.Dial(ctx, actualAddr, peer2)
+	require.NoError(t, err)
+	defer dialedConn.Close()
+
+	// 创建流
+	stream, err := dialedConn.NewStream(ctx)
+	require.NoError(t, err)
+	defer stream.Close()
+
+	// 写入数据以触发流创建完成
+	_, err = stream.Write([]byte("test"))
+	require.NoError(t, err)
+
+	// 等待接受方完成
+	select {
+	case err := <-streamCh:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("等待流超时")
+	}
+
+	t.Log("✅ AcceptStream 成功")
+}
+
+// TestConnection_Close 测试关闭连接
+func TestConnection_Close(t *testing.T) {
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
+
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
+
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
+
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
+
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	actualAddr := listener.Addr()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	go func() {
+		conn, _ := listener.Accept()
+		if conn != nil {
+			conn.Close()
+		}
+	}()
+
+	dialedConn, err := transport1.Dial(ctx, actualAddr, peer2)
+	require.NoError(t, err)
+
+	conn := dialedConn.(*Connection)
+
+	// 验证未关闭
+	assert.False(t, conn.IsClosed())
+
+	// 关闭
+	err = conn.Close()
+	assert.NoError(t, err)
+
+	// 验证已关闭
+	assert.True(t, conn.IsClosed())
+
+	// 再次关闭应该安全
+	err = conn.Close()
+	assert.NoError(t, err)
+
+	t.Log("✅ Close 正确关闭连接")
+}
+
+// TestConnection_Stat 测试连接统计
+func TestConnection_Stat(t *testing.T) {
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
+
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
+
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
+
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
+
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	actualAddr := listener.Addr()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	go func() {
+		conn, _ := listener.Accept()
+		if conn != nil {
+			defer conn.Close()
+			// 保持连接一段时间
+			time.Sleep(time.Second)
+		}
+	}()
+
+	dialedConn, err := transport1.Dial(ctx, actualAddr, peer2)
+	require.NoError(t, err)
+	defer dialedConn.Close()
+
+	conn := dialedConn.(*Connection)
+
+	stat := conn.Stat()
+	assert.Greater(t, stat.Opened, int64(0))
+	assert.Equal(t, 0, stat.NumStreams)
+	assert.False(t, stat.Transient)
+
+	t.Log("✅ Stat 返回正确的统计")
+}
+
+// TestConnection_LocalRemotePeer 测试本地和远程 Peer
+func TestConnection_LocalRemotePeer(t *testing.T) {
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
+
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
+
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
+
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
+
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	actualAddr := listener.Addr()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var acceptedConn *Connection
+	acceptCh := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			acceptCh <- err
+			return
+		}
+		acceptedConn = conn.(*Connection)
+		acceptCh <- nil
+	}()
+
+	dialedConn, err := transport1.Dial(ctx, actualAddr, peer2)
+	require.NoError(t, err)
+	defer dialedConn.Close()
+
+	select {
+	case err := <-acceptCh:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("等待连接超时")
+	}
+	defer acceptedConn.Close()
+
+	// 验证拨号端
+	assert.Equal(t, peer1, dialedConn.LocalPeer())
+	assert.Equal(t, peer2, dialedConn.RemotePeer())
+
+	// 验证接受端
+	assert.Equal(t, peer2, acceptedConn.LocalPeer())
+	assert.Equal(t, peer1, acceptedConn.RemotePeer())
+
+	t.Log("✅ LocalPeer/RemotePeer 正确")
+}
+
+// TestConnection_GetStreams 测试获取流列表
+func TestConnection_GetStreams(t *testing.T) {
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
+
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
+
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
+
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
+
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	actualAddr := listener.Addr()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	go func() {
+		conn, _ := listener.Accept()
+		if conn != nil {
+			defer conn.Close()
+			// 接受流
+			stream, _ := conn.AcceptStream()
+			if stream != nil {
+				stream.Close()
+			}
+		}
+	}()
+
+	dialedConn, err := transport1.Dial(ctx, actualAddr, peer2)
+	require.NoError(t, err)
+	defer dialedConn.Close()
+
+	conn := dialedConn.(*Connection)
+
+	// 初始应该没有流
+	streams := conn.GetStreams()
+	assert.Len(t, streams, 0)
+
+	// 创建流
+	stream, err := conn.NewStream(ctx)
+	require.NoError(t, err)
+	defer stream.Close()
+
+	// 应该有一个流
+	streams = conn.GetStreams()
+	assert.Len(t, streams, 1)
+
+	t.Log("✅ GetStreams 正确返回流列表")
+}
+
+// ============================================================================
+//                       LocalMultiaddr/RemoteMultiaddr 测试
+// ============================================================================
+
+// TestConnection_LocalMultiaddr 测试本地多地址
+func TestConnection_LocalMultiaddr(t *testing.T) {
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
+
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
+
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
+
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
+
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	actualAddr := listener.Addr()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	go func() {
+		conn, _ := listener.Accept()
+		if conn != nil {
+			defer conn.Close()
+			time.Sleep(time.Second)
+		}
+	}()
+
+	dialedConn, err := transport1.Dial(ctx, actualAddr, peer2)
+	require.NoError(t, err)
+	defer dialedConn.Close()
+
+	conn := dialedConn.(*Connection)
+
+	// 测试 LocalMultiaddr
+	localAddr := conn.LocalMultiaddr()
+	assert.NotNil(t, localAddr, "LocalMultiaddr 不应为 nil")
+	assert.NotEmpty(t, localAddr.String(), "LocalMultiaddr 字符串不应为空")
+	t.Logf("✅ LocalMultiaddr: %s", localAddr.String())
+}
+
+// TestConnection_RemoteMultiaddr 测试远程多地址
+func TestConnection_RemoteMultiaddr(t *testing.T) {
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
+
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
+
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
+
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
+
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	actualAddr := listener.Addr()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	go func() {
+		conn, _ := listener.Accept()
+		if conn != nil {
+			defer conn.Close()
+			time.Sleep(time.Second)
+		}
+	}()
+
+	dialedConn, err := transport1.Dial(ctx, actualAddr, peer2)
+	require.NoError(t, err)
+	defer dialedConn.Close()
+
+	conn := dialedConn.(*Connection)
+
+	// 测试 RemoteMultiaddr
+	remoteAddr := conn.RemoteMultiaddr()
+	assert.NotNil(t, remoteAddr, "RemoteMultiaddr 不应为 nil")
+	assert.NotEmpty(t, remoteAddr.String(), "RemoteMultiaddr 字符串不应为空")
+	t.Logf("✅ RemoteMultiaddr: %s", remoteAddr.String())
+}

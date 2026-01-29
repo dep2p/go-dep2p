@@ -10,7 +10,7 @@ Quickly locate your problem:
 
 | Error | Cause | Solution |
 |-------|-------|----------|
-| `ErrNotMember` | Using business APIs without joining Realm | Call `JoinRealmWithKey()` first |
+| `ErrNotMember` | Using business APIs without joining Realm | Call `JoinRealm()` first |
 | `ErrAlreadyJoined` | Joining same Realm twice | Check `CurrentRealm()` or call `LeaveRealm()` first |
 | `connection timeout` | Network unreachable or firewall blocking | Check network, enable Relay |
 | `peer id mismatch` | Wrong NodeID in address | Use `ShareableAddrs()` to get correct address |
@@ -167,12 +167,15 @@ func analyzeConnectionError(err error) {
 
 ```go
 // ❌ Wrong usage
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
 node.Send(ctx, targetID, "/myapp/1.0.0", data)  // Error: ErrNotMember
 
 // ✓ Correct usage
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
-node.Realm().JoinRealm(ctx, types.RealmID("my-realm"))  // Join Realm first
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
+realm, _ := node.Realm("my-realm")  // Join Realm first
+_ = realm.Join(ctx)
 node.Send(ctx, targetID, "/myapp/1.0.0", data)  // Works
 ```
 
@@ -182,12 +185,15 @@ node.Send(ctx, targetID, "/myapp/1.0.0", data)  // Works
 
 ```go
 // ❌ Wrong
-node.Realm().JoinRealm(ctx, types.RealmID("realm-a"))
-node.Realm().JoinRealm(ctx, types.RealmID("realm-a"))  // Error
+realm, _ := node.Realm("realm-a")
+_ = realm.Join(ctx)
+realm, _ = node.Realm("realm-a")  // Error
 
 // ✓ Correct: Check current Realm first
-if node.Realm().CurrentRealm() != types.RealmID("realm-a") {
-    node.Realm().JoinRealm(ctx, types.RealmID("realm-a"))
+currentRealm := node.Realm().CurrentRealm()
+if currentRealm != types.RealmID("realm-a") {
+    realm, _ := node.Realm("realm-a")
+    _ = realm.Join(ctx)
 }
 ```
 
@@ -203,7 +209,7 @@ func diagnoseRealmIssue(node dep2p.Node) {
     
     if currentRealm.IsEmpty() {
         fmt.Println("❌ Not joined any Realm")
-        fmt.Println("Suggestion: Call node.Realm().JoinRealm(ctx, realmID)")
+        fmt.Println("Suggestion: Call realm, _ := node.Realm(realmID); realm.Join(ctx)")
     } else {
         fmt.Printf("✓ Current Realm: %s\n", currentRealm)
     }

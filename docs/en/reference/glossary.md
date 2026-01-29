@@ -42,7 +42,8 @@ A participant instance in the DeP2P network. Each Node has a unique NodeID and c
 
 **Usage**:
 ```go
-node, _ := dep2p.StartNode(ctx)
+node, _ := dep2p.New(ctx)
+_ = node.Start(ctx)
 defer node.Close()
 ```
 
@@ -77,11 +78,12 @@ DeP2P's multi-tenant isolation mechanism. Nodes in different Realms share underl
 - **Protected**: Protected Realm, requires key to join
 - **Private**: Private Realm, not registered in public DHT
 
-**Related Concepts**: RealmManager, JoinRealm, RealmID
+**Related Concepts**: RealmManager, Realm().Join(), RealmID
 
 **Usage**:
 ```go
-node.Realm().JoinRealm(ctx, types.RealmID("my-realm"))
+realm, _ := node.Realm("my-realm")
+_ = realm.Join(ctx)
 ```
 
 ---
@@ -128,9 +130,10 @@ The process of a new node joining the network. By connecting to known Bootstrap 
 
 **Usage**:
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithBootstrapPeers(bootstrapAddrs...),
 )
+_ = node.Start(ctx)
 ```
 
 ---

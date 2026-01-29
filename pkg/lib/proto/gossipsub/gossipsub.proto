@@ -1,0 +1,99 @@
+// DeP2P GossipSub Protocol Definitions
+// GossipSub 发布订阅协议消息定义
+//
+// Protocol: /dep2p/app/<realmID>/pubsub/1.0.0
+
+syntax = "proto3";
+
+package dep2p.gossipsub;
+
+option go_package = "github.com/dep2p/dep2p/pkg/proto/gossipsub";
+
+// RPC GossipSub RPC 消息
+message RPC {
+  repeated SubOpts subscriptions = 1;
+  repeated Message publish = 2;
+  ControlMessage control = 3;
+}
+
+// SubOpts 订阅选项
+message SubOpts {
+  bool subscribe = 1;
+  string topic_id = 2;
+}
+
+// Message 消息
+message Message {
+  bytes from = 1;
+  bytes data = 2;
+  bytes seqno = 3;
+  string topic = 4;
+  bytes signature = 5;
+  bytes key = 6;
+}
+
+// ControlMessage 控制消息
+message ControlMessage {
+  repeated ControlIHave ihave = 1;
+  repeated ControlIWant iwant = 2;
+  repeated ControlGraft graft = 3;
+  repeated ControlPrune prune = 4;
+}
+
+// ControlIHave IHAVE 消息
+message ControlIHave {
+  string topic_id = 1;
+  repeated bytes message_ids = 2;
+}
+
+// ControlIWant IWANT 消息
+message ControlIWant {
+  repeated bytes message_ids = 1;
+}
+
+// ControlGraft GRAFT 消息
+message ControlGraft {
+  string topic_id = 1;
+}
+
+// ControlPrune PRUNE 消息
+message ControlPrune {
+  string topic_id = 1;
+  repeated PeerInfo peers = 2;
+  uint64 backoff = 3;
+}
+
+// PeerInfo 节点信息
+message PeerInfo {
+  bytes peer_id = 1;
+  bytes signed_peer_record = 2;
+}
+
+// TopicDescriptor 主题描述
+message TopicDescriptor {
+  string name = 1;
+  AuthOpts auth = 2;
+  EncOpts enc = 3;
+}
+
+// AuthOpts 认证选项
+message AuthOpts {
+  enum AuthMode {
+    NONE = 0;
+    KEY = 1;
+    WOT = 2;
+  }
+  AuthMode mode = 1;
+  repeated bytes keys = 2;
+}
+
+// EncOpts 加密选项
+message EncOpts {
+  enum EncMode {
+    NONE = 0;
+    SHAREDKEY = 1;
+    WOT = 2;
+  }
+  EncMode mode = 1;
+  repeated bytes key_hashes = 2;
+}

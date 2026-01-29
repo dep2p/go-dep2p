@@ -1,0 +1,83 @@
+// DeP2P Rendezvous Protocol Definitions
+// 命名空间发现协议消息定义
+//
+// Protocol: /dep2p/sys/rendezvous/1.0.0
+
+syntax = "proto3";
+
+package dep2p.rendezvous;
+
+option go_package = "github.com/dep2p/dep2p/pkg/proto/rendezvous";
+
+// Message Rendezvous 消息
+message Message {
+  // MessageType 消息类型
+  enum MessageType {
+    REGISTER = 0;
+    REGISTER_RESPONSE = 1;
+    UNREGISTER = 2;
+    DISCOVER = 3;
+    DISCOVER_RESPONSE = 4;
+  }
+
+  // ResponseStatus 响应状态
+  enum ResponseStatus {
+    OK = 0;
+    E_INVALID_NAMESPACE = 100;
+    E_INVALID_SIGNED_PEER_RECORD = 101;
+    E_INVALID_TTL = 102;
+    E_INVALID_COOKIE = 103;
+    E_NOT_AUTHORIZED = 200;
+    E_INTERNAL_ERROR = 300;
+    E_UNAVAILABLE = 400;
+  }
+
+  // Register 注册请求
+  message Register {
+    string ns = 1;
+    bytes signed_peer_record = 2;
+    uint64 ttl = 3;
+  }
+
+  // RegisterResponse 注册响应
+  message RegisterResponse {
+    ResponseStatus status = 1;
+    string status_text = 2;
+    uint64 ttl = 3;
+  }
+
+  // Unregister 取消注册
+  message Unregister {
+    string ns = 1;
+    bytes id = 2;
+  }
+
+  // Discover 发现请求
+  message Discover {
+    string ns = 1;
+    uint64 limit = 2;
+    bytes cookie = 3;
+  }
+
+  // DiscoverResponse 发现响应
+  message DiscoverResponse {
+    repeated Registration registrations = 1;
+    bytes cookie = 2;
+    ResponseStatus status = 3;
+    string status_text = 4;
+  }
+
+  // Registration 注册信息
+  message Registration {
+    string ns = 1;
+    bytes signed_peer_record = 2;
+    uint64 ttl = 3;
+  }
+
+  MessageType type = 1;
+  Register register = 2;
+  RegisterResponse register_response = 3;
+  Unregister unregister = 4;
+  Discover discover = 5;
+  DiscoverResponse discover_response = 6;
+}

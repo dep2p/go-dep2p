@@ -73,8 +73,12 @@ func (m RealmManager) JoinRealm(ctx context.Context, realmID types.RealmID, opts
 
 ```go
 // Join Public Realm
-err := node.Realm().JoinRealm(ctx, types.RealmID("my-public-realm"))
+realm, err := node.Realm("my-public-realm")
 if err != nil {
+    log.Printf("Failed to get Realm: %v", err)
+    return
+}
+if err := realm.Join(ctx); err != nil {
     if errors.Is(err, realm.ErrAlreadyJoined) {
         log.Println("Already joined another Realm, please leave first")
     }
@@ -82,17 +86,19 @@ if err != nil {
 }
 
 // Join Protected Realm
-err := node.Realm().JoinRealm(ctx, 
-    types.RealmID("protected-realm"),
-    realm.WithJoinKey([]byte("secret-key")),
-)
+realm, err = node.Realm("protected-realm")
+if err == nil {
+    err = realm.Join(ctx, realm.WithJoinKey([]byte("secret-key")))
+}
 
 // Join Private Realm (with private bootstrap nodes)
-err := node.Realm().JoinRealm(ctx,
-    types.RealmID("private-realm"),
-    realm.WithPrivateBootstrapPeers(bootstrapAddrs),
-    realm.WithSkipDHTRegistration(),
-)
+realm, err = node.Realm("private-realm")
+if err == nil {
+    err = realm.Join(ctx,
+        realm.WithPrivateBootstrapPeers(bootstrapAddrs),
+        realm.WithSkipDHTRegistration(),
+    )
+}
 ```
 
 ---
@@ -195,6 +201,219 @@ func (m RealmManager) IsMemberOf(realmID types.RealmID) bool
 
 ---
 
+## Member Event Listener APIs
+
+### OnMemberJoin
+
+Registers a callback for member join events.
+
+```go
+func (r *Realm) OnMemberJoin(handler func(peerID string)) error
+```
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `handler` | `func(peerID string)` | Callback function when a member joins |
+
+**Returns**:
+| Type | Description |
+|------|-------------|
+| `error` | Error information |
+
+**Notes**:
+- Callback is executed in a background goroutine, won't block event processing
+- Callback function should return quickly to avoid blocking
+- For time-consuming operations, start a new goroutine within the callback
+
+**Example**:
+
+```go
+realm.OnMemberJoin(func(peerID string) {
+    fmt.Printf("New member joined: %s\n", peerID[:16])
+    // Can send welcome messages here, etc.
+})
+```
+
+---
+
+### OnMemberLeave
+
+Registers a callback for member leave events.
+
+```go
+func (r *Realm) OnMemberLeave(handler func(peerID string)) error
+```
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `handler` | `func(peerID string)` | Callback function when a member leaves |
+
+**Returns**:
+| Type | Description |
+|------|-------------|
+| `error` | Error information |
+
+**Example**:
+
+```go
+realm.OnMemberLeave(func(peerID string) {
+    fmt.Printf("Member left: %s\n", peerID[:16])
+    // Can clean up related resources here, etc.
+})
+```
+
+---
+
+### EventBus
+
+Returns the event bus for subscribing to member events.
+
+```go
+func (r *Realm) EventBus() EventBus
+```
+
+**Returns**:
+| Type | Description |
+|------|-------------|
+| `EventBus` | Event bus interface |
+
+**Supported Event Types**:
+| Event Type | Description |
+|------------|-------------|
+| `types.EvtRealmMemberJoined` | Member joined event |
+| `types.EvtRealmMemberLeft` | Member left event |
+
+**Example**:
+
+```go
+// Using convenience methods (recommended)
+realm.OnMemberJoin(func(peerID string) {
+    fmt.Println("Member joined:", peerID)
+})
+
+// Or use EventBus directly (advanced usage)
+sub, _ := realm.EventBus().Subscribe(new(types.EvtRealmMemberJoined))
+go func() {
+    for evt := range sub.Out() {
+        if e, ok := evt.(*types.EvtRealmMemberJoined); ok {
+            fmt.Println("Member joined:", e.MemberID)
+        }
+    }
+}()
+```
+
+---
+
+## Connection Management APIs
+
+### Connect
+
+Connects to a Realm member or potential member.
+
+```go
+func (r *Realm) Connect(ctx context.Context, target string) (Connection, error)
+```
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ctx` | `context.Context` | Context |
+| `target` | `string` | Target (supports multiple formats) |
+
+**Supported target formats**:
+- **ConnectionTicket**: `dep2p://base64...` (easy to share)
+- **Full Address**: `/ip4/x.x.x.x/udp/port/quic-v1/p2p/12D3KooW...`
+- **Pure NodeID**: `12D3KooW...` (auto-discover address via DHT)
+
+**Connection priority**: Direct → Hole punching → Relay fallback
+
+**Example**:
+
+```go
+// Connect using ticket (recommended, easy to share)
+conn, err := realm.Connect(ctx, "dep2p://eyJ...")
+
+// Connect using full address
+conn, err := realm.Connect(ctx, "/ip4/1.2.3.4/udp/4001/quic-v1/p2p/12D3KooW...")
+
+// Connect using pure NodeID (requires DHT discovery)
+conn, err := realm.Connect(ctx, "12D3KooWA...")
+```
+
+---
+
+### ConnectWithHint
+
+Connects to a Realm member using address hints.
+
+```go
+func (r *Realm) ConnectWithHint(ctx context.Context, target string, hints []string) (Connection, error)
+```
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ctx` | `context.Context` | Context |
+| `target` | `string` | Target NodeID |
+| `hints` | `[]string` | Address hint list |
+
+**Example**:
+
+```go
+hints := []string{"/ip4/192.168.1.100/udp/4001/quic-v1"}
+conn, err := realm.ConnectWithHint(ctx, "12D3KooWA...", hints)
+```
+
+---
+
+## Health Status API
+
+### Health
+
+Returns Realm health status.
+
+```go
+func (r *Realm) Health() *RealmHealth
+```
+
+**Returns**:
+| Type | Description |
+|------|-------------|
+| `*RealmHealth` | Realm health status |
+
+**RealmHealth Structure**:
+
+```go
+type RealmHealth struct {
+    Status         string  // Status: healthy, minimal, isolated
+    MemberCount    int     // Member count
+    ActivePeers    int     // Active connections (not implemented yet)
+    MessagesPerSec float64 // Message throughput (not implemented yet)
+}
+```
+
+**Status Description**:
+| Status | Condition | Description |
+|--------|-----------|-------------|
+| `isolated` | MemberCount == 0 | No other members |
+| `minimal` | MemberCount == 1 | Only self |
+| `healthy` | MemberCount > 1 | Normal state |
+
+**Example**:
+
+```go
+health := realm.Health()
+fmt.Printf("Status: %s, Members: %d\n", health.Status, health.MemberCount)
+
+if health.Status == "isolated" {
+    fmt.Println("Warning: No other members to communicate with")
+}
+```
+
+---
+
 ## Realm Peer Management APIs
 
 ### RealmPeers
@@ -278,7 +497,8 @@ func WithJoinKey(key []byte) JoinOption
 **Example**:
 
 ```go
-node.Realm().JoinRealm(ctx, realmID, realm.WithJoinKey([]byte("secret")))
+realm, _ := node.Realm(realmID)
+_ = realm.Join(ctx, realm.WithJoinKey([]byte("secret")))
 ```
 
 ---
@@ -294,7 +514,8 @@ func WithTimeout(d time.Duration) JoinOption
 **Example**:
 
 ```go
-node.Realm().JoinRealm(ctx, realmID, realm.WithTimeout(30*time.Second))
+realm, _ := node.Realm(realmID)
+_ = realm.Join(ctx, realm.WithTimeout(30*time.Second))
 ```
 
 ---
@@ -313,7 +534,8 @@ func WithPrivateBootstrapPeers(peers []string) JoinOption
 bootstrapAddrs := []string{
     "/ip4/192.168.1.100/udp/4001/quic-v1/p2p/12D3KooW...",
 }
-node.Realm().JoinRealm(ctx, realmID,
+realm, _ := node.Realm(realmID)
+_ = realm.Join(ctx,
     realm.WithPrivateBootstrapPeers(bootstrapAddrs),
 )
 ```
@@ -331,7 +553,8 @@ func WithSkipDHTRegistration() JoinOption
 **Example**:
 
 ```go
-node.Realm().JoinRealm(ctx, realmID,
+realm, _ := node.Realm(realmID)
+_ = realm.Join(ctx,
     realm.WithPrivateBootstrapPeers(addrs),
     realm.WithSkipDHTRegistration(),
 )
@@ -371,7 +594,8 @@ flowchart LR
 **Use Cases**: Public chat rooms, public services
 
 ```go
-node.Realm().JoinRealm(ctx, types.RealmID("public-chat"))
+realm, _ := node.Realm("public-chat")
+_ = realm.Join(ctx)
 ```
 
 ---
@@ -385,8 +609,8 @@ node.Realm().JoinRealm(ctx, types.RealmID("public-chat"))
 **Use Cases**: Paid services, member areas
 
 ```go
-node.Realm().JoinRealm(ctx,
-    types.RealmID("premium-service"),
+realm, _ := node.Realm("premium-service")
+_ = realm.Join(ctx,
     realm.WithJoinKey(membershipKey),
 )
 ```
@@ -402,8 +626,8 @@ node.Realm().JoinRealm(ctx,
 **Use Cases**: Corporate intranets, private communications
 
 ```go
-node.Realm().JoinRealm(ctx,
-    types.RealmID("company-internal"),
+realm, _ := node.Realm("company-internal")
+_ = realm.Join(ctx,
     realm.WithJoinKey(employeeKey),
     realm.WithPrivateBootstrapPeers(internalBootstraps),
     realm.WithSkipDHTRegistration(),
@@ -437,13 +661,18 @@ stateDiagram-v2
 **Example**:
 
 ```go
-err := node.Realm().JoinRealm(ctx, realmID)
+realm, err := node.Realm(realmID)
 if err != nil {
+    log.Printf("Failed to get Realm: %v", err)
+    return
+}
+if err := realm.Join(ctx); err != nil {
     switch {
     case errors.Is(err, realm.ErrAlreadyJoined):
         // Leave current Realm first
         node.Realm().LeaveRealm()
-        node.Realm().JoinRealm(ctx, realmID)
+        realm, _ = node.Realm(realmID)
+        _ = realm.Join(ctx)
     case errors.Is(err, realm.ErrInvalidJoinKey):
         log.Println("Invalid key")
     default:
@@ -458,13 +687,23 @@ if err != nil {
 
 | Method | Category | Description |
 |--------|----------|-------------|
-| `JoinRealm()` | Membership | Join Realm |
+| `Realm()` | Membership | Get or create Realm |
+| `Join()` | Membership | Join Realm |
 | `LeaveRealm()` | Membership | Leave Realm |
 | `CurrentRealm()` | Membership | Returns current Realm |
 | `IsMember()` | Membership | Checks if joined |
-| `IsMemberOf()` | Membership | Checks specific membership |
-| `RealmPeers()` | Peer Mgmt | Returns peer list |
-| `RealmPeerCount()` | Peer Mgmt | Returns peer count |
+| `Members()` | Member Info | Returns member list |
+| `MemberCount()` | Member Info | Returns member count |
+| `OnMemberJoin()` | Events | Register member join callback |
+| `OnMemberLeave()` | Events | Register member leave callback |
+| `EventBus()` | Events | Returns event bus |
+| `Connect()` | Connection | Connect to Realm member |
+| `ConnectWithHint()` | Connection | Connect with address hints |
+| `Health()` | Health | Returns health status |
+| `Messaging()` | Services | Returns messaging service |
+| `PubSub()` | Services | Returns pub/sub service |
+| `Streams()` | Services | Returns streams service |
+| `Liveness()` | Services | Returns liveness service |
 | `RealmMetadata()` | Metadata | Returns metadata |
 
 ---

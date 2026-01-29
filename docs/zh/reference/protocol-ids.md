@@ -34,8 +34,8 @@ flowchart LR
 
 **示例**：
 - `/myapp/chat/1.0.0`
-- `/dep2p/ping/1.0`
-- `/ipfs/kad/1.0.0`
+- `/dep2p/sys/ping/1.0.0`
+- `/dep2p/sys/dht/1.0.0`
 
 ---
 
@@ -83,21 +83,66 @@ const (
 
 ---
 
-### 系统命名空间
+### DeP2P 三域命名空间
 
-DeP2P 系统协议使用 `/dep2p/` 命名空间：
+DeP2P 协议采用三域分类，每个域有明确的职责边界：
 
 ```
-/dep2p/<protocol>/<version>
+┌─────────────────────────────────────────────────────────────────────┐
+│                    DeP2P 协议三域分类                                │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  1. 系统域 (sys)                                                    │
+│     路径: /dep2p/sys/{protocol}/{version}                          │
+│     职责: 系统基础设施（不依赖 Realm）                               │
+│     示例: ping, identify, relay, dht                               │
+│                                                                     │
+│  2. Realm 域 (realm)                                                │
+│     路径: /dep2p/realm/{realmID}/{protocol}/{version}              │
+│     职责: Realm 管理（加入/离开/认证）                               │
+│     示例: join, auth, member                                        │
+│                                                                     │
+│  3. 应用域 (app)                                                    │
+│     路径: /dep2p/app/{realmID}/{protocol}/{version}                │
+│     职责: 业务协议（需要 Realm 成员资格）                            │
+│     示例: messaging, pubsub, streams                               │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-**系统协议示例**：
+### 系统域协议
+
+系统协议不依赖 Realm，节点启动即可用：
+
 | 协议 ID | 描述 |
 |---------|------|
-| `/dep2p/ping/1.0` | Ping-Pong 心跳 |
-| `/dep2p/id/1.0.0` | 身份交换 |
-| `/dep2p/relay/1.0.0` | 中继协议 |
-| `/dep2p/realm/1.0.0` | Realm 认证 |
+| `/dep2p/sys/ping/1.0.0` | Ping-Pong 心跳 |
+| `/dep2p/sys/identify/1.0.0` | 身份交换 |
+| `/dep2p/sys/dht/1.0.0` | DHT 路由 |
+| `/dep2p/relay/1.0.0/hop` | 中继协议（HOP） |
+| `/dep2p/relay/1.0.0/stop` | 中继协议（STOP） |
+
+### Realm 域协议
+
+Realm 管理协议，用于加入/离开/认证：
+
+| 协议 ID | 描述 |
+|---------|------|
+| `/dep2p/realm/{realmID}/join/1.0.0` | 加入 Realm |
+| `/dep2p/realm/{realmID}/auth/1.0.0` | PSK 认证 |
+| `/dep2p/realm/{realmID}/member/1.0.0` | 成员管理 |
+| `/dep2p/realm/{realmID}/leave/1.0.0` | 离开 Realm |
+
+### 应用域协议
+
+业务协议，需要 Realm 成员资格：
+
+| 协议 ID | 描述 |
+|---------|------|
+| `/dep2p/app/{realmID}/messaging/1.0.0` | 消息传递 |
+| `/dep2p/app/{realmID}/pubsub/1.0.0` | 发布订阅 |
+| `/dep2p/app/{realmID}/streams/1.0.0` | 双向流 |
+| `/dep2p/app/{realmID}/liveness/1.0.0` | 存活检测 |
 
 ---
 

@@ -1,0 +1,102 @@
+{
+  "_comment": "DeP2P Relay 节点配置模板 - 仅提供中继转发服务",
+  "_usage": "dep2p --config relay.config.json --port PORT --public-addr /ip4/YOUR_IP/udp/PORT/quic-v1",
+  "_doc": "详细说明请参阅 README.md",
+
+  "storage": {
+    "_comment": "存储配置 - 使用独立数据目录避免与其他节点冲突",
+    "data_dir": "./data/relay"
+  },
+
+  "identity": {
+    "_comment": "节点身份配置 - 首次运行自动生成密钥",
+    "key_file": "./data/relay/identity.key",
+    "key_type": "Ed25519",
+    "auto_generate": true
+  },
+
+  "transport": {
+    "_comment": "传输层配置 - QUIC 性能更好，TCP 兼容性更好",
+    "enable_quic": true,
+    "enable_tcp": true,
+    "enable_websocket": false,
+    "dial_timeout": "30s"
+  },
+
+  "security": {
+    "_comment": "安全层配置 - TLS 和 Noise 都启用以最大化兼容性",
+    "enable_tls": true,
+    "enable_noise": true,
+    "preferred_protocol": "tls",
+    "negotiate_timeout": "60s"
+  },
+
+  "discovery": {
+    "_comment": "节点发现配置 - Relay 节点需要连接 Bootstrap 节点以加入 DHT 网络",
+    "enable_dht": true,
+    "enable_mdns": false,
+    "enable_bootstrap": true,
+    "bootstrap": {
+      "_comment": "Relay 节点不提供 Bootstrap 服务，但需要连接已有的 Bootstrap 以加入 DHT",
+      "_important": "部署时必须将 BOOTSTRAP_IP 和 BOOTSTRAP_PEER_ID 替换为实际值",
+      "enable_service": false,
+      "peers": [
+        "/ip4/BOOTSTRAP_IP/udp/4001/quic-v1/p2p/BOOTSTRAP_PEER_ID"
+      ],
+      "min_peers": 3,
+      "timeout": "30s"
+    }
+  },
+
+  "nat": {
+    "_comment": "NAT 穿透配置 - 云服务器通常有公网 IP，可关闭 UPnP",
+    "enable_autonat": true,
+    "enable_upnp": false,
+    "enable_natpmp": false,
+    "enable_holepunch": true
+  },
+
+  "relay": {
+    "_comment": "中继配置 - 作为 System Relay 服务节点",
+    "enable_client": true,
+    "enable_server": true,
+    "enable_system_relay": true,
+    "system_relay_addr": "",
+    "reservation_limit": 128,
+    "reservation_ttl": "3600s",
+    "max_circuit_duration": "1800s",
+    "max_data_limit": 134217728
+  },
+
+  "conn_mgr": {
+    "_comment": "连接管理配置 - Relay 节点需要支持大量并发连接",
+    "low_water": 500,
+    "high_water": 1000,
+    "grace_period": "30s"
+  },
+
+  "resource": {
+    "_comment": "资源限制配置 - Relay 节点需要更多资源",
+    "enable_resource_manager": true,
+    "system": {
+      "max_connections": 2000,
+      "max_streams": 20000,
+      "max_memory": 1073741824
+    }
+  },
+
+  "messaging": {
+    "_comment": "消息层配置 - Relay 节点保持基本消息能力",
+    "enable_pubsub": true,
+    "enable_streams": true,
+    "enable_liveness": true
+  },
+
+  "realm": {
+    "_comment": "Realm 层配置 - 可选启用 Realm Gateway",
+    "enable_gateway": true,
+    "enable_routing": true,
+    "enable_member": true,
+    "enable_auth": true
+  }
+}

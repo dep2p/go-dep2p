@@ -46,15 +46,56 @@ flowchart TD
 
 ---
 
-## 五种 Bootstrap 场景
+## 六种 Bootstrap 场景
 
 | 场景 | 说明 | 配置 | DHT 依赖 |
 |------|------|------|----------|
 | **创世节点** | 网络首个节点 | `WithBootstrapPeers(nil)` | 否 |
+| **known_peers** ⭐ | 已知节点直连 | `WithKnownPeers()` | 否 |
 | **直连已知地址** | 已知完整地址 | `ConnectToAddr()` | 否 |
 | **仅 NodeID** | 只知道公钥 | `Connect(nodeID)` | **是** |
 | **局域网发现** | mDNS 发现 | 自动 | 否 |
 | **预设 Bootstrap** | 公共节点 | `PresetDesktop/Server` | 否 |
+
+---
+
+## 推荐：使用 known_peers（私有网络）
+
+对于私有网络或云服务器部署，推荐使用 `known_peers` 配置：
+
+```go
+import "github.com/dep2p/go-dep2p/config"
+
+node, _ := dep2p.New(ctx,
+    dep2p.WithPreset(dep2p.PresetDesktop),
+    dep2p.WithKnownPeers(
+        config.KnownPeer{
+            PeerID: "12D3KooWxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            Addrs:  []string{"/ip4/1.2.3.4/udp/4001/quic-v1"},
+        },
+        config.KnownPeer{
+            PeerID: "12D3KooWyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+            Addrs:  []string{"/ip4/5.6.7.8/udp/4001/quic-v1"},
+        },
+    ),
+    dep2p.WithBootstrapPeers(nil),  // 禁用公共 Bootstrap
+)
+```
+
+**优势**：
+- 启动即连接，无需等待 DHT
+- 不依赖公共 Bootstrap 节点
+- 适合私有集群、云服务器部署
+
+**与 Bootstrap 的区别**：
+
+| 特性 | known_peers | Bootstrap |
+|------|-------------|-----------|
+| 连接时机 | 启动即连接 | DHT 初始化后 |
+| 依赖 | 仅目标节点在线 | Bootstrap 服务 |
+| 用途 | 直接连接 | DHT 引导 |
+
+详细配置请参考：[配置参考](../reference/configuration.md#withknownpeers-)
 
 ---
 
@@ -82,18 +123,22 @@ func main() {
     defer cancel()
 
     // 创世节点：显式传入 nil 表示无 Bootstrap
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetServer),
         dep2p.WithBootstrapPeers(nil),  // 关键：无 Bootstrap
         dep2p.WithListenPort(4001),     // 固定端口
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
     // 加入 Realm
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     fmt.Println("创世节点已启动")
     fmt.Printf("NodeID: %s\n", node.ID())
@@ -132,16 +177,20 @@ func main() {
     ctx := context.Background()
 
     // PresetDesktop/PresetServer 包含默认 Bootstrap 节点
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),  // 包含默认 Bootstrap
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
     // 加入 Realm
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     fmt.Printf("节点已启动: %s\n", node.ID().ShortString())
     fmt.Println("已自动连接到默认 Bootstrap 节点")
@@ -185,16 +234,20 @@ func main() {
         "/dns4/bootstrap.example.com/udp/4001/quic-v1/p2p/5Q2STWvBFn...",
     }
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithBootstrapPeers(bootstrapPeers...),  // 覆盖默认 Bootstrap
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     fmt.Printf("节点已启动: %s\n", node.ID().ShortString())
 }
@@ -242,15 +295,19 @@ func main() {
     ctx := context.Background()
 
     // 使用 Minimal 预设（无默认 Bootstrap）
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetMinimal),
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     // 直接连接到已知地址
     targetAddr := "/ip4/192.168.1.100/udp/4001/quic-v1/p2p/5Q2STWvBFn..."
@@ -286,15 +343,19 @@ func main() {
     ctx := context.Background()
 
     // mDNS 默认启用
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     // 设置连接通知
     node.Endpoint().SetConnectedNotify(func(conn dep2p.Connection) {
@@ -366,13 +427,17 @@ func main() {
         fmt.Println("使用默认 Bootstrap 节点")
     }
 
-    node, err := dep2p.StartNode(ctx, opts...)
+    node, err := dep2p.New(ctx, opts...)
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     fmt.Printf("节点已启动: %s\n", node.ID().ShortString())
 }
@@ -415,12 +480,13 @@ if !strings.Contains(addr, "/p2p/") {
 // nc -uzv 1.2.3.4 4001
 
 // 3. 使用多个 Bootstrap 节点
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithBootstrapPeers(
         "/ip4/1.2.3.4/udp/4001/quic-v1/p2p/...",
         "/ip4/5.6.7.8/udp/4001/quic-v1/p2p/...",  // 备用
     ),
 )
+_ = node.Start(ctx)
 ```
 
 ### 问题 2：节点无法发现其他节点
@@ -436,8 +502,8 @@ node, _ := dep2p.StartNode(ctx,
 
 ```go
 // 1. 确保 Realm 一致
-realmID := types.RealmID("my-network")
-node.Realm().JoinRealm(ctx, realmID)
+realm := node.Realm("my-network")
+realm.Join(ctx)
 
 // 2. 等待 DHT 同步
 time.Sleep(5 * time.Second)
@@ -459,11 +525,12 @@ fmt.Printf("当前连接数: %d\n", node.ConnectionCount())
 
 ```go
 // 1. 使用公网地址
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetServer),
     dep2p.WithListenPort(4001),
     dep2p.WithExternalAddrs("/ip4/公网IP/udp/4001/quic-v1"),
 )
+_ = node.Start(ctx)
 
 // 2. 获取可分享地址
 addrs, _ := node.WaitShareableAddrs(ctx)

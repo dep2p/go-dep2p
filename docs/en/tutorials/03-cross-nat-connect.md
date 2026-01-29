@@ -146,13 +146,16 @@ func main() {
     // Create Relay node
     // ========================================
     fmt.Println("Starting Relay node...")
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetServer), // Server preset
         dep2p.WithListenPort(4001),           // Fixed port
         dep2p.WithRelayService(true),         // Enable relay service
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
     }
     defer node.Close()
 
@@ -166,8 +169,12 @@ func main() {
     fmt.Println()
 
     // Join system Realm (Relay service doesn't need specific business Realm)
-    realmID := types.RealmID("relay-network")
-    if err := node.Realm().JoinRealm(ctx, realmID); err != nil {
+    realmID := "relay-network"
+    realm, err := node.Realm(realmID)
+    if err != nil {
+        log.Fatalf("Failed to get Realm: %v", err)
+    }
+    if err := realm.Join(ctx); err != nil {
         log.Fatalf("Failed to join Realm: %v", err)
     }
 
@@ -240,13 +247,16 @@ func main() {
     // Create node (configure Bootstrap node)
     // ========================================
     fmt.Println("Starting node...")
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithBootstrapPeers([]string{relayAddr}), // Use Relay as Bootstrap
         dep2p.WithEnableRelay(true),                   // Enable relay client
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
     }
     defer node.Close()
 
@@ -255,8 +265,12 @@ func main() {
     fmt.Println()
 
     // Join Realm
-    realmID := types.RealmID("cross-nat-demo")
-    if err := node.Realm().JoinRealm(ctx, realmID); err != nil {
+    realmID := "cross-nat-demo"
+    realm, err := node.Realm(realmID)
+    if err != nil {
+        log.Fatalf("Failed to get Realm: %v", err)
+    }
+    if err := realm.Join(ctx); err != nil {
         log.Fatalf("Failed to join Realm: %v", err)
     }
     fmt.Printf("✅ Joined Realm: %s\n", realmID)
@@ -343,13 +357,16 @@ func main() {
     // Create node
     // ========================================
     fmt.Println("Starting node...")
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithBootstrapPeers([]string{relayAddr}),
         dep2p.WithEnableRelay(true),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
     }
     defer node.Close()
 
@@ -358,8 +375,12 @@ func main() {
     fmt.Println()
 
     // Join Realm (must match Node A)
-    realmID := types.RealmID("cross-nat-demo")
-    if err := node.Realm().JoinRealm(ctx, realmID); err != nil {
+    realmID := "cross-nat-demo"
+    realm, err := node.Realm(realmID)
+    if err != nil {
+        log.Fatalf("Failed to get Realm: %v", err)
+    }
+    if err := realm.Join(ctx); err != nil {
         log.Fatalf("Failed to join Realm: %v", err)
     }
     fmt.Printf("✅ Joined Realm: %s\n", realmID)
@@ -626,7 +647,7 @@ conn, err := node.ConnectViaRelay(ctx, nodeAID, relayNodeID)
 ### Using Multiple Relays
 
 ```go
-node, err := dep2p.StartNode(ctx,
+node, err := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithBootstrapPeers([]string{
         relay1Addr,
@@ -635,6 +656,12 @@ node, err := dep2p.StartNode(ctx,
     }),
     dep2p.WithEnableRelay(true),
 )
+if err != nil {
+    log.Fatalf("Failed to create node: %v", err)
+}
+if err := node.Start(ctx); err != nil {
+    log.Fatalf("Failed to start node: %v", err)
+}
 ```
 
 ### Auto-Select Best Relay

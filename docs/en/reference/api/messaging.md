@@ -32,7 +32,7 @@ MessagingService supports three communication patterns:
 - **Request/Response**: Request-response pattern
 - **Publish/Subscribe**: Publish-subscribe pattern
 
-> **Important**: All messaging APIs must be used after calling `JoinRealm()`.
+> **Important**: All messaging APIs must be used after calling `Realm().Join()`.
 
 ---
 
@@ -43,8 +43,11 @@ Must join Realm before using messaging APIs:
 ```go
 // Must join Realm first
 realmKey := types.GenerateRealmKey()
-realm, err := node.JoinRealmWithKey(ctx, "my-realm", realmKey)
+realm, err := node.Realm("my-realm")
 if err != nil {
+    log.Fatal(err)
+}
+if err := realm.Join(ctx); err != nil {
     log.Fatal(err)
 }
 
@@ -87,7 +90,8 @@ func (m *Messaging) Send(ctx context.Context, nodeID types.NodeID, protocol type
 
 ```go
 // Get Messaging service
-realm, _ := node.JoinRealmWithKey(ctx, "my-realm", realmKey)
+realm, _ := node.Realm("my-realm")
+_ = realm.Join(ctx)
 messaging := realm.Messaging()
 
 // Send notification
@@ -99,6 +103,68 @@ if err != nil {
 // Send JSON data
 data, _ := json.Marshal(notification)
 err = messaging.Send(ctx, targetID, "/myapp/event/1.0.0", data)
+```
+
+### SendAsync
+
+Asynchronously sends a message and returns a response channel.
+
+```go
+func (m *Messaging) SendAsync(ctx context.Context, peerID string, protocol string, data []byte) (<-chan *Response, error)
+```
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ctx` | `context.Context` | Context |
+| `peerID` | `string` | Target node ID |
+| `protocol` | `string` | Protocol ID |
+| `data` | `[]byte` | Message data |
+
+**Returns**:
+| Type | Description |
+|------|-------------|
+| `<-chan *Response` | Response channel |
+| `error` | Error information |
+
+**Response Structure**:
+
+```go
+type Response struct {
+    Data  []byte // Response data
+    Error error  // Error information
+}
+```
+
+**Notes**:
+- Returns immediately after sending, response is delivered asynchronously via channel
+- Suitable for scenarios requiring parallel message sending
+- Channel is closed after receiving response or timeout
+
+**Example**:
+
+```go
+messaging := realm.Messaging()
+
+// Send to multiple nodes in parallel
+var responses []<-chan *messaging.Response
+for _, peerID := range peers {
+    respCh, err := messaging.SendAsync(ctx, peerID, "/myapp/ping/1.0.0", []byte("ping"))
+    if err != nil {
+        continue
+    }
+    responses = append(responses, respCh)
+}
+
+// Collect responses
+for i, respCh := range responses {
+    resp := <-respCh
+    if resp.Error != nil {
+        log.Printf("Node %d response error: %v", i, resp.Error)
+    } else {
+        log.Printf("Node %d response: %s", i, resp.Data)
+    }
+}
 ```
 
 ---
@@ -136,7 +202,8 @@ func (m *Messaging) Request(ctx context.Context, nodeID types.NodeID, protocol t
 
 ```go
 // Get Messaging service
-realm, _ := node.JoinRealmWithKey(ctx, "my-realm", realmKey)
+realm, _ := node.Realm("my-realm")
+_ = realm.Join(ctx)
 messaging := realm.Messaging()
 
 // Simple request
@@ -356,15 +423,105 @@ sequenceDiagram
 
 ---
 
-## Protocol Handlers
+## Protocol Handler API
 
-For Send and Request patterns, register protocol handlers on the receiving side:
+### RegisterHandler
 
-### Register Handler
+Registers a message handler.
 
 ```go
-// Register via Endpoint
-node.Endpoint().SetProtocolHandler("/myapp/echo/1.0.0", func(stream endpoint.Stream) {
+func (m *Messaging) RegisterHandler(protocol string, handler MessageHandler) error
+```
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `protocol` | `string` | Protocol ID |
+| `handler` | `MessageHandler` | Message handler function |
+
+**MessageHandler Type**:
+
+```go
+type MessageHandler func(req *Request) (*Response, error)
+
+type Request struct {
+    From     string    // Sender NodeID
+    Protocol string    // Protocol ID
+    Data     []byte    // Request data
+}
+
+type Response struct {
+    Data  []byte // Response data
+    Error error  // Error information
+}
+```
+
+**Notes**:
+- When a message with the corresponding protocol is received, this handler is called
+- The response returned by the handler is sent back to the requester
+- If error is returned, the requester receives an error response
+
+**Example**:
+
+```go
+messaging := realm.Messaging()
+
+// Register Echo handler
+err := messaging.RegisterHandler("/myapp/echo/1.0.0", func(req *messaging.Request) (*messaging.Response, error) {
+    log.Printf("Received from %s: %s", req.From[:16], req.Data)
+    return &messaging.Response{
+        Data: append([]byte("Echo: "), req.Data...),
+    }, nil
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Register RPC handler
+err = messaging.RegisterHandler("/myapp/rpc/1.0.0", func(req *messaging.Request) (*messaging.Response, error) {
+    var rpcReq RPCRequest
+    if err := json.Unmarshal(req.Data, &rpcReq); err != nil {
+        return nil, fmt.Errorf("invalid request: %w", err)
+    }
+    
+    // Process RPC request
+    result := processRPC(rpcReq)
+    
+    data, _ := json.Marshal(result)
+    return &messaging.Response{Data: data}, nil
+})
+```
+
+---
+
+### UnregisterHandler
+
+Removes a message handler.
+
+```go
+func (m *Messaging) UnregisterHandler(protocol string) error
+```
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `protocol` | `string` | Protocol ID |
+
+**Example**:
+
+```go
+messaging.UnregisterHandler("/myapp/echo/1.0.0")
+```
+
+---
+
+### Using Stream Handlers (Advanced)
+
+For scenarios requiring finer control, you can register stream handlers directly via Host:
+
+```go
+// Register stream handler via Host
+node.Host().SetStreamHandler("/myapp/stream/1.0.0", func(stream interfaces.Stream) {
     defer stream.Close()
     
     // Read request
@@ -377,24 +534,30 @@ node.Endpoint().SetProtocolHandler("/myapp/echo/1.0.0", func(stream endpoint.Str
     // Send response
     stream.Write(buf[:n])
 })
-```
 
-### Remove Handler
-
-```go
-node.Endpoint().RemoveProtocolHandler("/myapp/echo/1.0.0")
+// Remove stream handler
+node.Host().RemoveStreamHandler("/myapp/stream/1.0.0")
 ```
 
 ---
 
 ## Method List
 
-### Node Messaging Methods
+### Messaging Methods
 
 | Method | Pattern | Description |
 |--------|---------|-------------|
 | `Send()` | One-way | Send message |
+| `SendAsync()` | One-way | Send message asynchronously |
 | `Request()` | Request-Response | Send request and wait for response |
+| `RegisterHandler()` | Handler | Register message handler |
+| `UnregisterHandler()` | Handler | Remove message handler |
+| `Close()` | Lifecycle | Close service |
+
+### Node Convenience Methods
+
+| Method | Pattern | Description |
+|--------|---------|-------------|
 | `Publish()` | Publish | Publish message to topic |
 | `Subscribe()` | Subscribe | Subscribe to topic |
 
@@ -421,7 +584,8 @@ node.Endpoint().RemoveProtocolHandler("/myapp/echo/1.0.0")
 **Example**:
 
 ```go
-realm, _ := node.JoinRealmWithKey(ctx, "my-realm", realmKey)
+realm, _ := node.Realm("my-realm")
+_ = realm.Join(ctx)
 messaging := realm.Messaging()
 
 err := messaging.Send(ctx, targetID, protocol, data)
@@ -455,7 +619,8 @@ const (
 ### Message Serialization
 
 ```go
-realm, _ := node.JoinRealmWithKey(ctx, "my-realm", realmKey)
+realm, _ := node.Realm("my-realm")
+_ = realm.Join(ctx)
 messaging := realm.Messaging()
 
 // Using JSON
@@ -470,7 +635,8 @@ messaging.Send(ctx, targetID, protocol, data)
 ### Timeout Control
 
 ```go
-realm, _ := node.JoinRealmWithKey(ctx, "my-realm", realmKey)
+realm, _ := node.Realm("my-realm")
+_ = realm.Join(ctx)
 messaging := realm.Messaging()
 
 // Always set timeout

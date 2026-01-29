@@ -1,0 +1,117 @@
+syntax = "proto3";
+
+package realm.auth;
+
+option go_package = "github.com/dep2p/go-dep2p/pkg/lib/proto/realm/auth;authpb";
+
+// ============================================================================
+//                              认证消息
+// ============================================================================
+
+// Message 认证协议消息
+message Message {
+  // 消息类型
+  MessageType type = 1;
+
+  // 消息载荷（根据类型解析）
+  oneof payload {
+    AuthRequest request = 2;
+    AuthChallenge challenge = 3;
+    AuthResponse response = 4;
+    AuthResult result = 5;
+  }
+}
+
+// MessageType 消息类型
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  MESSAGE_TYPE_REQUEST = 1;
+  MESSAGE_TYPE_CHALLENGE = 2;
+  MESSAGE_TYPE_RESPONSE = 3;
+  MESSAGE_TYPE_RESULT = 4;
+}
+
+// ============================================================================
+//                              认证请求
+// ============================================================================
+
+// AuthRequest 认证请求
+message AuthRequest {
+  // 请求节点 ID
+  string peer_id = 1;
+
+  // Realm ID
+  string realm_id = 2;
+
+  // 认证模式
+  AuthMode mode = 3;
+
+  // 请求时间戳（Unix 秒）
+  int64 timestamp = 4;
+
+  // 协议版本
+  string version = 5;
+}
+
+// ============================================================================
+//                              认证挑战
+// ============================================================================
+
+// AuthChallenge 认证挑战
+message AuthChallenge {
+  // 随机 nonce
+  bytes nonce = 1;
+
+  // 挑战时间戳（Unix 秒）
+  int64 timestamp = 2;
+
+  // Realm ID
+  string realm_id = 3;
+}
+
+// ============================================================================
+//                              认证响应
+// ============================================================================
+
+// AuthResponse 认证响应
+message AuthResponse {
+  // 认证证明
+  bytes proof = 1;
+
+  // 响应时间戳（Unix 秒）
+  int64 timestamp = 2;
+
+  // 节点 ID
+  string peer_id = 3;
+}
+
+// ============================================================================
+//                              认证结果
+// ============================================================================
+
+// AuthResult 认证结果
+message AuthResult {
+  // 认证是否成功
+  bool success = 1;
+
+  // 错误信息（如果失败）
+  string error = 2;
+
+  // 结果时间戳（Unix 秒）
+  int64 timestamp = 3;
+
+  // TTL（认证有效期，秒）
+  int64 ttl = 4;
+}
+
+// ============================================================================
+//                              认证模式
+// ============================================================================
+
+// AuthMode 认证模式
+enum AuthMode {
+  AUTH_MODE_UNSPECIFIED = 0;
+  AUTH_MODE_PSK = 1;
+  AUTH_MODE_CERT = 2;
+  AUTH_MODE_CUSTOM = 3;
+}

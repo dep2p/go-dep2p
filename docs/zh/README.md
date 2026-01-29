@@ -43,8 +43,9 @@
 | [what-is-dep2p.md](concepts/what-is-dep2p.md) | DeP2P 是什么（愿景 + 定位） |
 | [core-concepts.md](concepts/core-concepts.md) | 核心概念总纲（三层架构/Realm/身份第一性） |
 | [architecture-overview.md](concepts/architecture-overview.md) | 架构概览（面向用户理解，非实现细节） |
+| [relay-architecture.md](concepts/relay-architecture.md) | Relay 中继架构（v2.0/v2.1） |
 | [use-cases.md](concepts/use-cases.md) | **应用场景与商业价值（区块链/存储/PCDN）** |
-| [comparison.md](concepts/comparison.md) | 与 libp2p/iroh 对比 |
+| [comparison.md](concepts/comparison.md) | 与 libp2p/iroh/torrent 对比 |
 
 ---
 
@@ -54,10 +55,11 @@
 
 | 文档 | 说明 |
 |------|------|
-| [01-hello-world.md](tutorials/01-hello-world.md) | Hello World（两节点互连） |
-| [02-secure-chat.md](tutorials/02-secure-chat.md) | 安全聊天应用 |
-| [03-cross-nat-connect.md](tutorials/03-cross-nat-connect.md) | 跨 NAT 连接（Relay 优先） |
-| [04-realm-application.md](tutorials/04-realm-application.md) | 构建 Realm 应用 |
+| [01-hello-world.md](tutorials/01-hello-world.md) | Hello World - 使用 `known_peers` 两节点互连 |
+| [02-local-chat.md](tutorials/02-local-chat.md) | 局域网聊天 - mDNS 自动发现 + Realm 成员管理 |
+| [03-cloud-deploy.md](tutorials/03-cloud-deploy.md) | 云服务器部署 - `known_peers` + `trust_stun_addresses` |
+| [04-realm-chat.md](tutorials/04-realm-chat.md) | Realm 群聊 - 成员管理与断开检测 |
+| [05-troubleshooting-live.md](tutorials/05-troubleshooting-live.md) | 实战故障排查 - P2P 日志分析框架 |
 
 ---
 
@@ -73,8 +75,10 @@
 | [nat-traversal.md](how-to/nat-traversal.md) | NAT 穿透配置 |
 | [peer-discovery.md](how-to/peer-discovery.md) | 节点发现 |
 | [custom-protocols.md](how-to/custom-protocols.md) | 自定义协议 |
+| [introspection.md](how-to/introspection.md) | 本地自省接口 |
 | [observability.md](how-to/observability.md) | 可观测性（日志/指标） |
 | [troubleshooting.md](how-to/troubleshooting.md) | 故障排查 |
+| [relay-deployment-models.md](how-to/relay-deployment-models.md) | Relay 部署模型 |
 
 ---
 
@@ -90,14 +94,20 @@
 | [endpoint.md](reference/api/endpoint.md) | Endpoint API |
 | [realm.md](reference/api/realm.md) | Realm API |
 | [messaging.md](reference/api/messaging.md) | Messaging API |
+| [liveness.md](reference/api/liveness.md) | Liveness API |
+| [pubsub.md](reference/api/pubsub.md) | PubSub API |
+| [streams.md](reference/api/streams.md) | Streams API |
 
 #### 配置与规范
 
 | 文档 | 说明 |
 |------|------|
 | [configuration.md](reference/configuration.md) | 配置项参考 |
+| [relay-api.md](reference/relay-api.md) | Relay API 参考（v2.0/v2.1） |
 | [protocol-ids.md](reference/protocol-ids.md) | 协议 ID 命名规范 |
 | [presets.md](reference/presets.md) | 预设配置（Desktop/Mobile/Server） |
+| [api-defaults.md](reference/api-defaults.md) | API 默认值 |
+| [error-codes.md](reference/error-codes.md) | 错误码参考 |
 | [glossary.md](reference/glossary.md) | 术语表 |
 
 ---
@@ -130,9 +140,9 @@
 1. [DeP2P 是什么](concepts/what-is-dep2p.md)
 2. [核心概念总纲](concepts/core-concepts.md)
 3. [架构概览](concepts/architecture-overview.md)
-4. [安全聊天应用](tutorials/02-secure-chat.md)
-5. [跨 NAT 连接](tutorials/03-cross-nat-connect.md)
-6. [构建 Realm 应用](tutorials/04-realm-application.md)
+4. [局域网聊天](tutorials/02-local-chat.md) - mDNS + Realm
+5. [云服务器部署](tutorials/03-cloud-deploy.md) - known_peers + trust_stun
+6. [Realm 群聊应用](tutorials/04-realm-chat.md) - 成员管理与断开检测
 
 ### 路径 3：生产实践（专家）
 

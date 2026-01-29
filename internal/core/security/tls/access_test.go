@@ -1,249 +1,402 @@
 package tls
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/dep2p/go-dep2p/internal/core/identity"
-	identityif "github.com/dep2p/go-dep2p/pkg/interfaces/identity"
 	"github.com/dep2p/go-dep2p/pkg/types"
 )
 
-func createTestNodeID(t *testing.T) types.NodeID {
-	cfg := identityif.DefaultConfig()
-	mgr := identity.NewManager(cfg)
-	ident, err := mgr.Create()
-	require.NoError(t, err)
-	return ident.ID()
+// ============================================================================
+//                              测试辅助函数
+// ============================================================================
+
+// testPeerIDs 测试用 PeerID 列表
+var testPeerIDs = []types.PeerID{
+	types.PeerID("peer-alice"),
+	types.PeerID("peer-bob"),
+	types.PeerID("peer-charlie"),
+	types.PeerID("peer-dave"),
+	types.PeerID("peer-eve"),
 }
 
-func TestNewAccessController(t *testing.T) {
-	ac := NewAccessController()
-	assert.NotNil(t, ac)
-	assert.Equal(t, AccessModeAllow, ac.Mode())
-	assert.Equal(t, 0, ac.AllowListCount())
-	assert.Equal(t, 0, ac.BlockListCount())
+// createTestAccessControl 创建测试用访问控制器
+func createTestAccessControl(mode AccessMode) *AccessControl {
+	return NewAccessControl(AccessControlConfig{
+		Mode: mode,
+	})
 }
 
-func TestNewAccessControllerWithMode(t *testing.T) {
-	ac := NewAccessControllerWithMode(AccessModeDeny)
-	assert.Equal(t, AccessModeDeny, ac.Mode())
+// ============================================================================
+//                              构造函数测试
+// ============================================================================
+
+// TestNewAccessControl 测试创建访问控制器
+func TestNewAccessControl(t *testing.T) {
+	t.Run("default config", func(t *testing.T) {
+		ac := NewAccessControl(DefaultAccessControlConfig())
+		assert.NotNil(t, ac)
+		assert.Equal(t, AccessModeAllowAll, ac.GetMode())
+		assert.Equal(t, 0, ac.WhitelistSize())
+		assert.Equal(t, 0, ac.BlacklistSize())
+	})
+
+	t.Run("with whitelist", func(t *testing.T) {
+		ac := NewAccessControl(AccessControlConfig{
+			Mode:      AccessModeWhitelist,
+			Whitelist: testPeerIDs[:2],
+		})
+		assert.Equal(t, AccessModeWhitelist, ac.GetMode())
+		assert.Equal(t, 2, ac.WhitelistSize())
+	})
+
+	t.Run("with blacklist", func(t *testing.T) {
+		ac := NewAccessControl(AccessControlConfig{
+			Mode:      AccessModeBlacklist,
+			Blacklist: testPeerIDs[:3],
+		})
+		assert.Equal(t, AccessModeBlacklist, ac.GetMode())
+		assert.Equal(t, 3, ac.BlacklistSize())
+	})
 }
 
-func TestSetMode(t *testing.T) {
-	ac := NewAccessController()
-	assert.Equal(t, AccessModeAllow, ac.Mode())
+// ============================================================================
+//                              AllowAll 模式测试
+// ============================================================================
 
-	ac.SetMode(AccessModeDeny)
-	assert.Equal(t, AccessModeDeny, ac.Mode())
+// TestAccessControl_AllowAll 测试全放行模式
+func TestAccessControl_AllowAll(t *testing.T) {
+	ac := createTestAccessControl(AccessModeAllowAll)
 
-	ac.SetMode(AccessModeAllow)
-	assert.Equal(t, AccessModeAllow, ac.Mode())
+	// 所有节点都应该被允许
+	for _, peerID := range testPeerIDs {
+		err := ac.Check(peerID)
+		assert.NoError(t, err, "peer %s should be allowed", peerID)
+	}
+
+	// 即使添加到黑名单，AllowAll 模式也不检查
+	ac.AddToBlacklist(testPeerIDs[0])
+	err := ac.Check(testPeerIDs[0])
+	assert.NoError(t, err)
 }
 
-func TestAllowConnectAllowMode(t *testing.T) {
-	ac := NewAccessController()
-	nodeID := createTestNodeID(t)
+// ============================================================================
+//                              Whitelist 模式测试
+// ============================================================================
 
-	// 允许模式：默认允许所有
-	assert.True(t, ac.AllowConnect(nodeID))
+// TestAccessControl_Whitelist 测试白名单模式
+func TestAccessControl_Whitelist(t *testing.T) {
+	ac := createTestAccessControl(AccessModeWhitelist)
 
-	// 空 NodeID 总是拒绝
-	assert.False(t, ac.AllowConnect(types.EmptyNodeID))
+	// 白名单为空时，所有节点都被拒绝
+	err := ac.Check(testPeerIDs[0])
+	assert.ErrorIs(t, err, ErrNotInWhitelist)
 
-	// 加入黑名单后拒绝
-	ac.AddToBlockList(nodeID)
-	assert.False(t, ac.AllowConnect(nodeID))
+	// 添加到白名单后应该被允许
+	ac.AddToWhitelist(testPeerIDs[0], testPeerIDs[1])
+	err = ac.Check(testPeerIDs[0])
+	assert.NoError(t, err)
+	err = ac.Check(testPeerIDs[1])
+	assert.NoError(t, err)
 
-	// 从黑名单移除后允许
-	ac.RemoveFromBlockList(nodeID)
-	assert.True(t, ac.AllowConnect(nodeID))
+	// 不在白名单中的节点被拒绝
+	err = ac.Check(testPeerIDs[2])
+	assert.ErrorIs(t, err, ErrNotInWhitelist)
 }
 
-func TestAllowConnectDenyMode(t *testing.T) {
-	ac := NewAccessControllerWithMode(AccessModeDeny)
-	nodeID := createTestNodeID(t)
+// TestAccessControl_WhitelistOperations 测试白名单操作
+func TestAccessControl_WhitelistOperations(t *testing.T) {
+	ac := createTestAccessControl(AccessModeWhitelist)
 
-	// 拒绝模式：默认拒绝所有
-	assert.False(t, ac.AllowConnect(nodeID))
+	// 添加
+	ac.AddToWhitelist(testPeerIDs[0], testPeerIDs[1])
+	assert.Equal(t, 2, ac.WhitelistSize())
+	assert.True(t, ac.IsInWhitelist(testPeerIDs[0]))
+	assert.True(t, ac.IsInWhitelist(testPeerIDs[1]))
 
-	// 加入白名单后允许
-	ac.AddToAllowList(nodeID)
-	assert.True(t, ac.AllowConnect(nodeID))
+	// 移除
+	ac.RemoveFromWhitelist(testPeerIDs[0])
+	assert.Equal(t, 1, ac.WhitelistSize())
+	assert.False(t, ac.IsInWhitelist(testPeerIDs[0]))
+	assert.True(t, ac.IsInWhitelist(testPeerIDs[1]))
 
-	// 同时在黑名单中则拒绝
-	ac.AddToBlockList(nodeID)
-	assert.False(t, ac.AllowConnect(nodeID))
+	// 获取列表
+	list := ac.GetWhitelist()
+	assert.Len(t, list, 1)
+	assert.Contains(t, list, testPeerIDs[1])
 
-	// 从白名单移除后拒绝
-	ac.RemoveFromBlockList(nodeID)
-	ac.RemoveFromAllowList(nodeID)
-	assert.False(t, ac.AllowConnect(nodeID))
+	// 清空
+	ac.ClearWhitelist()
+	assert.Equal(t, 0, ac.WhitelistSize())
 }
 
-func TestAllowInboundOutbound(t *testing.T) {
-	ac := NewAccessController()
-	nodeID := createTestNodeID(t)
+// ============================================================================
+//                              Blacklist 模式测试
+// ============================================================================
 
-	// AllowInbound 和 AllowOutbound 应该与 AllowConnect 行为一致
-	assert.True(t, ac.AllowInbound(nodeID))
-	assert.True(t, ac.AllowOutbound(nodeID))
+// TestAccessControl_Blacklist 测试黑名单模式
+func TestAccessControl_Blacklist(t *testing.T) {
+	ac := createTestAccessControl(AccessModeBlacklist)
 
-	ac.AddToBlockList(nodeID)
-	assert.False(t, ac.AllowInbound(nodeID))
-	assert.False(t, ac.AllowOutbound(nodeID))
+	// 黑名单为空时，所有节点都被允许
+	err := ac.Check(testPeerIDs[0])
+	assert.NoError(t, err)
+
+	// 添加到黑名单后应该被拒绝
+	ac.AddToBlacklist(testPeerIDs[0], testPeerIDs[1])
+	err = ac.Check(testPeerIDs[0])
+	assert.ErrorIs(t, err, ErrInBlacklist)
+	err = ac.Check(testPeerIDs[1])
+	assert.ErrorIs(t, err, ErrInBlacklist)
+
+	// 不在黑名单中的节点被允许
+	err = ac.Check(testPeerIDs[2])
+	assert.NoError(t, err)
 }
 
-func TestAddRemoveAllowList(t *testing.T) {
-	ac := NewAccessController()
-	nodeID := createTestNodeID(t)
+// TestAccessControl_BlacklistOperations 测试黑名单操作
+func TestAccessControl_BlacklistOperations(t *testing.T) {
+	ac := createTestAccessControl(AccessModeBlacklist)
 
-	// 初始为空
-	assert.False(t, ac.IsInAllowList(nodeID))
-	assert.Equal(t, 0, ac.AllowListCount())
+	// 添加
+	ac.AddToBlacklist(testPeerIDs[0], testPeerIDs[1])
+	assert.Equal(t, 2, ac.BlacklistSize())
+	assert.True(t, ac.IsInBlacklist(testPeerIDs[0]))
+	assert.True(t, ac.IsInBlacklist(testPeerIDs[1]))
 
-	// 添加到白名单
-	ac.AddToAllowList(nodeID)
-	assert.True(t, ac.IsInAllowList(nodeID))
-	assert.Equal(t, 1, ac.AllowListCount())
+	// 移除
+	ac.RemoveFromBlacklist(testPeerIDs[0])
+	assert.Equal(t, 1, ac.BlacklistSize())
+	assert.False(t, ac.IsInBlacklist(testPeerIDs[0]))
+	assert.True(t, ac.IsInBlacklist(testPeerIDs[1]))
 
-	// 重复添加
-	ac.AddToAllowList(nodeID)
-	assert.Equal(t, 1, ac.AllowListCount())
+	// 获取列表
+	list := ac.GetBlacklist()
+	assert.Len(t, list, 1)
+	assert.Contains(t, list, testPeerIDs[1])
 
-	// 从白名单移除
-	ac.RemoveFromAllowList(nodeID)
-	assert.False(t, ac.IsInAllowList(nodeID))
-	assert.Equal(t, 0, ac.AllowListCount())
-
-	// 添加空 NodeID 无效
-	ac.AddToAllowList(types.EmptyNodeID)
-	assert.Equal(t, 0, ac.AllowListCount())
+	// 清空
+	ac.ClearBlacklist()
+	assert.Equal(t, 0, ac.BlacklistSize())
 }
 
-func TestAddRemoveBlockList(t *testing.T) {
-	ac := NewAccessController()
-	nodeID := createTestNodeID(t)
+// ============================================================================
+//                              Mixed 模式测试
+// ============================================================================
 
-	// 初始为空
-	assert.False(t, ac.IsInBlockList(nodeID))
-	assert.Equal(t, 0, ac.BlockListCount())
+// TestAccessControl_Mixed 测试混合模式
+func TestAccessControl_Mixed(t *testing.T) {
+	ac := createTestAccessControl(AccessModeMixed)
 
-	// 添加到黑名单
-	ac.AddToBlockList(nodeID)
-	assert.True(t, ac.IsInBlockList(nodeID))
-	assert.Equal(t, 1, ac.BlockListCount())
+	// 白名单优先
+	ac.AddToWhitelist(testPeerIDs[0])
+	ac.AddToBlacklist(testPeerIDs[0]) // 同时在白名单和黑名单
+	ac.AddToBlacklist(testPeerIDs[1]) // 只在黑名单
 
-	// 重复添加
-	ac.AddToBlockList(nodeID)
-	assert.Equal(t, 1, ac.BlockListCount())
+	// 白名单中的节点被允许（即使也在黑名单）
+	err := ac.Check(testPeerIDs[0])
+	assert.NoError(t, err)
 
-	// 从黑名单移除
-	ac.RemoveFromBlockList(nodeID)
-	assert.False(t, ac.IsInBlockList(nodeID))
-	assert.Equal(t, 0, ac.BlockListCount())
+	// 只在黑名单中的节点被拒绝
+	err = ac.Check(testPeerIDs[1])
+	assert.ErrorIs(t, err, ErrInBlacklist)
 
-	// 添加空 NodeID 无效
-	ac.AddToBlockList(types.EmptyNodeID)
-	assert.Equal(t, 0, ac.BlockListCount())
+	// 既不在白名单也不在黑名单的节点被允许
+	err = ac.Check(testPeerIDs[2])
+	assert.NoError(t, err)
 }
 
-func TestClearLists(t *testing.T) {
-	ac := NewAccessController()
-	nodeID1 := createTestNodeID(t)
-	nodeID2 := createTestNodeID(t)
+// ============================================================================
+//                              模式管理测试
+// ============================================================================
 
-	ac.AddToAllowList(nodeID1)
-	ac.AddToBlockList(nodeID2)
-	assert.Equal(t, 1, ac.AllowListCount())
-	assert.Equal(t, 1, ac.BlockListCount())
+// TestAccessControl_ModeSwitch 测试模式切换
+func TestAccessControl_ModeSwitch(t *testing.T) {
+	ac := createTestAccessControl(AccessModeAllowAll)
 
-	// 清空白名单
-	ac.ClearAllowList()
-	assert.Equal(t, 0, ac.AllowListCount())
-	assert.Equal(t, 1, ac.BlockListCount())
+	// 切换到白名单模式
+	ac.SetMode(AccessModeWhitelist)
+	assert.Equal(t, AccessModeWhitelist, ac.GetMode())
 
-	// 清空黑名单
-	ac.ClearBlockList()
-	assert.Equal(t, 0, ac.BlockListCount())
+	// 切换到黑名单模式
+	ac.SetMode(AccessModeBlacklist)
+	assert.Equal(t, AccessModeBlacklist, ac.GetMode())
+
+	// 切换到混合模式
+	ac.SetMode(AccessModeMixed)
+	assert.Equal(t, AccessModeMixed, ac.GetMode())
+
+	// 切换回全放行模式
+	ac.SetMode(AccessModeAllowAll)
+	assert.Equal(t, AccessModeAllowAll, ac.GetMode())
 }
 
-func TestClearAll(t *testing.T) {
-	ac := NewAccessController()
-	nodeID1 := createTestNodeID(t)
-	nodeID2 := createTestNodeID(t)
-
-	ac.AddToAllowList(nodeID1)
-	ac.AddToBlockList(nodeID2)
-
-	// 清空所有
-	ac.Clear()
-	assert.Equal(t, 0, ac.AllowListCount())
-	assert.Equal(t, 0, ac.BlockListCount())
+// TestAccessMode_String 测试模式字符串表示
+func TestAccessMode_String(t *testing.T) {
+	assert.Equal(t, "allow_all", AccessModeAllowAll.String())
+	assert.Equal(t, "whitelist", AccessModeWhitelist.String())
+	assert.Equal(t, "blacklist", AccessModeBlacklist.String())
+	assert.Equal(t, "mixed", AccessModeMixed.String())
+	assert.Equal(t, "unknown", AccessMode(99).String())
 }
 
-func TestAllowedPeers(t *testing.T) {
-	ac := NewAccessController()
-	nodeID1 := createTestNodeID(t)
-	nodeID2 := createTestNodeID(t)
+// ============================================================================
+//                              统计信息测试
+// ============================================================================
 
-	ac.AddToAllowList(nodeID1)
-	ac.AddToAllowList(nodeID2)
+// TestAccessControl_Stats 测试统计信息
+func TestAccessControl_Stats(t *testing.T) {
+	ac := createTestAccessControl(AccessModeWhitelist)
 
-	peers := ac.AllowedPeers()
-	assert.Len(t, peers, 2)
-	assert.Contains(t, peers, nodeID1)
-	assert.Contains(t, peers, nodeID2)
+	// 初始统计
+	stats := ac.Stats()
+	assert.Equal(t, uint64(0), stats.AllowedCount)
+	assert.Equal(t, uint64(0), stats.DeniedCount)
+
+	// 添加白名单
+	ac.AddToWhitelist(testPeerIDs[0])
+
+	// 执行检查
+	_ = ac.Check(testPeerIDs[0]) // 允许
+	_ = ac.Check(testPeerIDs[1]) // 拒绝
+	_ = ac.Check(testPeerIDs[2]) // 拒绝
+
+	stats = ac.Stats()
+	assert.Equal(t, uint64(1), stats.AllowedCount)
+	assert.Equal(t, uint64(2), stats.DeniedCount)
+	assert.Equal(t, 1, stats.WhitelistSize)
+	assert.Equal(t, 0, stats.BlacklistSize)
+	assert.Equal(t, AccessModeWhitelist, stats.Mode)
+
+	// 重置统计
+	ac.ResetStats()
+	stats = ac.Stats()
+	assert.Equal(t, uint64(0), stats.AllowedCount)
+	assert.Equal(t, uint64(0), stats.DeniedCount)
 }
 
-func TestBlockedPeers(t *testing.T) {
-	ac := NewAccessController()
-	nodeID1 := createTestNodeID(t)
-	nodeID2 := createTestNodeID(t)
+// ============================================================================
+//                              ConnectionGater 接口测试
+// ============================================================================
 
-	ac.AddToBlockList(nodeID1)
-	ac.AddToBlockList(nodeID2)
+// TestAccessControl_ConnectionGater 测试 ConnectionGater 接口
+func TestAccessControl_ConnectionGater(t *testing.T) {
+	ac := createTestAccessControl(AccessModeWhitelist)
+	ac.AddToWhitelist(testPeerIDs[0])
 
-	peers := ac.BlockedPeers()
-	assert.Len(t, peers, 2)
-	assert.Contains(t, peers, nodeID1)
-	assert.Contains(t, peers, nodeID2)
+	// 验证实现了接口
+	var _ ConnectionGater = ac
+
+	t.Run("InterceptPeerDial", func(t *testing.T) {
+		assert.True(t, ac.InterceptPeerDial(testPeerIDs[0]))
+		assert.False(t, ac.InterceptPeerDial(testPeerIDs[1]))
+	})
+
+	t.Run("InterceptAccept", func(t *testing.T) {
+		assert.True(t, ac.InterceptAccept(testPeerIDs[0]))
+		assert.False(t, ac.InterceptAccept(testPeerIDs[1]))
+	})
+
+	t.Run("InterceptSecured", func(t *testing.T) {
+		assert.True(t, ac.InterceptSecured(testPeerIDs[0]))
+		assert.False(t, ac.InterceptSecured(testPeerIDs[1]))
+	})
 }
 
-func TestConcurrentAccess(t *testing.T) {
-	ac := NewAccessController()
-	nodeID := createTestNodeID(t)
+// ============================================================================
+//                              并发测试
+// ============================================================================
 
-	// 并发读写测试
+// TestAccessControl_Concurrent 测试并发安全性
+func TestAccessControl_Concurrent(t *testing.T) {
+	ac := createTestAccessControl(AccessModeWhitelist)
+
 	done := make(chan bool)
 
-	for i := 0; i < 10; i++ {
-		go func() {
-			for j := 0; j < 100; j++ {
-				ac.AddToAllowList(nodeID)
-				ac.AllowConnect(nodeID)
-				ac.RemoveFromAllowList(nodeID)
-			}
-			done <- true
-		}()
+	// 使用固定长度的 PeerID 以避免切片越界
+	makePeerID := func(i int) types.PeerID {
+		return types.PeerID(fmt.Sprintf("peer-%08d", i))
 	}
 
-	for i := 0; i < 10; i++ {
-		go func() {
-			for j := 0; j < 100; j++ {
-				ac.AddToBlockList(nodeID)
-				ac.AllowConnect(nodeID)
-				ac.RemoveFromBlockList(nodeID)
-			}
-			done <- true
-		}()
-	}
+	// 并发添加
+	go func() {
+		for i := 0; i < 100; i++ {
+			ac.AddToWhitelist(makePeerID(i))
+		}
+		done <- true
+	}()
+
+	// 并发移除
+	go func() {
+		for i := 0; i < 100; i++ {
+			ac.RemoveFromWhitelist(makePeerID(i))
+		}
+		done <- true
+	}()
+
+	// 并发检查
+	go func() {
+		for i := 0; i < 100; i++ {
+			_ = ac.Check(makePeerID(i))
+		}
+		done <- true
+	}()
+
+	// 并发读取
+	go func() {
+		for i := 0; i < 100; i++ {
+			_ = ac.Stats()
+			_ = ac.GetWhitelist()
+			_ = ac.WhitelistSize()
+		}
+		done <- true
+	}()
 
 	// 等待所有 goroutine 完成
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 4; i++ {
 		<-done
 	}
+
+	// 如果没有 panic，测试通过
 }
 
+// ============================================================================
+//                              边界条件测试
+// ============================================================================
+
+// TestAccessControl_EmptyPeerID 测试空 PeerID
+func TestAccessControl_EmptyPeerID(t *testing.T) {
+	ac := createTestAccessControl(AccessModeWhitelist)
+
+	// 空 PeerID 应该被正确处理
+	err := ac.Check(types.PeerID(""))
+	assert.ErrorIs(t, err, ErrNotInWhitelist)
+
+	// 可以添加空 PeerID 到白名单
+	ac.AddToWhitelist(types.PeerID(""))
+	err = ac.Check(types.PeerID(""))
+	assert.NoError(t, err)
+}
+
+// TestAccessControl_DuplicateAdd 测试重复添加
+func TestAccessControl_DuplicateAdd(t *testing.T) {
+	ac := createTestAccessControl(AccessModeWhitelist)
+
+	// 重复添加不应该增加计数
+	ac.AddToWhitelist(testPeerIDs[0])
+	ac.AddToWhitelist(testPeerIDs[0])
+	ac.AddToWhitelist(testPeerIDs[0])
+
+	assert.Equal(t, 1, ac.WhitelistSize())
+}
+
+// TestDefaultAccessControlConfig 测试默认配置
+func TestDefaultAccessControlConfig(t *testing.T) {
+	config := DefaultAccessControlConfig()
+	require.Equal(t, AccessModeAllowAll, config.Mode)
+	require.Nil(t, config.Whitelist)
+	require.Nil(t, config.Blacklist)
+}

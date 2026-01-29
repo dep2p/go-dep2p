@@ -43,8 +43,9 @@ Choose a path based on your needs:
 | [what-is-dep2p.md](concepts/what-is-dep2p.md) | What is DeP2P (vision + positioning) |
 | [core-concepts.md](concepts/core-concepts.md) | Core concepts overview (three-layer architecture/Realm/identity-first) |
 | [architecture-overview.md](concepts/architecture-overview.md) | Architecture overview (user-oriented, not implementation details) |
+| [relay-architecture.md](concepts/relay-architecture.md) | Relay architecture (v2.0/v2.1) |
 | [use-cases.md](concepts/use-cases.md) | **Use cases & business value (Blockchain/Storage/PCDN)** |
-| [comparison.md](concepts/comparison.md) | Comparison with libp2p/iroh |
+| [comparison.md](concepts/comparison.md) | Comparison with libp2p/iroh/torrent |
 
 ---
 
@@ -54,10 +55,11 @@ Choose a path based on your needs:
 
 | Document | Description |
 |----------|-------------|
-| [01-hello-world.md](tutorials/01-hello-world.md) | Hello World (two-node connection) |
-| [02-secure-chat.md](tutorials/02-secure-chat.md) | Secure chat application |
-| [03-cross-nat-connect.md](tutorials/03-cross-nat-connect.md) | Cross-NAT connection (Relay-first) |
-| [04-realm-application.md](tutorials/04-realm-application.md) | Building Realm applications |
+| [01-hello-world.md](tutorials/01-hello-world.md) | Hello World - Two-node connection with `known_peers` |
+| [02-secure-chat.md](tutorials/02-secure-chat.md) | LAN Chat - mDNS auto-discovery + Realm member management |
+| [03-cross-nat-connect.md](tutorials/03-cross-nat-connect.md) | Cloud Deployment - `known_peers` + `trust_stun_addresses` |
+| [04-realm-application.md](tutorials/04-realm-application.md) | Realm Group Chat - Member management and disconnect detection |
+| [05-troubleshooting-live.md](tutorials/05-troubleshooting-live.md) | Live Troubleshooting - P2P log analysis framework |
 
 ---
 
@@ -73,8 +75,10 @@ Choose a path based on your needs:
 | [nat-traversal.md](how-to/nat-traversal.md) | NAT traversal configuration |
 | [peer-discovery.md](how-to/peer-discovery.md) | Peer discovery |
 | [custom-protocols.md](how-to/custom-protocols.md) | Custom protocols |
+| [introspection.md](how-to/introspection.md) | Local introspection interface |
 | [observability.md](how-to/observability.md) | Observability (logs/metrics) |
 | [troubleshooting.md](how-to/troubleshooting.md) | Troubleshooting |
+| [relay-deployment-models.md](how-to/relay-deployment-models.md) | Relay deployment models |
 
 ---
 
@@ -90,14 +94,20 @@ Choose a path based on your needs:
 | [endpoint.md](reference/api/endpoint.md) | Endpoint API |
 | [realm.md](reference/api/realm.md) | Realm API |
 | [messaging.md](reference/api/messaging.md) | Messaging API |
+| [liveness.md](reference/api/liveness.md) | Liveness API |
+| [pubsub.md](reference/api/pubsub.md) | PubSub API |
+| [streams.md](reference/api/streams.md) | Streams API |
 
 #### Configuration & Specifications
 
 | Document | Description |
 |----------|-------------|
 | [configuration.md](reference/configuration.md) | Configuration reference |
+| [relay-api.md](reference/relay-api.md) | Relay API reference (v2.0/v2.1) |
 | [protocol-ids.md](reference/protocol-ids.md) | Protocol ID naming conventions |
 | [presets.md](reference/presets.md) | Preset configurations (Desktop/Mobile/Server) |
+| [api-defaults.md](reference/api-defaults.md) | API default values |
+| [error-codes.md](reference/error-codes.md) | Error codes reference |
 | [glossary.md](reference/glossary.md) | Glossary |
 
 ---
@@ -130,9 +140,9 @@ Choose a path based on your needs:
 1. [What is DeP2P](concepts/what-is-dep2p.md)
 2. [Core Concepts Overview](concepts/core-concepts.md)
 3. [Architecture Overview](concepts/architecture-overview.md)
-4. [Secure Chat Application](tutorials/02-secure-chat.md)
-5. [Cross-NAT Connection](tutorials/03-cross-nat-connect.md)
-6. [Building Realm Applications](tutorials/04-realm-application.md)
+4. [LAN Chat](tutorials/02-secure-chat.md) - mDNS + Realm
+5. [Cloud Deployment](tutorials/03-cross-nat-connect.md) - known_peers + trust_stun
+6. [Realm Group Chat](tutorials/04-realm-application.md) - Member management and disconnect detection
 
 ### Path 3: Production Practice (Expert)
 
@@ -159,4 +169,3 @@ If you find errors or have suggestions for improvement, please:
 - Submit an Issue
 - Submit a Pull Request
 - Refer to [Contributing Guide](contributing/README.md)
-

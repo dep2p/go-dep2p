@@ -1,0 +1,171 @@
+syntax = "proto3";
+
+package realm.witness;
+
+option go_package = "github.com/dep2p/go-dep2p/pkg/lib/proto/realm/witness;witnesspb";
+
+// ============================================================================
+//                         见证人协议定义
+// ============================================================================
+//
+// Witness 协议用于 Realm 成员之间的断开检测确认，是快速断开检测机制的第三层。
+// 当某节点检测到另一成员断开时，向其他成员广播见证报告，收集确认后触发成员移除。
+//
+// 协议 ID: /dep2p/app/{realmID}/witness/1.0.0
+//
+// 设计目标：
+//   - 直连非优雅断开检测：< 10s
+//   - 中继非优雅断开检测：< 15s
+//   - 误判率（分区场景）：< 5%
+//
+// 参考：
+//   - design/02_constraints/protocol/L4_application/liveness.md
+//   - design/03_architecture/L3_behavioral/disconnect_detection.md
+//
+// ============================================================================
+
+// DetectionMethod 检测方法
+//
+// 描述见证人如何检测到节点断开的方法。
+enum DetectionMethod {
+  // DETECTION_METHOD_UNKNOWN 未知检测方法
+  DETECTION_METHOD_UNKNOWN = 0;
+  
+  // DETECTION_METHOD_QUIC_CLOSE QUIC 连接正常关闭
+  // 对方发送 CONNECTION_CLOSE 帧（优雅断开）
+  DETECTION_METHOD_QUIC_CLOSE = 1;
+  
+  // DETECTION_METHOD_QUIC_TIMEOUT QUIC 空闲超时
+  // 超过 MaxIdleTimeout（6s）未收到任何数据包
+  DETECTION_METHOD_QUIC_TIMEOUT = 2;
+  
+  // DETECTION_METHOD_PING_FAILED Liveness Ping 失败
+  // 连续 3 次 Ping 超时（兜底检测机制）
+  DETECTION_METHOD_PING_FAILED = 3;
+  
+  // DETECTION_METHOD_RELAY_CIRCUIT Relay 电路关闭
+  // Relay 服务器检测到中继电路断开
+  DETECTION_METHOD_RELAY_CIRCUIT = 4;
+}
+
+// ConfirmationType 确认类型
+//
+// 见证人对断开报告的确认响应。
+enum ConfirmationType {
+  // CONFIRMATION_TYPE_ABSTAIN 弃权
+  // 见证人无法确认（如未与目标节点有过连接）
+  CONFIRMATION_TYPE_ABSTAIN = 0;
+  
+  // CONFIRMATION_TYPE_AGREE 同意
+  // 见证人也检测到目标节点断开
+  CONFIRMATION_TYPE_AGREE = 1;
+  
+  // CONFIRMATION_TYPE_DISAGREE 反对
+  // 见证人仍能与目标节点通信
+  CONFIRMATION_TYPE_DISAGREE = 2;
+}
+
+// WitnessReport 见证报告
+//
+// 当节点检测到另一成员断开时，向 Realm 广播此消息。
+// 其他成员收到后会验证并响应 WitnessConfirmation。
+//
+// 安全约束：
+//   - 必须包含报告者签名
+//   - 时间戳有效期：10s
+//   - 限速：每分钟最多 10 个报告（防止 DoS）
+message WitnessReport {
+  // report_id 报告唯一标识（UUID 或 hash）
+  bytes report_id = 1;
+  
+  // reporter_id 报告者 Peer ID
+  bytes reporter_id = 2;
+  
+  // target_id 被报告断开的目标 Peer ID
+  bytes target_id = 3;
+  
+  // realm_id Realm ID
+  bytes realm_id = 4;
+  
+  // detection_method 检测方法
+  DetectionMethod detection_method = 5;
+  
+  // timestamp 报告时间戳（Unix 纳秒）
+  int64 timestamp = 6;
+  
+  // last_contact_timestamp 最后一次成功通信的时间戳（Unix 纳秒）
+  // 用于帮助其他见证人判断是否有更新的联系记录
+  int64 last_contact_timestamp = 7;
+  
+  // last_contact_proof 最后联系证明（可选）
+  // 可以是最后一次交换的消息 hash 或协议交互记录
+  // 用于证明报告者确实与目标节点有过通信
+  bytes last_contact_proof = 8;
+  
+  // signature 报告者签名
+  // 签名内容：report_id || reporter_id || target_id || realm_id || detection_method || timestamp
+  bytes signature = 9;
+}
+
+// WitnessConfirmation 见证确认
+//
+// 见证人对 WitnessReport 的响应，表示是否同意目标节点已断开。
+//
+// 投票规则：
+//   - 快速路径（成员数 < 10 且 QUIC_CLOSE）：单票 AGREE 且无反对即可确认
+//   - 标准路径：简单多数（> 50% AGREE）确认
+//   - 任何 DISAGREE 触发重新验证
+message WitnessConfirmation {
+  // report_id 对应的报告 ID
+  bytes report_id = 1;
+  
+  // witness_id 见证人 Peer ID
+  bytes witness_id = 2;
+  
+  // confirmation_type 确认类型
+  ConfirmationType confirmation_type = 3;
+  
+  // timestamp 确认时间戳（Unix 纳秒）
+  int64 timestamp = 4;
+  
+  // last_contact_timestamp 见证人与目标节点的最后联系时间
+  // 如果比报告者更新，说明目标节点可能仍在线
+  int64 last_contact_timestamp = 5;
+  
+  // reason 确认原因说明（可选，用于调试）
+  string reason = 6;
+  
+  // signature 见证人签名
+  // 签名内容：report_id || witness_id || confirmation_type || timestamp
+  bytes signature = 7;
+}
+
+// WitnessVotingResult 见证投票结果
+//
+// 汇总所有见证确认后的最终结果。
+// 用于内部状态跟踪，不在网络上传输。
+message WitnessVotingResult {
+  // report_id 对应的报告 ID
+  bytes report_id = 1;
+  
+  // target_id 目标 Peer ID
+  bytes target_id = 2;
+  
+  // confirmed 是否确认断开
+  bool confirmed = 3;
+  
+  // agree_count 同意票数
+  int32 agree_count = 4;
+  
+  // disagree_count 反对票数
+  int32 disagree_count = 5;
+  
+  // abstain_count 弃权票数
+  int32 abstain_count = 6;
+  
+  // total_witnesses 总见证人数
+  int32 total_witnesses = 7;
+  
+  // decision_timestamp 决策时间戳
+  int64 decision_timestamp = 8;
+}

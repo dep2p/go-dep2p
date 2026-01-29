@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package realm.gateway;
+
+option go_package = "github.com/dep2p/go-dep2p/pkg/lib/proto/realm/gateway;gatewaypb";
+
+// ============================================================================
+//                              中继请求
+// ============================================================================
+
+// RelayRequest 中继请求
+message RelayRequest {
+  bytes source_peer_id = 1;
+  bytes target_peer_id = 2;
+  string protocol = 3;
+  bytes realm_id = 4;
+  bytes auth_proof = 5;
+  bytes data = 6;
+}
+
+// RelayResponse 中继响应
+message RelayResponse {
+  bool success = 1;
+  string error = 2;
+  bytes relay_node_id = 3;
+}
+
+// ============================================================================
+//                              网关容量
+// ============================================================================
+
+// GatewayCapacity 网关容量
+message GatewayCapacity {
+  int32 active_connections = 1;
+  int64 available_bandwidth = 2;
+  double cpu_usage = 3;
+  repeated string reachable_peers = 4;
+}
+
+// ============================================================================
+//                              中继统计
+// ============================================================================
+
+// RelayStats 中继统计
+message RelayStats {
+  int64 bytes_sent = 1;
+  int64 bytes_received = 2;
+  int64 duration_ms = 3;
+  int32 hop_count = 4;
+}

@@ -1,190 +1,142 @@
+// Package noise 实现 Noise 协议安全传输
 package noise
 
 import (
 	"context"
 	"fmt"
-	"time"
+	"net"
 
-	identityif "github.com/dep2p/go-dep2p/pkg/interfaces/identity"
-	securityif "github.com/dep2p/go-dep2p/pkg/interfaces/security"
-	transportif "github.com/dep2p/go-dep2p/pkg/interfaces/transport"
+	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
 	"github.com/dep2p/go-dep2p/pkg/types"
+	"github.com/dep2p/go-dep2p/pkg/lib/log"
 )
 
-// DefaultHandshakeTimeout 默认握手超时
-const DefaultHandshakeTimeout = 10 * time.Second
+var logger = log.Logger("core/security/noise")
 
-// Transport Noise 安全传输
-//
-// 将普通连接升级为 Noise 加密连接。
-// 实现 securityif.SecureTransport 接口。
-//
-// 通过 identity 绑定机制，确保 Noise 的 RemoteIdentity()
-// 返回的是真正的 dep2p identity NodeID，而非 Noise DH 公钥的哈希。
+// Transport Noise 协议传输
 type Transport struct {
-	identity   identityif.Identity
-	config     *securityif.NoiseConfig
-	handshaker *Handshaker
+	identity        pkgif.Identity
+	identityBinding *IdentityBinding // 可选的身份绑定验证器
 }
 
-// 确保实现 securityif.SecureTransport 接口
-var _ securityif.SecureTransport = (*Transport)(nil)
-
-// NewTransport 创建 Noise 传输
-//
-// identity 参数是必需的，用于在握手过程中进行 identity 绑定，
-// 确保 RemoteIdentity() 返回正确的 dep2p NodeID。
-// keyFactory 参数用于验证远程 identity 绑定。
-func NewTransport(identity identityif.Identity, config *securityif.NoiseConfig, keyFactory identityif.KeyFactory) (*Transport, error) {
+// New 创建 Noise 传输
+func New(identity pkgif.Identity) (*Transport, error) {
 	if identity == nil {
-		return nil, fmt.Errorf("identity 不能为空")
+		return nil, fmt.Errorf("identity is nil")
 	}
-
-	if config == nil {
-		config = securityif.DefaultNoiseConfig()
-	}
-
-	// 创建带完整依赖的握手处理器
-	handshaker, err := NewHandshakerWithDeps(config, identity, keyFactory)
-	if err != nil {
-		return nil, fmt.Errorf("创建握手处理器失败: %w", err)
-	}
-
-	log.Info("Noise 传输已创建",
-		"pattern", config.HandshakePattern,
-		"cipher", config.CipherSuite,
-		"identityBinding", true)
 
 	return &Transport{
-		identity:   identity,
-		config:     config,
-		handshaker: handshaker,
+		identity: identity,
 	}, nil
 }
 
-// SecureInbound 对入站连接进行安全握手
+// SetIdentityBinding 设置身份绑定验证器
 //
-// 服务端角色，被动接受连接并执行 Noise 握手。
-// 握手过程中会验证对方的 identity 绑定（如果提供）。
-func (t *Transport) SecureInbound(ctx context.Context, conn transportif.Conn) (securityif.SecureConn, error) {
-	log.Debug("开始入站 Noise 握手",
-		"remoteAddr", conn.RemoteAddr().String())
+// 设置后，握手完成时会验证远程节点的身份绑定
+func (t *Transport) SetIdentityBinding(ib *IdentityBinding) {
+	t.identityBinding = ib
+}
 
-	// 设置握手超时
-	deadline := t.getDeadline(ctx)
-	if err := conn.SetDeadline(deadline); err != nil {
-		log.Debug("设置握手超时失败", "err", err)
+// GetIdentityBinding 获取身份绑定验证器
+func (t *Transport) GetIdentityBinding() *IdentityBinding {
+	return t.identityBinding
+}
+
+// ID 返回协议标识
+func (t *Transport) ID() types.ProtocolID {
+	return types.ProtocolID("/noise/1.0.0")
+}
+
+// SecureInbound 保护入站连接
+func (t *Transport) SecureInbound(_ context.Context, conn net.Conn, remotePeer types.PeerID) (pkgif.SecureConn, error) {
+	// 参数验证
+	if conn == nil {
+		return nil, fmt.Errorf("conn is nil")
 	}
-
-	// 获取底层 io.ReadWriter
-	rw := t.getReadWriter(conn)
-
-	// 执行握手
-	result, err := t.handshaker.HandshakeAsResponder(rw, deadline)
+	
+	remotePeerLabel := string(remotePeer)
+	if len(remotePeerLabel) > 8 {
+		remotePeerLabel = remotePeerLabel[:8]
+	}
+	logger.Debug("Noise 入站握手", "remotePeer", remotePeerLabel)
+	
+	// 获取私钥
+	privKey := t.identity.PrivateKey()
+	
+	// 执行 Noise XX 握手（服务器端）
+	secConn, err := performHandshake(conn, privKey, remotePeer, false)
 	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("Noise 握手失败: %w", err)
+		logger.Warn("Noise 握手失败", "remotePeer", remotePeerLabel, "error", err)
+		return nil, fmt.Errorf("handshake failed: %w", err)
 	}
-
-	// 清除超时
-	if err := conn.SetDeadline(time.Time{}); err != nil {
-		log.Debug("清除握手超时失败", "err", err)
+	
+	// 可选：使用 IdentityBinding 进行额外的身份验证
+	if t.identityBinding != nil {
+		if err := t.verifyRemoteIdentity(secConn); err != nil {
+			logger.Warn("身份绑定验证失败", "remotePeer", remotePeerLabel, "error", err)
+			conn.Close()
+			return nil, fmt.Errorf("identity binding verification failed: %w", err)
+		}
+		logger.Debug("身份绑定验证成功", "remotePeer", remotePeerLabel)
 	}
-
-	log.Debug("入站 Noise 握手成功",
-		"remoteID", result.RemoteID.String(),
-		"remoteAddr", conn.RemoteAddr().String(),
-		"hasIdentityBinding", result.RemoteIdentityPubKey != nil)
-
-	// 创建安全连接
-	return NewSecureConnWithIdentity(
-		conn,
-		result,
-		t.identity.ID(),
-		t.identity.PublicKey(),
-	), nil
+	
+	logger.Debug("Noise 握手成功", "remotePeer", remotePeerLabel)
+	return secConn, nil
 }
 
-// SecureOutbound 对出站连接进行安全握手
-//
-// 客户端角色，主动发起连接并执行 Noise 握手。
-// remotePeer 是期望的远程节点 ID，用于身份验证。
-// 如果对方提供了 identity 绑定，会验证其 NodeID 与 remotePeer 匹配。
-func (t *Transport) SecureOutbound(ctx context.Context, conn transportif.Conn, remotePeer types.NodeID) (securityif.SecureConn, error) {
-	log.Debug("开始出站 Noise 握手",
-		"remoteAddr", conn.RemoteAddr().String(),
-		"expectedPeerID", remotePeer.String())
-
-	// 设置握手超时
-	deadline := t.getDeadline(ctx)
-	if err := conn.SetDeadline(deadline); err != nil {
-		log.Debug("设置握手超时失败", "err", err)
+// SecureOutbound 保护出站连接
+func (t *Transport) SecureOutbound(_ context.Context, conn net.Conn, remotePeer types.PeerID) (pkgif.SecureConn, error) {
+	// 参数验证
+	if conn == nil {
+		return nil, fmt.Errorf("conn is nil")
 	}
-
-	// 获取底层 io.ReadWriter
-	rw := t.getReadWriter(conn)
-
-	// 执行握手
-	result, err := t.handshaker.HandshakeAsInitiator(rw, remotePeer, deadline)
+	
+	remotePeerLabel := string(remotePeer)
+	if len(remotePeerLabel) > 8 {
+		remotePeerLabel = remotePeerLabel[:8]
+	}
+	logger.Debug("Noise 出站握手", "remotePeer", remotePeerLabel)
+	
+	// 获取私钥
+	privKey := t.identity.PrivateKey()
+	
+	// 执行 Noise XX 握手（客户端）
+	secConn, err := performHandshake(conn, privKey, remotePeer, true)
 	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("Noise 握手失败: %w", err)
+		logger.Warn("Noise 握手失败", "remotePeer", remotePeerLabel, "error", err)
+		return nil, fmt.Errorf("handshake failed: %w", err)
+	}
+	
+	// 可选：使用 IdentityBinding 进行额外的身份验证
+	if t.identityBinding != nil {
+		if err := t.verifyRemoteIdentity(secConn); err != nil {
+			logger.Warn("身份绑定验证失败", "remotePeer", remotePeerLabel, "error", err)
+			conn.Close()
+			return nil, fmt.Errorf("identity binding verification failed: %w", err)
+		}
+		logger.Debug("身份绑定验证成功", "remotePeer", remotePeerLabel)
+	}
+	
+	logger.Debug("Noise 握手成功", "remotePeer", remotePeerLabel)
+	return secConn, nil
+}
+
+// verifyRemoteIdentity 验证远程节点身份绑定
+func (t *Transport) verifyRemoteIdentity(secConn *secureConn) error {
+	if t.identityBinding == nil {
+		return nil
 	}
 
-	// 清除超时
-	if err := conn.SetDeadline(time.Time{}); err != nil {
-		log.Debug("清除握手超时失败", "err", err)
+	// 获取远程公钥和 PeerID
+	remotePubKeyBytes := secConn.RemotePublicKey()
+	remotePeerID := secConn.RemotePeer()
+
+	// 如果没有远程公钥，跳过验证（握手已验证 PeerID）
+	if len(remotePubKeyBytes) == 0 {
+		logger.Debug("无远程公钥，跳过 IdentityBinding 验证")
+		return nil
 	}
 
-	log.Debug("出站 Noise 握手成功",
-		"remoteID", result.RemoteID.String(),
-		"remoteAddr", conn.RemoteAddr().String(),
-		"hasIdentityBinding", result.RemoteIdentityPubKey != nil)
-
-	// 创建安全连接
-	return NewSecureConnWithIdentity(
-		conn,
-		result,
-		t.identity.ID(),
-		t.identity.PublicKey(),
-	), nil
-}
-
-// Protocol 返回安全协议名称
-func (t *Transport) Protocol() string {
-	return "noise"
-}
-
-// getDeadline 获取握手截止时间
-func (t *Transport) getDeadline(ctx context.Context) time.Time {
-	if deadline, ok := ctx.Deadline(); ok {
-		return deadline
-	}
-
-	timeout := DefaultHandshakeTimeout
-	if t.config != nil && t.config.HandshakeTimeout > 0 {
-		timeout = time.Duration(t.config.HandshakeTimeout) * time.Second
-	}
-
-	return time.Now().Add(timeout)
-}
-
-// getReadWriter 获取连接的 io.ReadWriter 接口
-func (t *Transport) getReadWriter(conn transportif.Conn) connReadWriter {
-	return connReadWriter{conn: conn}
-}
-
-// connReadWriter 适配 transportif.Conn 为 io.ReadWriter
-type connReadWriter struct {
-	conn transportif.Conn
-}
-
-// Read 读取数据
-func (rw connReadWriter) Read(b []byte) (int, error) {
-	return rw.conn.Read(b)
-}
-
-// Write 写入数据
-func (rw connReadWriter) Write(b []byte) (int, error) {
-	return rw.conn.Write(b)
+	// 使用 IdentityBinding 验证公钥与 PeerID 的绑定关系
+	return t.identityBinding.VerifyBindingFromBytes(remotePubKeyBytes, remotePeerID)
 }

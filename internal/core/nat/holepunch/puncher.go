@@ -1,478 +1,505 @@
-// Package holepunch 提供 NAT 打洞实现
-//
-// 打洞器用于穿透 NAT 建立直接连接：
-// - UDP/QUIC 同时发送
-// - 多地址尝试
-// - 超时重试
 package holepunch
 
 import (
 	"context"
-	"crypto/rand"
-	"errors"
-	"fmt"
-	"net"
 	"sync"
 	"time"
 
-	"github.com/dep2p/go-dep2p/internal/util/logger"
-	"github.com/dep2p/go-dep2p/pkg/interfaces/endpoint"
-	natif "github.com/dep2p/go-dep2p/pkg/interfaces/nat"
-	"github.com/dep2p/go-dep2p/pkg/types"
+	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
+	"github.com/dep2p/go-dep2p/pkg/lib/log"
+	"github.com/dep2p/go-dep2p/pkg/lib/proto/holepunch"
+	"github.com/dep2p/go-dep2p/pkg/protocol"
+	"google.golang.org/protobuf/proto"
 )
 
-// 包级别日志实例
-var log = logger.Logger("nat.holepunch")
+var logger = log.Logger("core/nat/holepunch")
 
-// ============================================================================
-//                              错误定义
-// ============================================================================
+// HolePunchProtocol 打洞协议 ID（使用统一定义）
+var HolePunchProtocol = string(protocol.HolePunch)
 
-// 打洞相关错误
-var (
-	// ErrPunchFailed 打洞失败
-	ErrPunchFailed = errors.New("hole punch failed")
-	ErrNoAddresses    = errors.New("no addresses to punch")
-	ErrTimeout        = errors.New("hole punch timeout")
-	ErrNoPeerResponse = errors.New("no response from peer")
+// 打洞相关常量
+const (
+	// DirectDialTimeout 单次直连拨号超时
+	DirectDialTimeout = 5 * time.Second
+
+	// MaxHolePunchRetries 打洞最大重试次数
+	// 增加重试次数可以提高打洞成功率，特别是对于 NAT 映射需要时间建立的场景
+	MaxHolePunchRetries = 3
+
+	// HolePunchRetryDelay 打洞重试间隔
+	// 短暂延迟让 NAT 映射有机会建立
+	HolePunchRetryDelay = 500 * time.Millisecond
 )
 
-// ============================================================================
-//                              配置
-// ============================================================================
+// HolePuncher 打洞协调器
+//
+// 实现 DCUtR (Direct Connection Upgrade through Relay) 协议：
+//   - 通过中继连接协商双方的公网地址
+//   - 双方同时向对方发起连接，打通 NAT
+type HolePuncher struct {
+	mu     sync.RWMutex
+	active map[string]struct{} // 活跃的打洞尝试
 
-// Config 打洞器配置
-type Config struct {
-	// MaxAttempts 最大尝试次数
-	MaxAttempts int
+	Swarm pkgif.Swarm
+	Host  pkgif.Host
 
-	// AttemptInterval 尝试间隔
-	AttemptInterval time.Duration
-
-	// Timeout 总超时时间
-	Timeout time.Duration
-
-	// PacketSize 打洞包大小
-	PacketSize int
+	// DirectDialer 用于直接拨号（不经过 Swarm.DialPeer，避免递归）
+	DirectDialer DirectDialer
 }
 
-// DefaultConfig 返回默认配置
-func DefaultConfig() Config {
-	return Config{
-		MaxAttempts:     5,
-		AttemptInterval: 200 * time.Millisecond,
-		Timeout:         10 * time.Second,
-		PacketSize:      64,
-	}
+// DirectDialer 定义直接拨号接口
+//
+// 用于打洞时的同时拨号，不经过 Swarm.DialPeer 的完整流程
+type DirectDialer interface {
+	// DialDirect 直接拨号到指定地址
+	DialDirect(ctx context.Context, peerID string, addr string) (pkgif.Connection, error)
 }
 
-// MinPacketSize 打洞包最小大小（4字节 magic + 16字节 nonce）
-const MinPacketSize = 20
-
-// Validate 验证配置
-func (c *Config) Validate() {
-	if c.MaxAttempts <= 0 {
-		c.MaxAttempts = 5
-	}
-	if c.AttemptInterval <= 0 {
-		c.AttemptInterval = 200 * time.Millisecond
-	}
-	if c.Timeout <= 0 {
-		c.Timeout = 10 * time.Second
-	}
-	// 确保包大小足够容纳 magic (4) + nonce (16)
-	if c.PacketSize < MinPacketSize {
-		c.PacketSize = 64
+// NewHolePuncher 创建打洞器
+func NewHolePuncher(swarm pkgif.Swarm, host pkgif.Host) *HolePuncher {
+	return &HolePuncher{
+		active: make(map[string]struct{}),
+		Swarm:  swarm,
+		Host:   host,
 	}
 }
 
-// ============================================================================
-//                              Puncher 结构
-// ============================================================================
-
-// Puncher 打洞器实现
-type Puncher struct {
-	config Config
-
-	// 本地地址
-	localAddrs []endpoint.Address
-
-	// 活跃打洞会话
-	sessions   map[string]*punchSession
-	sessionsMu sync.RWMutex
+// SetDirectDialer 设置直接拨号器
+func (h *HolePuncher) SetDirectDialer(dialer DirectDialer) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.DirectDialer = dialer
 }
 
-// punchSession 打洞会话
-type punchSession struct {
-	remoteID    types.NodeID
-	remoteAddrs []endpoint.Address
-	nonce       []byte
-	startTime   time.Time
-	successAddr endpoint.Address
-	done        chan struct{}
-	err         error
-	completed   bool // 标记会话是否已完成，防止重复关闭 done channel
-}
-
-// 确保实现接口
-var _ natif.HolePuncher = (*Puncher)(nil)
-
-// NewPuncher 创建打洞器
-func NewPuncher(config Config) *Puncher {
-	// 验证并修正配置
-	config.Validate()
-
-	return &Puncher{
-		config:   config,
-		sessions: make(map[string]*punchSession),
-	}
-}
-
-// ============================================================================
-//                              HolePuncher 接口实现
-// ============================================================================
-
-// Punch 尝试打洞连接
-func (p *Puncher) Punch(ctx context.Context, remoteID types.NodeID, remoteAddrs []endpoint.Address) (endpoint.Address, error) {
-	if len(remoteAddrs) == 0 {
-		return nil, ErrNoAddresses
+// DirectConnect 尝试直连节点
+//
+// 完整实现 DCUtR (Direct Connection Upgrade through Relay) 协议：
+//  1. 通过中继建立协商流
+//  2. 交换观察地址（CONNECT 消息）
+//  3. 同步时机（SYNC 消息）
+//  4. 同时尝试直连所有观测地址
+//  5. 等待连接建立
+//
+// hintAddrs 参数是可选提示，不再是必需参数。
+// 打洞协议通过 CONNECT 消息交换双方的观测地址（ShareableAddrs），
+// 而不是依赖 Peerstore 中的 directAddrs。
+func (h *HolePuncher) DirectConnect(ctx context.Context, peerID string, hintAddrs []string) error {
+	peerShort := peerID
+	if len(peerShort) > 8 {
+		peerShort = peerShort[:8]
 	}
 
-	log.Info("开始打洞",
-		"remoteID", remoteID.ShortString(),
-		"addresses", len(remoteAddrs))
+	// hintAddrs 是可选提示，不再要求非空
+	// 打洞协议会通过 CONNECT 消息交换双方的观测地址
+	logger.Info("开始 HolePunch 打洞协商",
+		"peerID", peerShort,
+		"hintAddrs", len(hintAddrs))
 
-	// 创建会话
-	nonce := make([]byte, 16)
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, fmt.Errorf("failed to generate nonce: %w", err)
+	// 检查是否已有活跃打洞
+	h.mu.RLock()
+	_, exists := h.active[peerID]
+	h.mu.RUnlock()
+
+	if exists {
+		logger.Debug("已有活跃打洞，跳过", "peerID", peerShort)
+		return ErrHolePunchActive
 	}
 
-	session := &punchSession{
-		remoteID:    remoteID,
-		remoteAddrs: remoteAddrs,
-		nonce:       nonce,
-		startTime:   time.Now(),
-		done:        make(chan struct{}),
+	// 标记为活跃
+	h.MarkActive(peerID)
+	defer h.ClearActive(peerID)
+
+	// 1. 通过中继建立协商流
+	logger.Info("打开 HolePunch 协商流", "peerID", peerShort)
+	stream, err := h.openRelayStream(ctx, peerID)
+	if err != nil {
+		logger.Warn("打开协商流失败", "peerID", peerShort, "error", err)
+		return &HolePunchError{
+			Message: "failed to open relay stream",
+			Cause:   err,
+		}
+	}
+	defer stream.Close()
+
+	// 2. 发送 CONNECT 消息，包含本地观测地址
+	// 使用 getObservedAddrs() 获取 ShareableAddrs，而非 Peerstore 地址
+	localObsAddrs := h.getObservedAddrs()
+	logger.Info("发送 CONNECT 消息",
+		"peerID", peerShort,
+		"localAddrsCount", len(localObsAddrs),
+		"localAddrs", h.addrsToStrings(localObsAddrs))
+
+	connectMsg := &holepunch.HolePunch{
+		Type:     holepunch.Type_CONNECT,
+		ObsAddrs: localObsAddrs,
 	}
 
-	sessionKey := remoteID.String()
-	p.sessionsMu.Lock()
-	p.sessions[sessionKey] = session
-	p.sessionsMu.Unlock()
-
-	defer func() {
-		p.sessionsMu.Lock()
-		delete(p.sessions, sessionKey)
-		p.sessionsMu.Unlock()
-	}()
-
-	// 创建超时上下文
-	punchCtx, cancel := context.WithTimeout(ctx, p.config.Timeout)
-	defer cancel()
-
-	// 并行尝试所有地址
-	resultCh := make(chan endpoint.Address, len(remoteAddrs))
-	errCh := make(chan error, len(remoteAddrs))
-
-	var wg sync.WaitGroup
-	for _, addr := range remoteAddrs {
-		wg.Add(1)
-		go func(addr endpoint.Address) {
-			defer wg.Done()
-			if successAddr, err := p.punchAddress(punchCtx, addr, nonce); err == nil {
-				resultCh <- successAddr
-			} else {
-				errCh <- err
-			}
-		}(addr)
-	}
-
-	// 等待结果
-	go func() {
-		wg.Wait()
-		close(resultCh)
-		close(errCh)
-	}()
-
-	// 返回第一个成功的地址
-	select {
-	case <-punchCtx.Done():
-		return nil, fmt.Errorf("%w: %v", ErrTimeout, punchCtx.Err())
-	case addr := <-resultCh:
-		if addr != nil {
-			log.Info("打洞成功",
-				"remoteID", remoteID.ShortString(),
-				"address", addr.String(),
-				"duration", time.Since(session.startTime))
-			return addr, nil
+	if err := h.writeMessage(stream, connectMsg); err != nil {
+		logger.Warn("发送 CONNECT 失败", "peerID", peerShort, "error", err)
+		return &HolePunchError{
+			Message: "failed to send CONNECT",
+			Cause:   err,
 		}
 	}
 
-	// 收集所有错误
+	// 3. 读取对方的 CONNECT 响应
+	response, err := h.readMessage(stream)
+	if err != nil {
+		logger.Warn("读取 CONNECT 响应失败", "peerID", peerShort, "error", err)
+		return &HolePunchError{
+			Message: "failed to read CONNECT response",
+			Cause:   err,
+		}
+	}
+
+	if response.Type != holepunch.Type_CONNECT {
+		logger.Warn("收到非 CONNECT 消息", "peerID", peerShort, "type", response.Type)
+		return &HolePunchError{
+			Message: "unexpected message type",
+		}
+	}
+
+	remoteAddrs := make([]string, len(response.ObsAddrs))
+	for i, addr := range response.ObsAddrs {
+		remoteAddrs[i] = string(addr)
+	}
+	logger.Info("收到对方观测地址",
+		"peerID", peerShort,
+		"remoteAddrsCount", len(remoteAddrs),
+		"remoteAddrs", remoteAddrs)
+
+	// 4. 发送 SYNC 消息
+	logger.Debug("发送 SYNC 消息", "peerID", peerShort)
+	syncMsg := &holepunch.HolePunch{
+		Type: holepunch.Type_SYNC,
+	}
+
+	if err := h.writeMessage(stream, syncMsg); err != nil {
+		logger.Warn("发送 SYNC 失败", "peerID", peerShort, "error", err)
+		return &HolePunchError{
+			Message: "failed to send SYNC",
+			Cause:   err,
+		}
+	}
+
+	// 5. 等待对方 SYNC
+	syncResponse, err := h.readMessage(stream)
+	if err != nil {
+		logger.Warn("读取 SYNC 响应失败", "peerID", peerShort, "error", err)
+		return &HolePunchError{
+			Message: "failed to read SYNC response",
+			Cause:   err,
+		}
+	}
+
+	if syncResponse.Type != holepunch.Type_SYNC {
+		logger.Warn("收到非 SYNC 消息", "peerID", peerShort, "type", syncResponse.Type)
+		return &HolePunchError{
+			Message: "unexpected SYNC message type",
+		}
+	}
+
+	logger.Info("SYNC 完成，开始同时拨号打洞",
+		"peerID", peerShort,
+		"targetAddrsCount", len(remoteAddrs),
+		"targetAddrs", remoteAddrs)
+
+	// 6. 同时尝试直连所有观测地址（这才是真正的打洞！）
+	return h.simultaneousDial(ctx, peerID, remoteAddrs)
+}
+
+// openRelayStream 通过中继打开流
+func (h *HolePuncher) openRelayStream(ctx context.Context, peerID string) (pkgif.Stream, error) {
+	if h.Host == nil {
+		return nil, ErrHolePunchFailed
+	}
+
+	// 使用 Host 的 NewStream 打开协商流
+	stream, err := h.Host.NewStream(ctx, peerID, HolePunchProtocol)
+	if err != nil {
+		return nil, err
+	}
+
+	return stream, nil
+}
+
+// simultaneousDial 同时尝试直连多个地址（带重试）
+//
+// 使用 DirectDialer 直接拨号，避免递归
+// 这是真正的"打洞"操作：向对方的外部地址同时发包
+//
+// 重试机制：
+//   - 打洞可能因为 NAT 映射未及时建立而失败
+//   - 通过重试给双方 NAT 更多时间建立映射
+func (h *HolePuncher) simultaneousDial(ctx context.Context, peerID string, addrs []string) error {
+	peerShort := peerID
+	if len(peerShort) > 8 {
+		peerShort = peerShort[:8]
+	}
+
+	// 检查地址列表
+	if len(addrs) == 0 {
+		logger.Warn("打洞目标地址为空，无法打洞", "peerID", peerShort)
+		return ErrNoAddresses
+	}
+
+	h.mu.RLock()
+	directDialer := h.DirectDialer
+	h.mu.RUnlock()
+
+	if directDialer == nil {
+		logger.Warn("DirectDialer 未设置，无法打洞", "peerID", peerShort)
+		return ErrHolePunchFailed
+	}
+
 	var lastErr error
-	for err := range errCh {
+
+	// 重试循环
+	for retry := 0; retry < MaxHolePunchRetries; retry++ {
+		if retry > 0 {
+			logger.Info("打洞重试",
+				"peerID", peerShort,
+				"retry", retry,
+				"maxRetries", MaxHolePunchRetries)
+
+			// 重试前短暂延迟，让 NAT 映射有机会建立
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(HolePunchRetryDelay):
+			}
+		}
+
+		// 尝试打洞
+		err := h.doSimultaneousDial(ctx, peerID, addrs, directDialer)
+		if err == nil {
+			return nil // 成功
+		}
 		lastErr = err
 	}
 
-	if lastErr != nil {
-		return nil, fmt.Errorf("%w: %v", ErrPunchFailed, lastErr)
-	}
-
-	return nil, ErrNoPeerResponse
+	// 打洞失败是 NAT 限制下的预期行为（如对称 NAT），降级到 DEBUG
+	logger.Debug("打洞重试全部失败（NAT 限制，将使用 Relay）",
+		"peerID", peerShort,
+		"retries", MaxHolePunchRetries,
+		"lastError", lastErr)
+	return ErrHolePunchFailed
 }
 
-// StartRendezvous 启动打洞协调
-func (p *Puncher) StartRendezvous(ctx context.Context, remoteID types.NodeID) error {
-	log.Debug("启动打洞协调",
-		"remoteID", remoteID.ShortString())
-
-	// 创建会话
-	nonce := make([]byte, 16)
-	if _, err := rand.Read(nonce); err != nil {
-		return fmt.Errorf("failed to generate nonce: %w", err)
+// doSimultaneousDial 执行单次打洞尝试
+func (h *HolePuncher) doSimultaneousDial(ctx context.Context, peerID string, addrs []string, directDialer DirectDialer) error {
+	peerShort := peerID
+	if len(peerShort) > 8 {
+		peerShort = peerShort[:8]
 	}
 
-	session := &punchSession{
-		remoteID:  remoteID,
-		nonce:     nonce,
-		startTime: time.Now(),
-		done:      make(chan struct{}),
+	// 创建超时上下文
+	dialCtx, cancel := context.WithTimeout(ctx, DirectDialTimeout)
+	defer cancel()
+
+	// 结果通道
+	type dialResult struct {
+		addr string
+		conn pkgif.Connection
+		err  error
+	}
+	results := make(chan dialResult, len(addrs))
+
+	// 并发尝试所有地址（真正的打洞！）
+	logger.Info("开始同时拨号打洞",
+		"peerID", peerShort,
+		"addrsCount", len(addrs),
+		"timeout", DirectDialTimeout)
+
+	for _, addr := range addrs {
+		go func(a string) {
+			logger.Info("尝试直连地址（打洞）", "peerID", peerShort, "addr", a)
+			conn, err := directDialer.DialDirect(dialCtx, peerID, a)
+			results <- dialResult{addr: a, conn: conn, err: err}
+		}(addr)
 	}
 
-	sessionKey := remoteID.String()
-	p.sessionsMu.Lock()
-	p.sessions[sessionKey] = session
-	p.sessionsMu.Unlock()
+	// 等待第一个成功的连接
+	var lastErr error
+	successCount := 0
+	failCount := 0
 
-	// 等待打洞完成或超时
-	select {
-	case <-ctx.Done():
-		p.sessionsMu.Lock()
-		delete(p.sessions, sessionKey)
-		p.sessionsMu.Unlock()
-		return ctx.Err()
-	case <-session.done:
-		p.sessionsMu.Lock()
-		delete(p.sessions, sessionKey)
-		p.sessionsMu.Unlock()
-		return session.err
-	}
-}
-
-// ============================================================================
-//                              内部方法
-// ============================================================================
-
-// punchAddress 对单个地址进行打洞
-func (p *Puncher) punchAddress(ctx context.Context, addr endpoint.Address, nonce []byte) (endpoint.Address, error) {
-	// 解析地址
-	udpAddr, err := parseUDPAddr(addr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid address: %w", err)
-	}
-
-	// 创建 UDP 连接
-	conn, err := net.DialUDP("udp", nil, udpAddr)
-	if err != nil {
-		return nil, fmt.Errorf("dial failed: %w", err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	// 构建打洞包
-	packet := p.buildPunchPacket(nonce)
-
-	// 多轮尝试
-	for attempt := 0; attempt < p.config.MaxAttempts; attempt++ {
+	for i := 0; i < len(addrs); i++ {
 		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-
-		// 发送打洞包
-		if _, err := conn.Write(packet); err != nil {
-			log.Debug("发送打洞包失败",
-				"addr", addr.String(),
-				"attempt", attempt+1,
-				"err", err)
-			continue
-		}
-
-		log.Debug("发送打洞包",
-			"addr", addr.String(),
-			"attempt", attempt+1)
-
-		// 设置读取超时
-		_ = conn.SetReadDeadline(time.Now().Add(p.config.AttemptInterval))
-
-		// 尝试接收响应
-		buf := make([]byte, 128)
-		n, remoteAddr, err := conn.ReadFromUDP(buf)
-		if err != nil {
-			// 超时继续下一轮
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue
+		case res := <-results:
+			if res.err == nil && res.conn != nil {
+				successCount++
+				// 成功建立直连
+				logger.Info("HolePunch 打洞成功！",
+					"peerID", peerShort,
+					"addr", res.addr,
+					"successCount", successCount)
+				return nil
 			}
-			continue
-		}
-
-		// 验证响应
-		if n > 0 && p.validatePunchResponse(buf[:n], nonce) {
-			// 打洞成功
-			return newIPAddr(remoteAddr.IP, remoteAddr.Port), nil
-		}
-	}
-
-	return nil, ErrNoPeerResponse
-}
-
-// buildPunchPacket 构建打洞包
-func (p *Puncher) buildPunchPacket(nonce []byte) []byte {
-	// 简单的打洞包格式：
-	// [4 bytes: magic] [16 bytes: nonce] [padding]
-	magic := []byte("P2PH") // P2P Hole punch
-
-	packet := make([]byte, p.config.PacketSize)
-	copy(packet[0:4], magic)
-	copy(packet[4:20], nonce)
-
-	return packet
-}
-
-// validatePunchResponse 验证打洞响应
-func (p *Puncher) validatePunchResponse(data, expectedNonce []byte) bool {
-	if len(data) < 20 {
-		return false
-	}
-
-	// 检查 magic
-	magic := string(data[0:4])
-	if magic != "P2PH" && magic != "P2PR" { // P2P Response
-		return false
-	}
-
-	// 检查 nonce
-	for i := 0; i < 16 && i < len(expectedNonce); i++ {
-		if data[4+i] != expectedNonce[i] {
-			return false
+			failCount++
+			lastErr = res.err
+			logger.Debug("地址拨号失败",
+				"peerID", peerShort,
+				"addr", res.addr,
+				"error", res.err,
+				"failCount", failCount,
+				"totalAddrs", len(addrs))
+		case <-dialCtx.Done():
+			// 打洞超时是 NAT 限制下的预期行为，降级到 DEBUG
+			logger.Debug("打洞同时拨号超时（NAT 限制）",
+				"peerID", peerShort,
+				"timeout", DirectDialTimeout,
+				"failCount", failCount,
+				"totalAddrs", len(addrs))
+			return ErrHolePunchFailed
 		}
 	}
 
-	return true
+	// 所有地址拨号失败是 NAT 限制下的预期行为，降级到 DEBUG
+	logger.Debug("打洞所有地址拨号失败（NAT 限制）",
+		"peerID", peerShort,
+		"failCount", failCount,
+		"lastError", lastErr)
+	return ErrHolePunchFailed
 }
 
-// ============================================================================
-//                              辅助方法
-// ============================================================================
-
-// SetLocalAddrs 设置本地地址
-func (p *Puncher) SetLocalAddrs(addrs []endpoint.Address) {
-	p.localAddrs = addrs
-}
-
-// GetLocalAddrs 获取本地地址
-func (p *Puncher) GetLocalAddrs() []endpoint.Address {
-	return p.localAddrs
-}
-
-// GetSession 获取会话
-func (p *Puncher) GetSession(remoteID types.NodeID) *punchSession {
-	p.sessionsMu.RLock()
-	defer p.sessionsMu.RUnlock()
-	return p.sessions[remoteID.String()]
-}
-
-// CompleteSession 完成会话
-func (p *Puncher) CompleteSession(remoteID types.NodeID, addr endpoint.Address, err error) {
-	p.sessionsMu.Lock()
-	session, ok := p.sessions[remoteID.String()]
-	if ok && !session.completed {
-		// 在持有锁的情况下设置结果并关闭 done channel
-		// 使用 completed 标志防止重复关闭
-		session.successAddr = addr
-		session.err = err
-		session.completed = true
-		close(session.done)
-	}
-	p.sessionsMu.Unlock()
-}
-
-// parseUDPAddr 解析 UDP 地址
-func parseUDPAddr(addr endpoint.Address) (*net.UDPAddr, error) {
-	// 尝试类型断言
-	if ia, ok := addr.(*ipAddr); ok {
-		return &net.UDPAddr{IP: ia.ip, Port: ia.port}, nil
+// getObservedAddrs 获取本地观测地址（用于打洞协商）
+//
+// 使用 HolePunchAddrs 获取打洞专用地址
+// - HolePunchAddrs 优先返回 STUN 候选地址（真正的外部地址）
+// - 对于 NAT 节点，dial-back 验证无法成功，但 STUN 地址是真实可用的
+//
+// 地址优先级：
+//  1. STUN/UPnP/NAT-PMP 候选地址（★ 打洞核心）
+//  2. 已验证的直连地址
+//
+// 注意：不使用 Relay 地址。Relay 只作为信令通道，不是打洞目标。
+//
+// 回退策略：HolePunchAddrs → ShareableAddrs → AdvertisedAddrs → Addrs
+func (h *HolePuncher) getObservedAddrs() [][]byte {
+	if h.Host == nil {
+		logger.Warn("Host 为 nil，无法获取观测地址")
+		return nil
 	}
 
-	// 尝试解析字符串
-	return net.ResolveUDPAddr("udp", addr.String())
-}
+	// 优先使用 HolePunchAddrs（包含 STUN 候选地址）
+	addrs := h.Host.HolePunchAddrs()
+	source := "HolePunchAddrs"
 
-// ============================================================================
-//                              ipAddr 实现（统一地址类型）
-// ============================================================================
-
-// ipAddr 统一的 IP 地址实现
-// 此类型实现 endpoint.Address 接口，替代所有散落的 Address 实现
-type ipAddr struct {
-	ip   net.IP
-	port int
-}
-
-// newIPAddr 创建新的 IP 地址
-func newIPAddr(ip net.IP, port int) *ipAddr {
-	return &ipAddr{ip: ip, port: port}
-}
-
-func (a *ipAddr) Network() string {
-	if a.ip.To4() != nil {
-		return "ip4"
+	// 回退策略
+	if len(addrs) == 0 {
+		addrs = h.Host.ShareableAddrs()
+		source = "ShareableAddrs"
 	}
-	return "ip6"
-}
 
-func (a *ipAddr) String() string {
-	if a.ip.To4() != nil {
-		return fmt.Sprintf("%s:%d", a.ip.String(), a.port)
+	if len(addrs) == 0 {
+		addrs = h.Host.AdvertisedAddrs()
+		source = "AdvertisedAddrs"
 	}
-	return fmt.Sprintf("[%s]:%d", a.ip.String(), a.port)
-}
 
-func (a *ipAddr) Bytes() []byte {
-	return []byte(a.String())
-}
-
-func (a *ipAddr) Equal(other endpoint.Address) bool {
-	if other == nil {
-		return false
+	if len(addrs) == 0 {
+		addrs = h.Host.Addrs()
+		source = "Addrs"
 	}
-	return a.String() == other.String()
-}
 
-func (a *ipAddr) IsPublic() bool {
-	// 0.0.0.0 和 :: 是未指定地址，不是公网地址
-	return !a.IsPrivate() && !a.IsLoopback() && !a.ip.IsUnspecified()
-}
+	logger.Info("获取本地打洞地址",
+		"source", source,
+		"count", len(addrs),
+		"addrs", addrs)
 
-func (a *ipAddr) IsPrivate() bool {
-	return a.ip.IsPrivate()
-}
-
-func (a *ipAddr) IsLoopback() bool {
-	return a.ip.IsLoopback()
-}
-
-func (a *ipAddr) Multiaddr() string {
-	ipType := "ip4"
-	if a.ip.To4() == nil {
-		ipType = "ip6"
+	result := make([][]byte, 0, len(addrs))
+	for _, addr := range addrs {
+		result = append(result, []byte(addr))
 	}
-	return fmt.Sprintf("/%s/%s/udp/%d/quic-v1", ipType, a.ip.String(), a.port)
+
+	return result
 }
 
-// ToUDPAddr 转换为 net.UDPAddr
-func (a *ipAddr) ToUDPAddr() (*net.UDPAddr, error) {
-	return &net.UDPAddr{IP: a.ip, Port: a.port}, nil
+// addrsToStrings 将 [][]byte 转换为 []string（用于日志）
+func (h *HolePuncher) addrsToStrings(addrs [][]byte) []string {
+	result := make([]string, len(addrs))
+	for i, addr := range addrs {
+		result[i] = string(addr)
+	}
+	return result
 }
 
+// readMessage 读取 Hole Punch 消息
+func (h *HolePuncher) readMessage(stream pkgif.Stream) (*holepunch.HolePunch, error) {
+	buf := make([]byte, 4096)
+	n, err := stream.Read(buf)
+	if err != nil {
+		return nil, err
+	}
+
+	msg := &holepunch.HolePunch{}
+	if err := proto.Unmarshal(buf[:n], msg); err != nil {
+		return nil, err
+	}
+
+	return msg, nil
+}
+
+// writeMessage 写入 Hole Punch 消息
+func (h *HolePuncher) writeMessage(stream pkgif.Stream, msg *holepunch.HolePunch) error {
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	_, err = stream.Write(data)
+	return err
+}
+
+// MarkActive 标记节点为活跃
+func (h *HolePuncher) MarkActive(peerID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.active[peerID] = struct{}{}
+}
+
+// ClearActive 清除活跃标记
+func (h *HolePuncher) ClearActive(peerID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.active, peerID)
+}
+
+// IsActive 检查节点是否活跃
+func (h *HolePuncher) IsActive(peerID string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	_, exists := h.active[peerID]
+	return exists
+}
+
+// ActiveCount 返回活跃打洞数量
+func (h *HolePuncher) ActiveCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.active)
+}
+
+// Errors
+var (
+	ErrNoAddresses     = &HolePunchError{Message: "no addresses"}
+	ErrHolePunchActive = &HolePunchError{Message: "hole punch already active"}
+	ErrHolePunchFailed = &HolePunchError{Message: "hole punch failed"}
+)
+
+// HolePunchError 打洞错误
+type HolePunchError struct {
+	Message string
+	Cause   error
+}
+
+func (e *HolePunchError) Error() string {
+	if e.Cause != nil {
+		return "holepunch: " + e.Message + ": " + e.Cause.Error()
+	}
+	return "holepunch: " + e.Message
+}
+
+func (e *HolePunchError) Unwrap() error {
+	return e.Cause
+}

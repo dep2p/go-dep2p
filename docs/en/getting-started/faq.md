@@ -39,7 +39,8 @@ flowchart TD
 
 1. **Use preset configuration** (Recommended):
 ```go
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
 // PresetDesktop/Mobile/Server includes default Bootstrap nodes
 ```
 
@@ -48,10 +49,11 @@ node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
 bootstrapPeers := []string{
     "/ip4/1.2.3.4/udp/4001/quic-v1/p2p/5Q2STWvBFn...",
 }
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithBootstrapPeers(bootstrapPeers),
 )
+_ = node.Start(ctx)
 ```
 
 3. **LAN scenario**: mDNS automatically discovers nodes on the same network
@@ -77,10 +79,11 @@ node, _ := dep2p.StartNode(ctx,
 **Answer**: A genesis node is the first node in the network, no Bootstrap needed:
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetServer),
     dep2p.WithBootstrapPeers(nil),  // Explicitly set to empty
 )
+_ = node.Start(ctx)
 
 // Print shareable address for other nodes to use as Bootstrap
 addrs, _ := node.WaitShareableAddrs(ctx)
@@ -115,10 +118,11 @@ if err != nil {
 }
 
 // 3. Ensure Relay is enabled
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithRelay(true),  // Enable Relay
 )
+_ = node.Start(ctx)
 ```
 
 ### Q: What's the difference between ListenAddrs and AdvertisedAddrs?
@@ -167,14 +171,17 @@ Dial Address:
 
 ```go
 // ❌ Wrong
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
 err := node.Send(ctx, peerID, "/dep2p/app/chat/1.0.0", data)
 // err == ErrNotMember
 
 // ✅ Correct
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
-node.Realm().JoinRealm(ctx, "my-realm")  // Join Realm first
-err := node.Send(ctx, peerID, "/dep2p/app/chat/1.0.0", data)
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
+realm, _ := node.Realm("my-realm")  // Join Realm first
+_ = realm.Join(ctx)
+err := realm.Messaging().Send(ctx, peerID, "/dep2p/app/chat/1.0.0", data)
 // err == nil
 ```
 
@@ -189,10 +196,12 @@ err := node.Send(ctx, peerID, "/dep2p/app/chat/1.0.0", data)
 current := node.Realm().CurrentRealm()
 if current != "" {
     // Leave current Realm first
-    node.Realm().LeaveRealm()
+    realm, _ := node.Realm(current)
+    realm.Leave(ctx)
 }
 // Then join new Realm
-node.Realm().JoinRealm(ctx, "new-realm")
+realm, _ := node.Realm("new-realm")
+_ = realm.Join(ctx)
 ```
 
 ### Q: Why must JoinRealm be explicit?
@@ -237,10 +246,11 @@ if errors.Is(err, context.DeadlineExceeded) {
 
 ```go
 // Ensure Relay is enabled
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithRelay(true),
 )
+_ = node.Start(ctx)
 
 // Relay acts as fallback, ensuring connectivity
 // Connection flow: Direct attempt → Failed → Auto Relay
@@ -271,10 +281,11 @@ if strings.Contains(remoteAddr.String(), "/p2p-circuit/") {
 **Answer**: Adjust connection manager watermarks:
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithConnectionLimits(30, 60),  // Lower limits
 )
+_ = node.Start(ctx)
 ```
 
 ### Q: High memory usage
@@ -286,7 +297,8 @@ node, _ := dep2p.StartNode(ctx,
 
 ```go
 // Use low-resource preset
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetMobile))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetMobile))
+_ = node.Start(ctx)
 ```
 
 ---

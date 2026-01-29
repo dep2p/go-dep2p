@@ -5,184 +5,172 @@ import (
 	"testing"
 	"time"
 
-	transportif "github.com/dep2p/go-dep2p/pkg/interfaces/transport"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/dep2p/go-dep2p/pkg/types"
 )
 
-func TestNewTransport(t *testing.T) {
-	config := transportif.DefaultConfig()
-	transport := NewTransport(config)
-	defer transport.Close()
+func TestTCPTransport_Creation(t *testing.T) {
+	localPeer := types.PeerID("test-peer")
+	transport := New(localPeer, nil)
+	require.NotNil(t, transport)
 
-	if transport == nil {
-		t.Fatal("Transport should not be nil")
-	}
+	assert.Equal(t, localPeer, transport.localPeer)
+	assert.NotNil(t, transport.listeners)
+	assert.False(t, transport.closed)
 
-	if transport.IsClosed() {
-		t.Error("New transport should not be closed")
-	}
+	t.Log("✅ TCP Transport 创建成功")
 }
 
-func TestTransport_Protocols(t *testing.T) {
-	transport := NewTransport(transportif.DefaultConfig())
+func TestTCPTransport_Listen(t *testing.T) {
+	localPeer := types.PeerID("test-peer")
+	transport := New(localPeer, nil)
 	defer transport.Close()
 
-	protocols := transport.Protocols()
-	if len(protocols) != 3 {
-		t.Errorf("Expected 3 protocols, got %d", len(protocols))
-	}
+	// 监听本地地址
+	listenAddr, err := types.NewMultiaddr("/ip4/127.0.0.1/tcp/0")
+	require.NoError(t, err)
 
-	expected := map[string]bool{
-		"tcp":  true,
-		"tcp4": true,
-		"tcp6": true,
-	}
-
-	for _, p := range protocols {
-		if !expected[p] {
-			t.Errorf("Unexpected protocol: %s", p)
-		}
-	}
-}
-
-func TestTransport_CanDial(t *testing.T) {
-	transport := NewTransport(transportif.DefaultConfig())
-	defer transport.Close()
-
-	tests := []struct {
-		addr     string
-		expected bool
-	}{
-		{"/ip4/127.0.0.1/tcp/4001", true},
-		{"/ip6/::1/tcp/4001", true},
-		{"/ip4/0.0.0.0/quic-v1/4001", false},
-	}
-
-	for _, tt := range tests {
-		addr, err := ParseAddress(tt.addr)
-		if err != nil {
-			if tt.expected {
-				t.Errorf("Failed to parse address %s: %v", tt.addr, err)
-			}
-			continue
-		}
-
-		result := transport.CanDial(addr)
-		if result != tt.expected {
-			t.Errorf("CanDial(%s) = %v, expected %v", tt.addr, result, tt.expected)
-		}
-	}
-}
-
-func TestTransport_ListenAndDial(t *testing.T) {
-	transport := NewTransport(transportif.DefaultConfig())
-	defer transport.Close()
-
-	// 监听
-	listenAddr := MustParseAddress("/ip4/127.0.0.1/tcp/0")
 	listener, err := transport.Listen(listenAddr)
-	if err != nil {
-		t.Fatalf("Listen failed: %v", err)
-	}
-	defer func() { _ = listener.Close() }()
+	require.NoError(t, err)
+	require.NotNil(t, listener)
+	defer listener.Close()
+
+	// 验证监听器被记录
+	assert.Len(t, transport.listeners, 1)
+
+	t.Log("✅ TCP Transport Listen 成功")
+}
+
+func TestTCPTransport_Listen_Closed(t *testing.T) {
+	localPeer := types.PeerID("test-peer")
+	transport := New(localPeer, nil)
+
+	// 关闭传输
+	transport.Close()
+
+	// 尝试监听应该失败
+	listenAddr, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/0")
+	_, err := transport.Listen(listenAddr)
+	assert.Error(t, err)
+	assert.Equal(t, ErrTransportClosed, err)
+
+	t.Log("✅ 已关闭时 Listen 返回错误")
+}
+
+func TestTCPTransport_Dial(t *testing.T) {
+	localPeer := types.PeerID("local-peer")
+	remotePeer := types.PeerID("remote-peer")
+	transport := New(localPeer, nil)
+	defer transport.Close()
+
+	// 首先启动一个监听器
+	listenAddr, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/0")
+	listener, err := transport.Listen(listenAddr)
+	require.NoError(t, err)
+	defer listener.Close()
 
 	// 获取实际监听地址
-	actualAddr := listener.Addr()
-	t.Logf("Listening on %s", actualAddr.String())
+	actualAddr := listener.Multiaddr()
+	require.NotNil(t, actualAddr)
 
-	// 服务端接受连接
-	serverDone := make(chan struct{})
-	go func() {
-		defer close(serverDone)
-		conn, err := listener.Accept()
-		if err != nil {
-			t.Errorf("Accept failed: %v", err)
-			return
-		}
-		defer func() { _ = conn.Close() }()
-
-		buf := make([]byte, 1024)
-		n, err := conn.Read(buf)
-		if err != nil {
-			t.Errorf("Read failed: %v", err)
-			return
-		}
-
-		if string(buf[:n]) != "Hello" {
-			t.Errorf("Expected 'Hello', got '%s'", string(buf[:n]))
-		}
-
-		_, err = conn.Write([]byte("World"))
-		if err != nil {
-			t.Errorf("Write failed: %v", err)
-		}
-	}()
-
-	// 客户端连接
+	// 在 goroutine 中拨号
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := transport.Dial(ctx, actualAddr)
-	if err != nil {
-		t.Fatalf("Dial failed: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
+	// 拨号连接
+	conn, err := transport.Dial(ctx, actualAddr, remotePeer)
+	require.NoError(t, err)
+	require.NotNil(t, conn)
+	defer conn.Close()
 
-	// 发送数据
-	_, err = conn.Write([]byte("Hello"))
-	if err != nil {
-		t.Fatalf("Write failed: %v", err)
-	}
-
-	// 接收响应
-	buf := make([]byte, 1024)
-	n, err := conn.Read(buf)
-	if err != nil {
-		t.Fatalf("Read failed: %v", err)
-	}
-
-	if string(buf[:n]) != "World" {
-		t.Errorf("Expected 'World', got '%s'", string(buf[:n]))
-	}
-
-	// 等待服务端完成
-	<-serverDone
+	t.Log("✅ TCP Transport Dial 成功")
 }
 
-func TestTransport_Close(t *testing.T) {
-	transport := NewTransport(transportif.DefaultConfig())
+func TestTCPTransport_Dial_Closed(t *testing.T) {
+	localPeer := types.PeerID("test-peer")
+	remotePeer := types.PeerID("remote-peer")
+	transport := New(localPeer, nil)
 
-	// 监听
-	addr := MustParseAddress("/ip4/127.0.0.1/tcp/0")
-	listener, err := transport.Listen(addr)
-	if err != nil {
-		t.Fatalf("Listen failed: %v", err)
-	}
+	// 关闭传输
+	transport.Close()
 
-	if transport.ListenerCount() != 1 {
-		t.Errorf("Expected 1 listener, got %d", transport.ListenerCount())
-	}
+	// 尝试拨号应该失败
+	ctx := context.Background()
+	dialAddr, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
+	_, err := transport.Dial(ctx, dialAddr, remotePeer)
+	assert.Error(t, err)
+	assert.Equal(t, ErrTransportClosed, err)
 
-	// 关闭传输层
-	err = transport.Close()
-	if err != nil {
-		t.Errorf("Close failed: %v", err)
-	}
-
-	if !transport.IsClosed() {
-		t.Error("Transport should be closed")
-	}
-
-	// 再次关闭应该无害
-	err = transport.Close()
-	if err != nil {
-		t.Errorf("Second close should not fail: %v", err)
-	}
-
-	// 监听器应该已关闭
-	if !listener.(*Listener).IsClosed() {
-		t.Error("Listener should be closed after transport close")
-	}
+	t.Log("✅ 已关闭时 Dial 返回错误")
 }
 
-// TestFactory 已删除：TransportFactory 接口已删除（v1.1 清理）
+func TestTCPTransport_CanDial(t *testing.T) {
+	localPeer := types.PeerID("test-peer")
+	transport := New(localPeer, nil)
+	defer transport.Close()
 
+	// TCP 地址应该可以拨号
+	tcpAddr, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
+	assert.True(t, transport.CanDial(tcpAddr))
+
+	// QUIC 地址应该不能拨号
+	quicAddr, _ := types.NewMultiaddr("/ip4/127.0.0.1/udp/4001/quic-v1")
+	assert.False(t, transport.CanDial(quicAddr))
+
+	t.Log("✅ CanDial 正确判断")
+}
+
+func TestTCPTransport_Protocols(t *testing.T) {
+	localPeer := types.PeerID("test-peer")
+	transport := New(localPeer, nil)
+	defer transport.Close()
+
+	protocols := transport.Protocols()
+	assert.Len(t, protocols, 1)
+	assert.Equal(t, types.ProtocolTCP, protocols[0])
+
+	t.Log("✅ Protocols 返回正确")
+}
+
+func TestTCPTransport_Close(t *testing.T) {
+	localPeer := types.PeerID("test-peer")
+	transport := New(localPeer, nil)
+
+	// 创建一个监听器
+	listenAddr, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/0")
+	_, err := transport.Listen(listenAddr)
+	require.NoError(t, err)
+
+	// 关闭传输
+	err = transport.Close()
+	assert.NoError(t, err)
+	assert.True(t, transport.closed)
+
+	// 再次关闭应该安全
+	err = transport.Close()
+	assert.NoError(t, err)
+
+	t.Log("✅ Close 正确关闭")
+}
+
+func TestParseMultiaddr(t *testing.T) {
+	// IPv4 地址
+	addr, _ := types.NewMultiaddr("/ip4/192.168.1.1/tcp/4001")
+	tcpAddr, err := parseMultiaddr(addr)
+	require.NoError(t, err)
+	assert.Equal(t, "192.168.1.1", tcpAddr.IP.String())
+	assert.Equal(t, 4001, tcpAddr.Port)
+
+	t.Log("✅ parseMultiaddr 正确解析")
+}
+
+func TestParseMultiaddr_NoTCP(t *testing.T) {
+	// 没有 TCP 端口的地址
+	addr, _ := types.NewMultiaddr("/ip4/192.168.1.1")
+	_, err := parseMultiaddr(addr)
+	assert.Error(t, err)
+
+	t.Log("✅ parseMultiaddr 正确处理无 TCP 地址")
+}

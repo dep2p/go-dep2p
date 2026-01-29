@@ -6,29 +6,38 @@
 
 ## 概述
 
-```mermaid
-flowchart TB
-    subgraph Config [配置分类]
-        Basic["基础配置"]
-        Conn["连接配置"]
-        Discovery["发现配置"]
-        NAT["NAT 配置"]
-        Relay["中继配置"]
-        Realm["Realm 配置"]
-    end
-    
-    Preset["预设"] --> Config
-    Custom["自定义"] --> Config
-```
-
 DeP2P 使用函数式选项模式进行配置：
 
 ```go
-node, err := dep2p.StartNode(ctx,
+node, err := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithListenPort(4001),
-    dep2p.WithBootstrapPeers(bootstrapAddrs...),
+    dep2p.WithKnownPeers(config.KnownPeer{...}),
 )
+```
+
+---
+
+## 配置分类
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        配置分类                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  基础配置           连接配置           发现配置           NAT 配置       │
+│  ├─ WithPreset     ├─ ConnectionLimits ├─ KnownPeers     ├─ WithNAT    │
+│  ├─ WithIdentity   ├─ ConnectionTimeout├─ BootstrapPeers ├─ AutoNAT    │
+│  └─ WithListenPort └─ IdleTimeout      ├─ WithMDNS       ├─ STUNServers│
+│                                        └─ WithDHT        └─ TrustSTUN  │
+│                                                                         │
+│  中继配置           Realm 配置         断开检测配置                      │
+│  ├─ WithRelay      ├─ RealmAuth        ├─ QUIC Keep-Alive              │
+│  ├─ RelayServer    └─ AuthTimeout      ├─ ReconnectGrace               │
+│  └─ RelayMap                           ├─ Witness                      │
+│                                        └─ Flapping                     │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -43,18 +52,17 @@ node, err := dep2p.StartNode(ctx,
 func WithPreset(preset Preset) Option
 ```
 
-**参数**：
-| 值 | 描述 |
-|---|------|
-| `PresetMinimal` | 最小配置 |
-| `PresetDesktop` | 桌面应用 |
-| `PresetServer` | 服务器 |
-| `PresetMobile` | 移动端 |
+| 预设 | 描述 | 连接数 | mDNS |
+|------|------|--------|------|
+| `PresetMinimal` | 最小配置，测试用 | 10/20 | ❌ |
+| `PresetDesktop` | 桌面应用（默认） | 50/100 | ✅ |
+| `PresetServer` | 服务器 | 200/500 | ✅ |
+| `PresetMobile` | 移动端 | 20/50 | ✅ |
 
 **示例**：
 
 ```go
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
 ```
 
 ---
@@ -74,13 +82,12 @@ func WithIdentity(identity crypto.PrivKey) Option
 **示例**：
 
 ```go
-// 使用现有私钥
-privKey, _ := crypto.UnmarshalPrivateKey(keyBytes)
-node, _ := dep2p.StartNode(ctx, dep2p.WithIdentity(privKey))
-
 // 从文件加载
+node, _ := dep2p.New(ctx, dep2p.WithIdentityFile("./node.key"))
+
+// 使用现有私钥
 key, _ := dep2p.LoadIdentity("node.key")
-node, _ := dep2p.StartNode(ctx, dep2p.WithIdentity(key))
+node, _ := dep2p.New(ctx, dep2p.WithIdentity(key))
 ```
 
 ---
@@ -100,102 +107,78 @@ func WithListenPort(port int) Option
 **示例**：
 
 ```go
-node, _ := dep2p.StartNode(ctx, dep2p.WithListenPort(4001))
-```
-
----
-
-### WithListenAddrs
-
-设置监听地址。
-
-```go
-func WithListenAddrs(addrs ...string) Option
-```
-
-**说明**：
-- 支持多个监听地址
-- 支持 IPv4 和 IPv6
-
-**示例**：
-
-```go
-node, _ := dep2p.StartNode(ctx,
-    dep2p.WithListenAddrs(
-        "/ip4/0.0.0.0/udp/4001/quic-v1",
-        "/ip6/::/udp/4001/quic-v1",
-    ),
-)
-```
-
----
-
-## 连接配置
-
-### WithConnectionLimits
-
-设置连接数限制。
-
-```go
-func WithConnectionLimits(low, high int) Option
-```
-
-**参数**：
-| 参数 | 描述 |
-|------|------|
-| `low` | 低水位（不主动裁剪） |
-| `high` | 高水位（开始裁剪） |
-
-**示例**：
-
-```go
-node, _ := dep2p.StartNode(ctx,
-    dep2p.WithConnectionLimits(50, 100),
-)
-```
-
----
-
-### WithConnectionTimeout
-
-设置连接超时。
-
-```go
-func WithConnectionTimeout(d time.Duration) Option
-```
-
-**示例**：
-
-```go
-node, _ := dep2p.StartNode(ctx,
-    dep2p.WithConnectionTimeout(30*time.Second),
-)
-```
-
----
-
-### WithIdleTimeout
-
-设置空闲连接超时。
-
-```go
-func WithIdleTimeout(d time.Duration) Option
-```
-
-**说明**：
-- 超过此时间无数据传输的连接将被关闭
-
-**示例**：
-
-```go
-node, _ := dep2p.StartNode(ctx,
-    dep2p.WithIdleTimeout(5*time.Minute),
-)
+node, _ := dep2p.New(ctx, dep2p.WithListenPort(4001))
 ```
 
 ---
 
 ## 发现配置
+
+### WithKnownPeers ⭐
+
+设置已知节点列表。
+
+```go
+func WithKnownPeers(peers ...config.KnownPeer) Option
+```
+
+**说明**：
+- 启动时直接连接这些节点
+- 不依赖 Bootstrap 或 DHT 发现
+- 适用于私有网络、云服务器部署
+
+**KnownPeer 结构**：
+
+```go
+type KnownPeer struct {
+    PeerID string   `json:"peer_id"` // 节点 Peer ID
+    Addrs  []string `json:"addrs"`   // 地址列表
+}
+```
+
+**示例**：
+
+```go
+import "github.com/dep2p/go-dep2p/config"
+
+node, _ := dep2p.New(ctx,
+    dep2p.WithPreset(dep2p.PresetDesktop),
+    dep2p.WithKnownPeers(
+        config.KnownPeer{
+            PeerID: "12D3KooWxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            Addrs:  []string{"/ip4/1.2.3.4/udp/4001/quic-v1"},
+        },
+        config.KnownPeer{
+            PeerID: "12D3KooWyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+            Addrs:  []string{"/ip4/5.6.7.8/udp/4001/quic-v1"},
+        },
+    ),
+)
+```
+
+**JSON 配置**：
+
+```json
+{
+  "known_peers": [
+    {
+      "peer_id": "12D3KooWxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "addrs": ["/ip4/1.2.3.4/udp/4001/quic-v1"]
+    }
+  ]
+}
+```
+
+**与 Bootstrap 的区别**：
+
+| 特性 | known_peers | Bootstrap |
+|------|-------------|-----------|
+| 用途 | 直接连接 | DHT 引导 |
+| 连接时机 | 启动即连接 | DHT 初始化后 |
+| 依赖 | 仅目标节点在线 | Bootstrap 服务 |
+| 适用场景 | 私有网络、固定节点 | 公共网络 |
+
+---
 
 ### WithBootstrapPeers
 
@@ -207,43 +190,16 @@ func WithBootstrapPeers(addrs ...string) Option
 
 **说明**：
 - 使用完整地址格式（含 /p2p/<NodeID>）
-- 可配置多个引导节点
+- 用于 DHT 引导和节点发现
 
 **示例**：
 
 ```go
 bootstrapAddrs := []string{
-    "/ip4/104.131.131.82/udp/4001/quic-v1/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
-    "/dnsaddr/bootstrap.dep2p.io/p2p/12D3KooWLQj...",
+    "/ip4/1.2.3.4/udp/4001/quic-v1/p2p/12D3KooWxxxxx...",
+    "/dns4/bootstrap.example.com/udp/4001/quic-v1/p2p/12D3KooWxxxxx...",
 }
-node, _ := dep2p.StartNode(ctx,
-    dep2p.WithBootstrapPeers(bootstrapAddrs...),
-)
-```
-
----
-
-### WithDHT
-
-启用/配置 DHT。
-
-```go
-func WithDHT(mode DHTMode) Option
-```
-
-**参数**：
-| 值 | 描述 |
-|---|------|
-| `DHTClient` | 仅客户端模式 |
-| `DHTServer` | 服务器模式 |
-| `DHTAuto` | 自动模式 |
-
-**示例**：
-
-```go
-node, _ := dep2p.StartNode(ctx,
-    dep2p.WithDHT(dep2p.DHTServer),
-)
+node, _ := dep2p.New(ctx, dep2p.WithBootstrapPeers(bootstrapAddrs...))
 ```
 
 ---
@@ -258,76 +214,63 @@ func WithMDNS(enabled bool) Option
 
 **说明**：
 - 仅在局域网内有效
-- 默认桌面预设启用
+- PresetDesktop/Server/Mobile 默认启用
 
-**示例**：
+---
+
+### WithDHT
+
+配置 DHT 模式。
 
 ```go
-node, _ := dep2p.StartNode(ctx,
-    dep2p.WithMDNS(true),
-)
+func WithDHT(mode DHTMode) Option
 ```
+
+| 模式 | 描述 |
+|------|------|
+| `DHTClient` | 仅客户端模式 |
+| `DHTServer` | 服务器模式（参与路由） |
+| `DHTAuto` | 自动模式 |
 
 ---
 
 ## NAT 配置
 
-### WithNAT
+### WithTrustSTUNAddresses ⭐
 
-启用 NAT 穿透。
-
-```go
-func WithNAT(enabled bool) Option
-```
-
-**示例**：
+信任 STUN 探测发现的公网地址。
 
 ```go
-node, _ := dep2p.StartNode(ctx,
-    dep2p.WithNAT(true),
-)
-```
-
----
-
-### WithAutoNAT
-
-启用 AutoNAT（自动检测公网可达性）。
-
-```go
-func WithAutoNAT(enabled bool) Option
-```
-
----
-
-### WithHolePunching
-
-启用打洞。
-
-```go
-func WithHolePunching(enabled bool) Option
-```
-
----
-
-### WithExternalAddrs
-
-声明外部地址。
-
-```go
-func WithExternalAddrs(addrs ...string) Option
+func WithTrustSTUNAddresses(enabled bool) Option
 ```
 
 **说明**：
-- 适用于已知公网 IP 的场景
-- 跳过 NAT 检测
+- 适用于云服务器场景
+- 跳过入站连接验证
+- 加速地址发布
+
+**适用场景**：
+- 云服务器有真实公网 IP
+- 网络配置确保入站流量可达
 
 **示例**：
 
 ```go
-node, _ := dep2p.StartNode(ctx,
-    dep2p.WithExternalAddrs("/ip4/203.0.113.1/udp/4001/quic-v1"),
+// 云服务器场景
+node, _ := dep2p.New(ctx,
+    dep2p.WithPreset(dep2p.PresetServer),
+    dep2p.WithTrustSTUNAddresses(true),
 )
+```
+
+**JSON 配置**：
+
+```json
+{
+  "reachability": {
+    "trust_stun_addresses": true
+  }
+}
 ```
 
 ---
@@ -343,13 +286,111 @@ func WithSTUNServers(servers ...string) Option
 **示例**：
 
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithSTUNServers(
         "stun.l.google.com:19302",
-        "stun.dep2p.io:3478",
+        "stun.cloudflare.com:3478",
     ),
 )
 ```
+
+---
+
+### WithNAT
+
+启用 NAT 穿透。
+
+```go
+func WithNAT(enabled bool) Option
+```
+
+---
+
+### WithHolePunching
+
+启用打洞。
+
+```go
+func WithHolePunching(enabled bool) Option
+```
+
+---
+
+## 断开检测配置 ⭐
+
+### DisconnectDetection
+
+配置断开检测参数。
+
+**JSON 配置**：
+
+```json
+{
+  "disconnect_detection": {
+    "quic": {
+      "keep_alive_period": "3s",
+      "max_idle_timeout": "6s"
+    },
+    "reconnect_grace_period": "15s",
+    "disconnect_protection": "30s",
+    "witness": {
+      "enabled": true,
+      "count": 3,
+      "quorum": 2,
+      "timeout": "5s"
+    },
+    "flapping": {
+      "enabled": true,
+      "window": "60s",
+      "threshold": 3,
+      "cooldown": "120s"
+    }
+  }
+}
+```
+
+### 参数说明
+
+#### QUIC 配置
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `keep_alive_period` | duration | `3s` | Keep-Alive 探测间隔 |
+| `max_idle_timeout` | duration | `6s` | 最大空闲超时 |
+
+#### 重连配置
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `reconnect_grace_period` | duration | `15s` | 重连宽限期，期间不触发 MemberLeft |
+| `disconnect_protection` | duration | `30s` | 断开保护期 |
+
+#### 见证人配置
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `witness.enabled` | bool | `true` | 启用见证人机制 |
+| `witness.count` | int | `3` | 见证报告数量 |
+| `witness.quorum` | int | `2` | 确认所需最小见证人数 |
+| `witness.timeout` | duration | `5s` | 见证报告超时 |
+
+#### 震荡检测配置
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `flapping.enabled` | bool | `true` | 启用震荡检测 |
+| `flapping.window` | duration | `60s` | 检测窗口 |
+| `flapping.threshold` | int | `3` | 触发震荡判定的断线次数 |
+| `flapping.cooldown` | duration | `120s` | 震荡后冷却时间 |
+
+### 场景推荐配置
+
+| 场景 | keep_alive | max_idle | grace_period |
+|------|------------|----------|--------------|
+| 稳定网络 | 3s | 6s | 10s |
+| 移动网络 | 5s | 10s | 30s |
+| 实时游戏 | 1s | 3s | 5s |
+| 后台同步 | 10s | 30s | 60s |
 
 ---
 
@@ -362,24 +403,6 @@ node, _ := dep2p.StartNode(ctx,
 ```go
 func WithRelay(enabled bool) Option
 ```
-
-**说明**：
-- 允许通过中继节点连接
-- 默认启用
-
----
-
-### WithAutoRelay
-
-启用自动中继。
-
-```go
-func WithAutoRelay(enabled bool) Option
-```
-
-**说明**：
-- 自动发现并使用中继节点
-- 建议 NAT 后节点启用
 
 ---
 
@@ -395,66 +418,131 @@ func WithRelayServer(enabled bool) Option
 - 作为中继节点为其他节点提供服务
 - 需要公网 IP
 
-**示例**：
+---
+
+## 连接配置
+
+### WithConnectionLimits
+
+设置连接数限制。
 
 ```go
-// 配置为中继服务器
-node, _ := dep2p.StartNode(ctx,
-    dep2p.WithPreset(dep2p.PresetServer),
-    dep2p.WithRelayServer(true),
+func WithConnectionLimits(low, high int) Option
+```
+
+| 参数 | 描述 |
+|------|------|
+| `low` | 低水位（不主动裁剪） |
+| `high` | 高水位（开始裁剪） |
+
+---
+
+### WithConnectionTimeout
+
+设置连接超时。
+
+```go
+func WithConnectionTimeout(d time.Duration) Option
+```
+
+---
+
+### WithIdleTimeout
+
+设置空闲连接超时。
+
+```go
+func WithIdleTimeout(d time.Duration) Option
+```
+
+---
+
+## 完整配置示例
+
+### 云服务器场景
+
+```json
+{
+  "preset": "server",
+  "listen_port": 4001,
+  
+  "identity": {
+    "key_file": "/etc/dep2p/identity.key"
+  },
+  
+  "known_peers": [
+    {
+      "peer_id": "12D3KooWxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "addrs": ["/ip4/peer1.example.com/udp/4001/quic-v1"]
+    }
+  ],
+  
+  "reachability": {
+    "trust_stun_addresses": true
+  },
+  
+  "connection_limits": {
+    "low": 100,
+    "high": 500
+  },
+  
+  "disconnect_detection": {
+    "quic": {
+      "keep_alive_period": "3s",
+      "max_idle_timeout": "6s"
+    },
+    "reconnect_grace_period": "15s",
+    "witness": {
+      "enabled": true,
+      "count": 3,
+      "quorum": 2
+    }
+  },
+  
+  "relay": {
+    "enable": true,
+    "enable_server": true
+  }
+}
+```
+
+### 私有集群场景
+
+```go
+node, _ := dep2p.New(ctx,
+    dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithListenPort(4001),
-)
-```
-
----
-
-### WithStaticRelays
-
-设置静态中继节点。
-
-```go
-func WithStaticRelays(addrs ...string) Option
-```
-
-**说明**：
-- 优先使用指定的中继节点
-- 适用于私有部署
-
-**示例**：
-
-```go
-node, _ := dep2p.StartNode(ctx,
-    dep2p.WithStaticRelays(
-        "/ip4/relay1.example.com/udp/4001/quic-v1/p2p/12D3KooW...",
+    dep2p.WithIdentityFile("./node.key"),
+    
+    // 配置已知节点（不依赖 Bootstrap）
+    dep2p.WithKnownPeers(
+        config.KnownPeer{
+            PeerID: "12D3KooWxxxxx...",
+            Addrs:  []string{"/ip4/192.168.1.10/udp/4001/quic-v1"},
+        },
+        config.KnownPeer{
+            PeerID: "12D3KooWyyyyy...",
+            Addrs:  []string{"/ip4/192.168.1.11/udp/4001/quic-v1"},
+        },
     ),
+    
+    // 禁用公共发现
+    dep2p.WithBootstrapPeers(nil),
+)
+```
+
+### 测试场景
+
+```go
+node, _ := dep2p.New(ctx,
+    dep2p.WithPreset(dep2p.PresetMinimal),  // 最小配置
+    dep2p.WithListenPort(0),                 // 随机端口
 )
 ```
 
 ---
 
-## Realm 配置
-
-### WithRealmAuth
-
-启用 Realm 认证。
-
-```go
-func WithRealmAuth(enabled bool) Option
-```
-
----
-
-### WithRealmAuthTimeout
-
-设置 Realm 认证超时。
-
-```go
-func WithRealmAuthTimeout(d time.Duration) Option
-```
-
----
-
-## 配置参数表
+## 配置参数总表
 
 ### 基础配置
 
@@ -462,8 +550,26 @@ func WithRealmAuthTimeout(d time.Duration) Option
 |------|------|--------|------|
 | `WithPreset` | `Preset` | - | 使用预设配置 |
 | `WithIdentity` | `crypto.PrivKey` | 自动生成 | 节点身份 |
+| `WithIdentityFile` | `string` | - | 身份文件路径 |
 | `WithListenPort` | `int` | 随机 | 监听端口 |
-| `WithListenAddrs` | `[]string` | 默认地址 | 监听地址列表 |
+
+### 发现配置
+
+| 选项 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `WithKnownPeers` | `[]KnownPeer` | `[]` | 已知节点列表 |
+| `WithBootstrapPeers` | `[]string` | 公共节点 | 引导节点 |
+| `WithMDNS` | `bool` | 见预设 | mDNS 发现 |
+| `WithDHT` | `DHTMode` | `DHTClient` | DHT 模式 |
+
+### NAT 配置
+
+| 选项 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `WithNAT` | `bool` | `true` | 启用 NAT |
+| `WithTrustSTUNAddresses` | `bool` | `false` | 信任 STUN 地址 |
+| `WithSTUNServers` | `[]string` | Google STUN | STUN 服务器 |
+| `WithHolePunching` | `bool` | `true` | 启用打洞 |
 
 ### 连接配置
 
@@ -473,86 +579,18 @@ func WithRealmAuthTimeout(d time.Duration) Option
 | `WithConnectionTimeout` | `Duration` | `30s` | 连接超时 |
 | `WithIdleTimeout` | `Duration` | `5m` | 空闲超时 |
 
-### 发现配置
-
-| 选项 | 类型 | 默认值 | 描述 |
-|------|------|--------|------|
-| `WithBootstrapPeers` | `[]string` | 公共节点 | 引导节点 |
-| `WithDHT` | `DHTMode` | `DHTClient` | DHT 模式 |
-| `WithMDNS` | `bool` | 见预设 | mDNS 发现 |
-
-### NAT 配置
-
-| 选项 | 类型 | 默认值 | 描述 |
-|------|------|--------|------|
-| `WithNAT` | `bool` | `true` | 启用 NAT |
-| `WithAutoNAT` | `bool` | `true` | 自动 NAT |
-| `WithHolePunching` | `bool` | `true` | 打洞 |
-| `WithExternalAddrs` | `[]string` | - | 外部地址 |
-| `WithSTUNServers` | `[]string` | 公共服务器 | STUN 服务器 |
-
 ### 中继配置
 
 | 选项 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
-| `WithRelay` | `bool` | `true` | 中继客户端 |
-| `WithAutoRelay` | `bool` | `true` | 自动中继 |
-| `WithRelayServer` | `bool` | `false` | 中继服务器 |
-| `WithStaticRelays` | `[]string` | - | 静态中继 |
-
----
-
-## 配置示例
-
-### 最小配置
-
-```go
-node, _ := dep2p.StartNode(ctx)
-```
-
-### 桌面应用
-
-```go
-node, _ := dep2p.StartNode(ctx,
-    dep2p.WithPreset(dep2p.PresetDesktop),
-    dep2p.WithMDNS(true),
-)
-```
-
-### 服务器配置
-
-```go
-node, _ := dep2p.StartNode(ctx,
-    dep2p.WithPreset(dep2p.PresetServer),
-    dep2p.WithListenPort(4001),
-    dep2p.WithDHT(dep2p.DHTServer),
-    dep2p.WithRelayServer(true),
-)
-```
-
-### 移动端配置
-
-```go
-node, _ := dep2p.StartNode(ctx,
-    dep2p.WithPreset(dep2p.PresetMobile),
-    dep2p.WithAutoRelay(true),
-)
-```
-
-### 私有网络
-
-```go
-node, _ := dep2p.StartNode(ctx,
-    dep2p.WithBootstrapPeers(privateBootstraps...),
-    dep2p.WithStaticRelays(privateRelays...),
-    dep2p.WithMDNS(false),  // 禁用公共发现
-)
-```
+| `WithRelay` | `bool` | `true` | 启用中继客户端 |
+| `WithRelayServer` | `bool` | `false` | 启用中继服务器 |
 
 ---
 
 ## 相关文档
 
-- [预设配置](presets.md)
-- [Node API](api/node.md)
-- [快速开始](../getting-started/quickstart.md)
+- [预设配置](presets.md) - 预设详细说明
+- [Node API](api/node.md) - Node 接口参考
+- [快速开始](../getting-started/quickstart.md) - 快速入门
+- [云服务器部署](../tutorials/03-cloud-deploy.md) - 云部署教程

@@ -1,28 +1,26 @@
 // Package client 提供中继客户端实现
 //
 // AutoRelay 自动管理中继连接，确保节点可达性：
-// - 自动发现中继服务器
-// - 自动预留和续期
-// - 自动故障恢复
+//   - 自动发现中继服务器
+//   - 自动预留和续期
+//   - 自动故障恢复
+//   - 健康检查和黑名单管理
 package client
 
 import (
 	"context"
-	"fmt"
-	"net"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/dep2p/go-dep2p/internal/util/logger"
-	endpointif "github.com/dep2p/go-dep2p/pkg/interfaces/endpoint"
-	relayif "github.com/dep2p/go-dep2p/pkg/interfaces/relay"
+	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
+	"github.com/dep2p/go-dep2p/pkg/lib/log"
 	"github.com/dep2p/go-dep2p/pkg/types"
 )
 
-var log = logger.Logger("relay.client")
+var autorelayLogger = log.Logger("relay/autorelay")
 
 // ============================================================================
 //                              常量
@@ -31,6 +29,7 @@ var log = logger.Logger("relay.client")
 const (
 	// DefaultMinRelays 默认最小中继数量
 	DefaultMinRelays = 2
+
 	// DefaultMaxRelays 默认最大中继数量
 	DefaultMaxRelays = 4
 
@@ -38,17 +37,19 @@ const (
 	DefaultRefreshInterval = 5 * time.Minute
 
 	// DefaultDiscoveryInterval 发现间隔
-	// 可达性优先：需要更快发现可用中继，避免长时间"无兜底地址"
-	DefaultDiscoveryInterval = 3 * time.Second
+	DefaultDiscoveryInterval = 30 * time.Second
 
 	// ReservationRefreshBefore 预留提前刷新时间
 	ReservationRefreshBefore = 10 * time.Minute
 
-	// 推断候选（来自"已连接节点"）的优先级：低于真实发现来源，且失败后应更长时间黑名单
-	inferredRelayPriority = -100
+	// preferredRelayPriority 首选中继优先级
+	preferredRelayPriority = 100
 
+	// blacklistShort 短期黑名单时间
 	blacklistShort = 5 * time.Minute
-	blacklistLong  = 1 * time.Hour
+
+	// blacklistLong 长期黑名单时间
+	blacklistLong = 1 * time.Hour
 )
 
 // ============================================================================
@@ -70,7 +71,7 @@ type AutoRelayConfig struct {
 	DiscoveryInterval time.Duration
 
 	// StaticRelays 静态中继列表
-	StaticRelays []types.NodeID
+	StaticRelays []string
 
 	// EnableBackoff 启用退避
 	EnableBackoff bool
@@ -79,7 +80,7 @@ type AutoRelayConfig struct {
 	MaxBackoff time.Duration
 }
 
-// DefaultAutoRelayConfig 默认配置
+// DefaultAutoRelayConfig 返回默认配置
 func DefaultAutoRelayConfig() AutoRelayConfig {
 	return AutoRelayConfig{
 		MinRelays:         DefaultMinRelays,
@@ -98,92 +99,76 @@ func DefaultAutoRelayConfig() AutoRelayConfig {
 
 // AutoRelay 自动中继管理器
 type AutoRelay struct {
-	config   AutoRelayConfig
-	client   relayif.RelayClient
-	endpoint endpointif.Endpoint
+	config    AutoRelayConfig
+	client    pkgif.RelayClient
+	host      pkgif.Host
+	peerstore pkgif.Peerstore
 
 	// 活跃中继
-	activeRelays   map[types.NodeID]*activeRelay
+	activeRelays   map[string]*activeRelay
 	activeRelaysMu sync.RWMutex
 
 	// 候选中继
-	candidates   map[types.NodeID]*relayCandidate
+	candidates   map[string]*relayCandidate
 	candidatesMu sync.RWMutex
 
 	// 黑名单
-	blacklist   map[types.NodeID]time.Time
+	blacklist   map[string]time.Time
 	blacklistMu sync.RWMutex
 
-	// 连接升级器
-	upgrader *ConnectionUpgrader
+	// 首选中继列表
+	preferredRelays   map[string]struct{}
+	preferredRelaysMu sync.RWMutex
 
-	// 中继连接（用于升级）
-	relayConns   map[types.NodeID]endpointif.Connection
-	relayConnsMu sync.RWMutex
-
-	// 地址变更回调（可达性优先策略）
-	onAddrsChanged   func([]endpointif.Address)
+	// 地址变更回调
+	onAddrsChanged   func([]string)
 	onAddrsChangedMu sync.RWMutex
+
+	// 日志指数退避
+	lastNoRelayLog     time.Time     // 上次打印"需要更多中继"的时间
+	noRelayLogInterval time.Duration // 当前日志间隔（指数退避）
+	lastActiveCount    int           // 上次活跃中继数量（用于检测状态变化）
 
 	// 状态
 	enabled int32
 	running int32
 	ctx     context.Context
 	cancel  context.CancelFunc
+	wg      sync.WaitGroup
 }
 
 // activeRelay 活跃中继
 type activeRelay struct {
-	nodeID      types.NodeID
-	reservation relayif.Reservation
-	addrs       []endpointif.Address
+	relayID     string
+	reservation pkgif.Reservation
+	addrs       []string
 	lastRefresh time.Time
 	failCount   int
 }
 
 // relayCandidate 候选中继
 type relayCandidate struct {
-	nodeID   types.NodeID
-	addrs    []endpointif.Address
+	relayID  string
+	addrs    []string
 	latency  time.Duration
 	lastSeen time.Time
 	priority int
 }
 
 // NewAutoRelay 创建 AutoRelay
-func NewAutoRelay(config AutoRelayConfig, client relayif.RelayClient, endpoint endpointif.Endpoint) *AutoRelay {
+func NewAutoRelay(config AutoRelayConfig, client pkgif.RelayClient, host pkgif.Host, peerstore pkgif.Peerstore) *AutoRelay {
 	return &AutoRelay{
-		config:       config,
-		client:       client,
-		endpoint:     endpoint,
-		activeRelays: make(map[types.NodeID]*activeRelay),
-		candidates:   make(map[types.NodeID]*relayCandidate),
-		blacklist:    make(map[types.NodeID]time.Time),
-		relayConns:   make(map[types.NodeID]endpointif.Connection),
+		config:             config,
+		client:             client,
+		host:               host,
+		peerstore:          peerstore,
+		activeRelays:       make(map[string]*activeRelay),
+		candidates:         make(map[string]*relayCandidate),
+		blacklist:          make(map[string]time.Time),
+		preferredRelays:    make(map[string]struct{}),
+		noRelayLogInterval: 5 * time.Second, // 初始间隔 5 秒
+		lastActiveCount:    -1,              // -1 表示未初始化
 	}
-}
-
-// SetUpgrader 设置连接升级器
-func (ar *AutoRelay) SetUpgrader(upgrader *ConnectionUpgrader) {
-	ar.upgrader = upgrader
-	if upgrader != nil {
-		upgrader.OnUpgraded(ar.onConnectionUpgraded)
-	}
-}
-
-// onConnectionUpgraded 连接升级成功回调
-func (ar *AutoRelay) onConnectionUpgraded(remoteID types.NodeID, directAddr endpointif.Address) {
-	log.Info("中继连接已升级为直连",
-		"remoteID", remoteID.ShortString(),
-		"directAddr", directAddr.String())
-
-	// 移除中继连接
-	ar.relayConnsMu.Lock()
-	if conn, ok := ar.relayConns[remoteID]; ok {
-		_ = conn.Close()
-		delete(ar.relayConns, remoteID)
-	}
-	ar.relayConnsMu.Unlock()
 }
 
 // ============================================================================
@@ -196,93 +181,30 @@ func (ar *AutoRelay) Start(_ context.Context) error {
 		return nil
 	}
 
-	// 重要：不要使用 fx OnStart 传入的 ctx 作为长期运行 ctx。
-	// 原因：fx OnStart 的 ctx 可能在启动阶段结束后被取消（例如 Bootstrap.Build() 返回时）。
-	// AutoRelay 是后台常驻任务，应由 Stop() 或模块 OnStop 负责关闭。
+	// 使用独立的 context，避免 Fx OnStart ctx 取消导致的问题
 	ar.ctx, ar.cancel = context.WithCancel(context.Background())
 
-	// 添加静态中继（需要持有锁保护以防止竞态条件）
+	// 添加静态中继
 	ar.candidatesMu.Lock()
 	for _, relayID := range ar.config.StaticRelays {
 		ar.candidates[relayID] = &relayCandidate{
-			nodeID:   relayID,
+			relayID:  relayID,
 			priority: 100, // 高优先级
 			lastSeen: time.Now(),
 		}
 	}
 	ar.candidatesMu.Unlock()
 
-	// 注册连接事件回调，监听 relay 连接断开事件
-	// 当检测到 relay 连接断开时，触发重新预留
-	ar.registerConnectionEventCallback()
-
 	// 启动后台任务
+	ar.wg.Add(3)
 	go ar.refreshLoop()
 	go ar.discoveryLoop()
 	go ar.maintenanceLoop()
 
-	log.Info("AutoRelay 已启动",
-		"static_relays", len(ar.config.StaticRelays))
+	autorelayLogger.Info("AutoRelay 已启动",
+		"staticRelays", len(ar.config.StaticRelays))
 
 	return nil
-}
-
-// registerConnectionEventCallback 注册连接事件回调
-//
-// 监听连接关闭事件，特别是 relay 连接断开时触发重新预留
-func (ar *AutoRelay) registerConnectionEventCallback() {
-	if ar.endpoint == nil {
-		return
-	}
-
-	ar.endpoint.RegisterConnectionEventCallback(func(event interface{}) {
-		// 类型断言获取连接关闭事件
-		closed, ok := event.(endpointif.ConnectionClosedEvent)
-		if !ok {
-			return
-		}
-
-		// 只处理 relay 连接断开
-		if !closed.IsRelayConn {
-			return
-		}
-
-		// 检查是否为我们正在使用的 relay
-		relayID := closed.RelayID
-		if relayID.IsEmpty() {
-			return
-		}
-
-		ar.handleRelayDisconnect(relayID, closed.Reason)
-	})
-}
-
-// handleRelayDisconnect 处理 relay 连接断开
-//
-// 当检测到 relay 连接断开时：
-//  1. 移除失效的中继
-//  2. 触发重新预留流程
-func (ar *AutoRelay) handleRelayDisconnect(relayID types.NodeID, reason error) {
-	// 检查是否为活跃中继
-	ar.activeRelaysMu.RLock()
-	_, isActive := ar.activeRelays[relayID]
-	ar.activeRelaysMu.RUnlock()
-
-	if !isActive {
-		return
-	}
-
-	log.Info("检测到 relay 连接断开，触发重新预留",
-		"relay", relayID.ShortString(),
-		"reason", reason)
-
-	// 移除失效的中继
-	ar.removeRelay(relayID)
-
-	// 如果启用了自动中继，触发立即建立新连接
-	if ar.IsEnabled() {
-		go ar.ensureRelays()
-	}
 }
 
 // Stop 停止 AutoRelay
@@ -298,14 +220,16 @@ func (ar *AutoRelay) Stop() error {
 			relay.reservation.Cancel()
 		}
 	}
-	ar.activeRelays = make(map[types.NodeID]*activeRelay)
+	ar.activeRelays = make(map[string]*activeRelay)
 	ar.activeRelaysMu.Unlock()
 
 	if ar.cancel != nil {
 		ar.cancel()
 	}
 
-	log.Info("AutoRelay 已停止")
+	ar.wg.Wait()
+
+	autorelayLogger.Info("AutoRelay 已停止")
 	return nil
 }
 
@@ -316,7 +240,7 @@ func (ar *AutoRelay) Stop() error {
 // Enable 启用 AutoRelay
 func (ar *AutoRelay) Enable() {
 	atomic.StoreInt32(&ar.enabled, 1)
-	log.Info("AutoRelay 已启用")
+	autorelayLogger.Info("AutoRelay 已启用")
 
 	// 触发立即建立连接
 	go ar.ensureRelays()
@@ -325,7 +249,7 @@ func (ar *AutoRelay) Enable() {
 // Disable 禁用 AutoRelay
 func (ar *AutoRelay) Disable() {
 	atomic.StoreInt32(&ar.enabled, 0)
-	log.Info("AutoRelay 已禁用")
+	autorelayLogger.Info("AutoRelay 已禁用")
 }
 
 // IsEnabled 是否已启用
@@ -338,33 +262,53 @@ func (ar *AutoRelay) IsEnabled() bool {
 // ============================================================================
 
 // Relays 返回当前使用的中继
-func (ar *AutoRelay) Relays() []types.NodeID {
+func (ar *AutoRelay) Relays() []string {
 	ar.activeRelaysMu.RLock()
 	defer ar.activeRelaysMu.RUnlock()
 
-	relays := make([]types.NodeID, 0, len(ar.activeRelays))
+	relays := make([]string, 0, len(ar.activeRelays))
 	for id := range ar.activeRelays {
 		relays = append(relays, id)
 	}
 	return relays
 }
 
+// RelayAddrs 返回中继地址
+func (ar *AutoRelay) RelayAddrs() []string {
+	ar.activeRelaysMu.RLock()
+	defer ar.activeRelaysMu.RUnlock()
+
+	var addrs []string
+	for _, relay := range ar.activeRelays {
+		addrs = append(addrs, relay.addrs...)
+	}
+	return addrs
+}
+
 // Status 返回状态
-func (ar *AutoRelay) Status() relayif.AutoRelayStatus {
+func (ar *AutoRelay) Status() pkgif.AutoRelayStatus {
 	ar.activeRelaysMu.RLock()
 	activeCount := len(ar.activeRelays)
 	var relayAddrs []string
 	for _, relay := range ar.activeRelays {
-		for _, addr := range relay.addrs {
-			relayAddrs = append(relayAddrs, addr.String())
-		}
+		relayAddrs = append(relayAddrs, relay.addrs...)
 	}
 	ar.activeRelaysMu.RUnlock()
 
-	return relayif.AutoRelayStatus{
-		Enabled:    ar.IsEnabled(),
-		NumRelays:  activeCount,
-		RelayAddrs: relayAddrs,
+	ar.candidatesMu.RLock()
+	candidateCount := len(ar.candidates)
+	ar.candidatesMu.RUnlock()
+
+	ar.blacklistMu.RLock()
+	blacklistCount := len(ar.blacklist)
+	ar.blacklistMu.RUnlock()
+
+	return pkgif.AutoRelayStatus{
+		Enabled:        ar.IsEnabled(),
+		NumRelays:      activeCount,
+		RelayAddrs:     relayAddrs,
+		NumCandidates:  candidateCount,
+		NumBlacklisted: blacklistCount,
 	}
 }
 
@@ -374,6 +318,8 @@ func (ar *AutoRelay) Status() relayif.AutoRelayStatus {
 
 // refreshLoop 刷新循环
 func (ar *AutoRelay) refreshLoop() {
+	defer ar.wg.Done()
+
 	ticker := time.NewTicker(ar.config.RefreshInterval)
 	defer ticker.Stop()
 
@@ -391,6 +337,8 @@ func (ar *AutoRelay) refreshLoop() {
 
 // discoveryLoop 发现循环
 func (ar *AutoRelay) discoveryLoop() {
+	defer ar.wg.Done()
+
 	ticker := time.NewTicker(ar.config.DiscoveryInterval)
 	defer ticker.Stop()
 
@@ -408,7 +356,8 @@ func (ar *AutoRelay) discoveryLoop() {
 
 // maintenanceLoop 维护循环
 func (ar *AutoRelay) maintenanceLoop() {
-	// 可达性优先：更快触发 ensureRelays，缩短 Relay 兜底准备时间
+	defer ar.wg.Done()
+
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -436,24 +385,48 @@ func (ar *AutoRelay) ensureRelays() {
 	ar.activeRelaysMu.RUnlock()
 
 	if activeCount >= ar.config.MinRelays {
+		// 有足够中继时重置日志间隔
+		ar.noRelayLogInterval = 5 * time.Second
+		ar.lastActiveCount = activeCount
 		return
 	}
 
 	needed := ar.config.MinRelays - activeCount
-	log.Debug("需要更多中继",
-		"active", activeCount,
-		"needed", needed)
+
+	// 使用指数退避来减少日志频率
+	// 只在状态发生变化或距离上次打印已过足够时间时打印
+	shouldLog := false
+	if activeCount != ar.lastActiveCount {
+		// 状态变化，立即打印并重置间隔
+		shouldLog = true
+		ar.noRelayLogInterval = 5 * time.Second
+	} else if time.Since(ar.lastNoRelayLog) >= ar.noRelayLogInterval {
+		// 间隔已过，打印并增加间隔（指数退避，最大 5 分钟）
+		shouldLog = true
+		ar.noRelayLogInterval = ar.noRelayLogInterval * 2
+		if ar.noRelayLogInterval > 5*time.Minute {
+			ar.noRelayLogInterval = 5 * time.Minute
+		}
+	}
+
+	if shouldLog {
+		autorelayLogger.Debug("需要更多中继",
+			"active", activeCount,
+			"needed", needed)
+		ar.lastNoRelayLog = time.Now()
+	}
+	ar.lastActiveCount = activeCount
 
 	// 获取候选列表
 	candidates := ar.getCandidates(needed * 2)
 
 	// 尝试连接
 	for _, candidate := range candidates {
-		if ar.isBlacklisted(candidate.nodeID) {
+		if ar.isBlacklisted(candidate.relayID) {
 			continue
 		}
 
-		if ar.tryRelay(candidate.nodeID) {
+		if ar.tryRelay(candidate.relayID) {
 			needed--
 			if needed <= 0 {
 				break
@@ -463,8 +436,11 @@ func (ar *AutoRelay) ensureRelays() {
 }
 
 // tryRelay 尝试使用中继
-func (ar *AutoRelay) tryRelay(relayID types.NodeID) bool {
-	// 检查运行状态和上下文
+//
+// 对于 "stream canceled" 错误提供更清晰的日志说明，
+// 这类错误通常表示远端不支持 Relay 协议。
+// 在尝试预留前检查 HOP 协议支持，避免对已知不支持的节点发起请求。
+func (ar *AutoRelay) tryRelay(relayID string) bool {
 	if atomic.LoadInt32(&ar.running) == 0 || ar.ctx == nil {
 		return false
 	}
@@ -478,8 +454,28 @@ func (ar *AutoRelay) tryRelay(relayID types.NodeID) bool {
 		return false
 	}
 
-	log.Debug("尝试预留中继",
-		"relay", relayID.ShortString())
+	// 预检查 HOP 协议支持，避免对已知不支持的节点发起无效请求
+	if ar.peerstore != nil {
+		supportedProtos, err := ar.peerstore.SupportsProtocols(
+			types.PeerID(relayID),
+			types.ProtocolID(HopProtocolID),
+		)
+		if err == nil && len(supportedProtos) == 0 {
+			// 检查是否有该节点的任何协议信息
+			allProtos, _ := ar.peerstore.GetProtocols(types.PeerID(relayID))
+			if len(allProtos) > 0 {
+				// 有协议信息但不支持 HOP 协议，确定不是 Relay 服务器
+				autorelayLogger.Debug("跳过非 Relay 节点（不支持 HOP 协议）",
+					"relay", relayID,
+					"knownProtocols", len(allProtos))
+				ar.addToBlacklist(relayID)
+				return false
+			}
+			// 没有协议信息，可能是新节点，继续尝试预留
+		}
+	}
+
+	autorelayLogger.Debug("尝试预留中继", "relay", relayID)
 
 	ctx, cancel := context.WithTimeout(ar.ctx, 30*time.Second)
 	defer cancel()
@@ -487,9 +483,24 @@ func (ar *AutoRelay) tryRelay(relayID types.NodeID) bool {
 	// 预留
 	reservation, err := ar.client.Reserve(ctx, relayID)
 	if err != nil {
-		log.Debug("预留失败",
-			"relay", relayID.ShortString(),
-			"err", err)
+		// 分析错误类型，提供更清晰的日志
+		errStr := err.Error()
+		if isStreamCanceledError(errStr) {
+			// "stream X canceled by remote with error code 0" 表示远端关闭了流
+			// 这通常意味着远端不支持 Relay 协议（不是真正的 Relay 服务器）
+			autorelayLogger.Debug("预留失败: 远端不支持 Relay 协议",
+				"relay", relayID,
+				"hint", "该节点可能不是 Relay 服务器")
+		} else if isProtocolNotSupportedError(errStr) {
+			// 协议不支持
+			autorelayLogger.Debug("预留失败: 协议协商失败",
+				"relay", relayID,
+				"hint", "远端不支持 HOP 协议")
+		} else {
+			autorelayLogger.Debug("预留失败",
+				"relay", relayID,
+				"err", err)
+		}
 		ar.addToBlacklist(relayID)
 		return false
 	}
@@ -497,29 +508,25 @@ func (ar *AutoRelay) tryRelay(relayID types.NodeID) bool {
 	// 添加到活跃列表
 	ar.activeRelaysMu.Lock()
 	ar.activeRelays[relayID] = &activeRelay{
-		nodeID:      relayID,
+		relayID:     relayID,
 		reservation: reservation,
 		addrs:       reservation.Addrs(),
 		lastRefresh: time.Now(),
 	}
 	ar.activeRelaysMu.Unlock()
 
-	log.Info("中继预留成功",
-		"relay", relayID.ShortString(),
+	autorelayLogger.Info("中继预留成功",
+		"relay", relayID,
 		"expiry", reservation.Expiry())
 
-	// 触发地址变更通知（可达性优先策略）
+	// 触发地址变更通知
 	ar.notifyAddrsChanged()
-
-	// 通告中继地址到 Endpoint（使 Relay 地址可被其他节点通过 DHT 发现）
-	ar.announceRelayAddresses(relayID, reservation.Addrs())
 
 	return true
 }
 
 // refreshReservations 刷新预留
 func (ar *AutoRelay) refreshReservations() {
-	// 检查运行状态和上下文
 	if atomic.LoadInt32(&ar.running) == 0 || ar.ctx == nil {
 		return
 	}
@@ -532,40 +539,48 @@ func (ar *AutoRelay) refreshReservations() {
 	ar.activeRelaysMu.RUnlock()
 
 	for _, relay := range relays {
-		// 检查是否需要刷新
 		if relay.reservation != nil {
 			expiry := relay.reservation.Expiry()
-			if time.Until(expiry) > ReservationRefreshBefore {
-				continue
+			// 处理 Expiry() 返回 0 的情况，expiry=0 时总是尝试刷新
+			if expiry > 0 {
+				// 检查是否需要刷新（距离过期时间小于 ReservationRefreshBefore）
+				expiryTime := time.Unix(expiry, 0)
+				if time.Until(expiryTime) > ReservationRefreshBefore {
+					continue
+				}
 			}
+			// expiry=0 时，总是尝试刷新
 		}
 
-		log.Debug("刷新中继预留",
-			"relay", relay.nodeID.ShortString())
+		autorelayLogger.Debug("刷新中继预留", "relay", relay.relayID)
 
 		ctx, cancel := context.WithTimeout(ar.ctx, 30*time.Second)
 		err := relay.reservation.Refresh(ctx)
 		cancel()
 
+		// 使用写锁保护 relay 字段的并发修改
+		ar.activeRelaysMu.Lock()
 		if err != nil {
-			log.Warn("刷新预留失败",
-				"relay", relay.nodeID.ShortString(),
+			autorelayLogger.Warn("刷新预留失败",
+				"relay", relay.relayID,
 				"err", err)
 
 			relay.failCount++
 			if relay.failCount >= 3 {
-				// 移除失败的中继
-				ar.removeRelay(relay.nodeID)
+				ar.activeRelaysMu.Unlock()
+				ar.removeRelay(relay.relayID)
+				continue
 			}
 		} else {
 			relay.lastRefresh = time.Now()
 			relay.failCount = 0
 		}
+		ar.activeRelaysMu.Unlock()
 	}
 }
 
 // removeRelay 移除中继
-func (ar *AutoRelay) removeRelay(relayID types.NodeID) {
+func (ar *AutoRelay) removeRelay(relayID string) {
 	ar.activeRelaysMu.Lock()
 	if relay, ok := ar.activeRelays[relayID]; ok {
 		if relay.reservation != nil {
@@ -575,16 +590,14 @@ func (ar *AutoRelay) removeRelay(relayID types.NodeID) {
 	}
 	ar.activeRelaysMu.Unlock()
 
-	log.Info("移除中继",
-		"relay", relayID.ShortString())
+	autorelayLogger.Info("移除中继", "relay", relayID)
 
-	// 触发地址变更通知（可达性优先策略）
+	// 触发地址变更通知
 	ar.notifyAddrsChanged()
 }
 
 // discoverRelays 发现中继
 func (ar *AutoRelay) discoverRelays() {
-	// 检查运行状态和上下文
 	if atomic.LoadInt32(&ar.running) == 0 || ar.ctx == nil {
 		return
 	}
@@ -598,70 +611,50 @@ func (ar *AutoRelay) discoverRelays() {
 
 	foundRelays, err := ar.client.FindRelays(ctx)
 	if err != nil {
-		log.Debug("发现中继失败", "err", err)
-		// 继续尝试从当前连接中“推断候选中继”，避免纯静态发现失败导致永远无候选
-	}
-
-	// 额外来源：从已建立连接中推断候选（最保守策略：由 Reserve 验证是否真是中继）
-	// 注意：该来源容易产生假阳性，因此会显式降权，并在失败时使用更长黑名单。
-	var inferredRelays []types.NodeID
-	if ar.endpoint != nil {
-		conns := ar.endpoint.Connections()
-		for _, c := range conns {
-			if c == nil {
-				continue
-			}
-			inferredRelays = append(inferredRelays, c.RemoteID())
-		}
+		autorelayLogger.Debug("发现中继失败", "err", err)
+		return
 	}
 
 	ar.candidatesMu.Lock()
 	for _, relayID := range foundRelays {
 		if cand, exists := ar.candidates[relayID]; exists && cand != nil {
 			cand.lastSeen = time.Now()
-			// 保留更高优先级（真实发现来源）
-			if cand.priority < 0 {
-				cand.priority = 0
-			}
 			continue
 		}
 		ar.candidates[relayID] = &relayCandidate{
-			nodeID:   relayID,
+			relayID:  relayID,
 			lastSeen: time.Now(),
 			priority: 0,
 		}
 	}
-
-	for _, relayID := range inferredRelays {
-		// 仅在不存在候选时才加入推断候选（避免把真实候选降权）
-		if cand, exists := ar.candidates[relayID]; exists && cand != nil {
-			cand.lastSeen = time.Now()
-			continue
-		}
-		ar.candidates[relayID] = &relayCandidate{
-			nodeID:   relayID,
-			lastSeen: time.Now(),
-			priority: inferredRelayPriority,
-		}
-	}
 	ar.candidatesMu.Unlock()
 
-	log.Debug("发现中继",
-		"countFound", len(foundRelays),
-		"countInferred", len(inferredRelays))
+	autorelayLogger.Debug("发现中继", "count", len(foundRelays))
 
-	// 发现候选后立即尝试补足中继（可达性优先）
+	// 发现候选后立即尝试补足中继
 	ar.ensureRelays()
 }
 
 // getCandidates 获取候选列表
 func (ar *AutoRelay) getCandidates(count int) []*relayCandidate {
+	// 处理 count <= 0 的情况，避免 slice bounds out of range panic
+	if count <= 0 {
+		return nil
+	}
+
 	ar.candidatesMu.RLock()
 	defer ar.candidatesMu.RUnlock()
 
 	candidates := make([]*relayCandidate, 0, len(ar.candidates))
 	for _, c := range ar.candidates {
-		candidates = append(candidates, c)
+		// 如果是首选中继，提升优先级
+		if ar.isPreferredRelay(c.relayID) {
+			preferredCand := *c
+			preferredCand.priority = preferredRelayPriority
+			candidates = append(candidates, &preferredCand)
+		} else {
+			candidates = append(candidates, c)
+		}
 	}
 
 	// 按优先级和延迟排序
@@ -680,15 +673,39 @@ func (ar *AutoRelay) getCandidates(count int) []*relayCandidate {
 }
 
 // ============================================================================
+//                              首选中继
+// ============================================================================
+
+// SetPreferredRelays 设置首选中继列表
+func (ar *AutoRelay) SetPreferredRelays(relayIDs []string) {
+	ar.preferredRelaysMu.Lock()
+	defer ar.preferredRelaysMu.Unlock()
+
+	ar.preferredRelays = make(map[string]struct{})
+	for _, id := range relayIDs {
+		ar.preferredRelays[id] = struct{}{}
+	}
+
+	autorelayLogger.Debug("设置首选中继", "count", len(relayIDs))
+}
+
+// isPreferredRelay 检查是否为首选中继
+func (ar *AutoRelay) isPreferredRelay(relayID string) bool {
+	ar.preferredRelaysMu.RLock()
+	defer ar.preferredRelaysMu.RUnlock()
+	_, ok := ar.preferredRelays[relayID]
+	return ok
+}
+
+// ============================================================================
 //                              黑名单
 // ============================================================================
 
 // addToBlacklist 添加到黑名单
-func (ar *AutoRelay) addToBlacklist(relayID types.NodeID) {
-	// 对“推断候选”（非明确发现来源）的失败，采用更长黑名单，避免反复浪费资源
+func (ar *AutoRelay) addToBlacklist(relayID string) {
 	ttl := blacklistShort
 	ar.candidatesMu.RLock()
-	if cand, ok := ar.candidates[relayID]; ok && cand != nil && cand.priority <= inferredRelayPriority {
+	if cand, ok := ar.candidates[relayID]; ok && cand != nil && cand.priority < 0 {
 		ttl = blacklistLong
 	}
 	ar.candidatesMu.RUnlock()
@@ -699,7 +716,7 @@ func (ar *AutoRelay) addToBlacklist(relayID types.NodeID) {
 }
 
 // isBlacklisted 检查是否在黑名单
-func (ar *AutoRelay) isBlacklisted(relayID types.NodeID) bool {
+func (ar *AutoRelay) isBlacklisted(relayID string) bool {
 	ar.blacklistMu.RLock()
 	expiry, exists := ar.blacklist[relayID]
 	ar.blacklistMu.RUnlock()
@@ -724,26 +741,36 @@ func (ar *AutoRelay) cleanupBlacklist() {
 }
 
 // ============================================================================
-//                              地址管理
+//                              候选管理
 // ============================================================================
 
-// RelayAddrs 返回中继地址
-func (ar *AutoRelay) RelayAddrs() []endpointif.Address {
-	ar.activeRelaysMu.RLock()
-	defer ar.activeRelaysMu.RUnlock()
+// AddCandidate 添加候选中继
+func (ar *AutoRelay) AddCandidate(relayID string, addrs []string, priority int) {
+	ar.candidatesMu.Lock()
+	defer ar.candidatesMu.Unlock()
 
-	var addrs []endpointif.Address
-	for _, relay := range ar.activeRelays {
-		addrs = append(addrs, relay.addrs...)
+	ar.candidates[relayID] = &relayCandidate{
+		relayID:  relayID,
+		addrs:    addrs,
+		priority: priority,
+		lastSeen: time.Now(),
 	}
-	return addrs
 }
 
-// SetOnAddrsChanged 设置地址变更回调（可达性优先策略）
-//
-// 当 Relay 地址发生变化时（预留成功/失败/过期），会调用此回调。
-// ReachabilityCoordinator 通过此回调感知 Relay 地址的变化。
-func (ar *AutoRelay) SetOnAddrsChanged(callback func([]endpointif.Address)) {
+// RemoveCandidate 移除候选中继
+func (ar *AutoRelay) RemoveCandidate(relayID string) {
+	ar.candidatesMu.Lock()
+	defer ar.candidatesMu.Unlock()
+
+	delete(ar.candidates, relayID)
+}
+
+// ============================================================================
+//                              地址变更通知
+// ============================================================================
+
+// SetOnAddrsChanged 设置地址变更回调
+func (ar *AutoRelay) SetOnAddrsChanged(callback func([]string)) {
 	ar.onAddrsChangedMu.Lock()
 	ar.onAddrsChanged = callback
 	ar.onAddrsChangedMu.Unlock()
@@ -762,262 +789,83 @@ func (ar *AutoRelay) notifyAddrsChanged() {
 	}
 }
 
-// announceRelayAddresses 通告中继地址
-//
-// 将成功预留的中继地址添加到 Endpoint 的通告地址列表，
-// 使其他节点可以通过 DHT 发现本节点的中继地址。
-//
-// 这是 Relay Transport Integration 的关键步骤：
-// - 其他节点查询 DHT 时会获取到这些中继地址
-// - 当它们调用 Connect() 时，TransportRegistry 会选择 RelayTransport 进行拨号
-func (ar *AutoRelay) announceRelayAddresses(relayID types.NodeID, reservationAddrs []endpointif.Address) {
-	if ar.endpoint == nil {
-		return
-	}
-
-	// 构建中继地址格式：/relay-base-addr/p2p/<relay-id>/p2p-circuit/p2p/<local-id>
-	localID := ar.endpoint.ID()
-	if localID.IsEmpty() {
-		return
-	}
-
-	// 获取中继节点的可拨号地址
-	relayAddrs := ar.getRelayNodeAddresses(relayID)
-	if len(relayAddrs) == 0 {
-		// 使用预留返回的地址（可能已经是 circuit 格式）
-		for _, addr := range reservationAddrs {
-			log.Debug("通告中继地址（来自预留）",
-				"relay", relayID.ShortString(),
-				"addr", addr.String())
-		}
-		return
-	}
-
-	// 收集所有构建的中继地址
-	var builtAddrs []endpointif.Address
-
-	// 为每个中继地址构建完整的 circuit 地址
-	for _, relayBaseAddr := range relayAddrs {
-		// 跳过已经是 circuit 地址的
-		if types.IsRelayAddr(relayBaseAddr.String()) {
-			continue
-		}
-
-		// 使用 multiaddr 格式构建 relay circuit 地址，确保 DHT 验证通过
-		relayAddrStr := types.BuildRelayAddr(
-			toMultiaddr(relayBaseAddr)+"/p2p/"+relayID.String(),
-			localID,
-		)
-
-		// 创建地址对象
-		circuitAddr := &relayCircuitAddress{addr: relayAddrStr}
-		builtAddrs = append(builtAddrs, circuitAddr)
-
-		log.Info("通告中继地址",
-			"relay", relayID.ShortString(),
-			"addr", relayAddrStr)
-
-		// 将中继地址添加到 Endpoint 的通告地址列表
-		ar.endpoint.AddAdvertisedAddr(circuitAddr)
-	}
-
-	// 触发发现服务刷新，使其他节点可以通过 DHT 发现这些中继地址
-	if len(builtAddrs) > 0 {
-		discovery := ar.endpoint.Discovery()
-		if discovery != nil {
-			discovery.RefreshAnnounce(builtAddrs)
-			log.Info("已触发中继地址发布到 DHT",
-				"relay", relayID.ShortString(),
-				"addrs", len(builtAddrs))
-		}
-	}
-}
-
-// relayCircuitAddress 中继 circuit 地址实现
-type relayCircuitAddress struct {
-	addr string
-}
-
-func (a *relayCircuitAddress) Network() string   { return "p2p-circuit" }
-func (a *relayCircuitAddress) String() string    { return a.addr }
-func (a *relayCircuitAddress) Bytes() []byte     { return []byte(a.addr) }
-// p2p-circuit 地址不含 IP，视为 unknown（保守处理）
-func (a *relayCircuitAddress) IsPublic() bool    { return false }
-func (a *relayCircuitAddress) IsPrivate() bool   { return false }
-func (a *relayCircuitAddress) IsLoopback() bool  { return false }
-func (a *relayCircuitAddress) Equal(other endpointif.Address) bool {
-	if other == nil {
-		return false
-	}
-	return a.addr == other.String()
-}
-
-// Multiaddr 返回 multiaddr 格式
-// relay circuit 地址本身就是 multiaddr 格式
-func (a *relayCircuitAddress) Multiaddr() string { return a.addr }
-
 // ============================================================================
-//                              地址格式转换
+//                              辅助函数
 // ============================================================================
 
-// toMultiaddr 将地址转换为 multiaddr 格式
-//
-// 如果地址实现了 Multiaddr() 方法，直接调用；
-// 否则尝试解析 host:port 格式并转换为 /ip4/.../udp/.../quic-v1 格式。
-func toMultiaddr(addr endpointif.Address) string {
-	if addr == nil {
-		return ""
-	}
-
-	// 优先使用 Multiaddr() 方法（如果实现了）
-	if m, ok := addr.(interface{ Multiaddr() string }); ok {
-		return m.Multiaddr()
-	}
-
-	// 如果地址字符串已经是 multiaddr 格式（以 / 开头），直接返回
-	addrStr := addr.String()
-	if strings.HasPrefix(addrStr, "/") {
-		return addrStr
-	}
-
-	// 解析 host:port 格式并转换为 multiaddr
-	return convertHostPortToMultiaddr(addrStr, addr.Network())
+// buildCircuitAddr 构建 circuit 地址
+func buildCircuitAddr(relayAddr, localID string) string {
+	return relayAddr + "/p2p-circuit/p2p/" + localID
 }
 
-// convertHostPortToMultiaddr 将 host:port 格式转换为 multiaddr 格式
-//
-// 参数:
-//   - addrStr: host:port 格式的地址字符串，如 "1.2.3.4:8000" 或 "[::1]:8000"
-//   - network: 网络类型提示，如 "ip4", "ip6", "quic"
-//
-// 返回:
-//   - multiaddr 格式，如 "/ip4/1.2.3.4/udp/8000/quic-v1"
-func convertHostPortToMultiaddr(addrStr string, network string) string {
-	host, port, err := net.SplitHostPort(addrStr)
+// ============================================================================
+//                              Reservation 适配器
+// ============================================================================
+
+// reservationWrapper 预留包装器
+type reservationWrapper struct {
+	relayPeer  types.PeerID
+	expireTime time.Time
+	addrs      []string
+	client     *Client
+}
+
+// Expiry 返回过期时间戳
+func (r *reservationWrapper) Expiry() int64 {
+	return r.expireTime.Unix()
+}
+
+// Addrs 返回中继地址
+func (r *reservationWrapper) Addrs() []string {
+	return r.addrs
+}
+
+// Refresh 刷新预留
+func (r *reservationWrapper) Refresh(ctx context.Context) error {
+	if r.client == nil {
+		return ErrClientClosed
+	}
+
+	// 重新预留
+	reservation, err := r.client.Reserve(ctx)
 	if err != nil {
-		// 无法解析，返回原字符串
-		return addrStr
+		return err
 	}
 
-	// 解析 IP 地址
-	ip := net.ParseIP(host)
-	if ip == nil {
-		// 可能是域名，使用 dns4
-		return fmt.Sprintf("/dns4/%s/udp/%s/quic-v1", host, port)
-	}
-
-	// 判断 IPv4 还是 IPv6
-	ipType := "ip4"
-	if ip.To4() == nil {
-		ipType = "ip6"
-	}
-
-	// 构建 multiaddr（默认使用 UDP/QUIC-v1，因为这是当前主要传输协议）
-	return fmt.Sprintf("/%s/%s/udp/%s/quic-v1", ipType, host, port)
-}
-
-// getRelayNodeAddresses 获取中继节点的可拨号地址
-func (ar *AutoRelay) getRelayNodeAddresses(relayID types.NodeID) []endpointif.Address {
-	// 从候选列表获取
-	ar.candidatesMu.RLock()
-	if cand, ok := ar.candidates[relayID]; ok && cand != nil && len(cand.addrs) > 0 {
-		addrs := make([]endpointif.Address, len(cand.addrs))
-		copy(addrs, cand.addrs)
-		ar.candidatesMu.RUnlock()
-		return addrs
-	}
-	ar.candidatesMu.RUnlock()
-
-	// 从已建立的连接获取
-	if ar.endpoint != nil {
-		if conn, ok := ar.endpoint.Connection(relayID); ok {
-			remoteAddrs := conn.RemoteAddrs()
-			if len(remoteAddrs) > 0 {
-				return remoteAddrs
-			}
-		}
-	}
-
+	r.expireTime = reservation.ExpireTime
 	return nil
 }
 
-// TryUpgradeConnection 尝试将中继连接升级为直连
+// Cancel 取消预留
+func (r *reservationWrapper) Cancel() {
+	// 目前预留是时间过期的，无需主动取消
+}
+
+// ============================================================================
+//                              错误分析辅助函数
+// ============================================================================
+
+// isStreamCanceledError 检查是否是 "stream canceled by remote" 错误
 //
-// 设计依据：docs/01-design/protocols/network/03-relay.md 第 300-329 行
-// 流程：
-// 1. 通过中继连接交换地址信息
-// 2. 并行尝试打洞（10s 超时）
-// 3. 成功后迁移到直连，释放中继资源
-func (ar *AutoRelay) TryUpgradeConnection(ctx context.Context, remoteID types.NodeID, relayConn endpointif.Connection) (endpointif.Address, error) {
-	if ar.upgrader == nil {
-		return nil, ErrNoPuncher
-	}
-
-	// 保存中继连接
-	ar.relayConnsMu.Lock()
-	ar.relayConns[remoteID] = relayConn
-	ar.relayConnsMu.Unlock()
-
-	// 尝试升级
-	return ar.upgrader.TryUpgrade(ctx, remoteID, relayConn)
+// 这类错误表示远端主动关闭了流，通常发生在：
+// - 远端不支持请求的协议
+// - 远端没有启用 Relay 服务器功能
+// - 协议版本不匹配
+func isStreamCanceledError(errStr string) bool {
+	// 匹配 "stream X canceled by remote with error code Y" 模式
+	return strings.Contains(errStr, "canceled by remote") ||
+		strings.Contains(errStr, "stream reset")
 }
 
-// StartAutoUpgrade 启动自动升级（连接后立即尝试）
-func (ar *AutoRelay) StartAutoUpgrade(remoteID types.NodeID, relayConn endpointif.Connection) {
-	// 检查运行状态和上下文
-	if atomic.LoadInt32(&ar.running) == 0 || ar.ctx == nil {
-		return
-	}
-
-	if ar.upgrader == nil || !ar.upgrader.config.EnableAutoUpgrade {
-		return
-	}
-
-	go func() {
-		// 再次检查上下文是否有效
-		if ar.ctx == nil {
-			return
-		}
-		ctx, cancel := context.WithTimeout(ar.ctx, 30*time.Second)
-		defer cancel()
-
-		addr, err := ar.TryUpgradeConnection(ctx, remoteID, relayConn)
-		if err != nil {
-			log.Debug("自动升级失败，继续使用中继",
-				"remoteID", remoteID.ShortString(),
-				"err", err)
-		} else {
-			log.Info("自动升级成功",
-				"remoteID", remoteID.ShortString(),
-				"directAddr", addr.String())
-		}
-	}()
-}
-
-// AddCandidate 添加候选中继
-func (ar *AutoRelay) AddCandidate(relayID types.NodeID, addrs []endpointif.Address, priority int) {
-	ar.candidatesMu.Lock()
-	defer ar.candidatesMu.Unlock()
-
-	ar.candidates[relayID] = &relayCandidate{
-		nodeID:   relayID,
-		addrs:    addrs,
-		priority: priority,
-		lastSeen: time.Now(),
-	}
-}
-
-// RemoveCandidate 移除候选中继
-func (ar *AutoRelay) RemoveCandidate(relayID types.NodeID) {
-	ar.candidatesMu.Lock()
-	defer ar.candidatesMu.Unlock()
-
-	delete(ar.candidates, relayID)
+// isProtocolNotSupportedError 检查是否是协议不支持错误
+func isProtocolNotSupportedError(errStr string) bool {
+	return strings.Contains(errStr, "protocols not supported") ||
+		strings.Contains(errStr, "protocol negotiation failed") ||
+		strings.Contains(errStr, "no protocol")
 }
 
 // ============================================================================
 //                              接口断言
 // ============================================================================
 
-var _ relayif.AutoRelay = (*AutoRelay)(nil)
-
+var _ pkgif.AutoRelay = (*AutoRelay)(nil)

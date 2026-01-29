@@ -1,5 +1,6 @@
-// Package types 提供 Base58 编码/解码实现
+// Package types 定义 DeP2P 的基础类型
 //
+// 本文件提供 Base58 编码/解码实现。
 // Base58 是 Bitcoin 风格的编码，避免了易混淆字符（0OIl）。
 // 本实现不依赖外部库。
 package types
@@ -33,6 +34,16 @@ var (
 )
 
 // Base58Encode 将字节切片编码为 Base58 字符串
+//
+// 算法：
+//  1. 计算前导零字节数量
+//  2. 将输入视为大整数，反复除以 58
+//  3. 每次除法的余数映射到 Base58 字母表
+//  4. 前导零字节编码为 '1'
+//
+// 示例：
+//
+//	Base58Encode([]byte{0, 0, 1, 2, 3}) // "11Ldp"
 func Base58Encode(input []byte) string {
 	if len(input) == 0 {
 		return ""
@@ -73,6 +84,16 @@ func Base58Encode(input []byte) string {
 }
 
 // Base58Decode 将 Base58 字符串解码为字节切片
+//
+// 算法：
+//  1. 计算前导 '1' 的数量（代表前导零字节）
+//  2. 每个字符映射到值，累加到大整数
+//  3. 将大整数转换为字节切片
+//  4. 添加前导零字节
+//
+// 示例：
+//
+//	Base58Decode("11Ldp") // []byte{0, 0, 1, 2, 3}
 func Base58Decode(input string) ([]byte, error) {
 	if len(input) == 0 {
 		return nil, nil
@@ -108,3 +129,26 @@ func Base58Decode(input string) ([]byte, error) {
 	return result, nil
 }
 
+// Base58EncodeCheck 带校验和的 Base58 编码
+//
+// 格式：Base58(input || checksum)
+// 其中 checksum = SHA256(SHA256(input))[:4]
+//
+// 注意：此函数需要 crypto/sha256，如果需要可以添加。
+// 当前实现为简化版本，不包含校验和。
+func Base58EncodeCheck(input []byte) string {
+	// 简化实现：直接编码，不添加校验和
+	// 如果需要校验和功能，可以在此添加
+	return Base58Encode(input)
+}
+
+// Base58DecodeCheck 带校验和的 Base58 解码
+//
+// 验证格式：input || checksum
+// 其中 checksum = SHA256(SHA256(input))[:4]
+//
+// 注意：当前实现为简化版本，不验证校验和。
+func Base58DecodeCheck(input string) ([]byte, error) {
+	// 简化实现：直接解码，不验证校验和
+	return Base58Decode(input)
+}

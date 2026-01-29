@@ -48,8 +48,42 @@ As the P2P network layer for blockchain projects, DeP2P provides:
 | **Consensus Communication** | Message passing between validators | Low-latency direct + Relay fallback |
 | **Node Discovery** | Discover other nodes | DHT + Realm Isolation |
 | **Network Isolation** | Mainnet/Testnet separation | Native Realm support |
+| **Network Resilience** | Auto-recovery after network switch/device sleep | System-level network monitoring + auto-recovery ✅ |
+| **Path Health** | Auto-selection of multiple paths (IPv4/IPv6/Relay) | PathHealth Manager ✅ |
+| **Address Discovery** | Multi-source address fusion (PortMap/STUN/Local) | Reachability Coordinator ✅ |
+
+#### Network Resilience Capabilities (Implemented)
+
+DeP2P has implemented the following capabilities by learning from iroh's network resilience design:
+
+| Capability | Description | Status |
+|------------|-------------|--------|
+| **System-level Network Monitoring** | Proactive detection of network changes (Wi-Fi switch, device sleep) | ✅ Implemented |
+| **Single-flight Address Discovery** | Avoid concurrency races, ensure stable address discovery | ✅ Implemented |
+| **Enhanced NetReport** | NAT type detection, Relay latency measurement | ✅ Implemented |
+| **Multi-source Address Fusion** | Unified management of PortMap/STUN/Local/Configured | ✅ Implemented |
+| **PortMapper Watcher** | Event-driven external address changes | ✅ Implemented |
+| **Path Health Management** | Multi-path health monitoring and auto-switching | ✅ Implemented |
+
+> **Detailed Analysis**: See [iroh Design Analysis](../../design/discussions/DISC-IROH-DESIGN-ANALYSIS.md)
 
 DeP2P is designed to serve as the underlying network layer for blockchain projects, providing transaction broadcast, block sync, and consensus communication capabilities.
+
+#### Blockchain Enhancement Capabilities (Planned)
+
+DeP2P is enhancing the following capabilities to better support blockchain scenarios:
+
+| Capability | Description | Priority |
+|------------|-------------|----------|
+| **Message Rate Tracking** | Dynamically adjust request size based on peer capacity to prevent overload | P0 |
+| **Inbound/Outbound Ratio Control** | Ensure sufficient outbound connections for active discovery | P0 |
+| **IP Limiting Mechanism** | Prevent nodes from the same IP segment from consuming too many connection resources (Sybil attack protection) | P0 |
+| **Dial Scheduler** | Intelligently manage dial tasks, distinguish static/dynamic dials | P0 |
+| **Static Node Auto-Reconnect** | Ensure stable connections with critical nodes (Bootstrap/Validator) | P0 |
+| **Node Database Persistence** | Retain known node information after restart for faster startup | P1 |
+| **Capabilities Negotiation** | Negotiate supported protocol versions during connection establishment | P1 |
+
+> **Detailed Analysis**: See [Blockchain Enhancement Requirements](../../design/implementation/BLOCKCHAIN_ENHANCEMENT_REQUIREMENTS.md)
 
 ---
 

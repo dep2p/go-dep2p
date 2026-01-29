@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package realm.member;
+
+option go_package = "github.com/dep2p/go-dep2p/pkg/lib/proto/realm/member;memberpb";
+
+// ============================================================================
+//                              成员信息
+// ============================================================================
+
+// MemberInfo 成员信息
+message MemberInfo {
+  bytes peer_id = 1;
+  string realm_id = 2;
+  int32 role = 3;
+  bool online = 4;
+  int64 joined_at = 5;
+  int64 last_seen = 6;
+  repeated bytes addrs = 7;
+  map<string, string> metadata = 8;
+  int64 bytes_sent = 9;
+  int64 bytes_received = 10;
+  int64 messages_sent = 11;
+}
+
+// MemberList 成员列表
+message MemberList {
+  string realm_id = 1;
+  repeated MemberInfo members = 2;
+  uint64 version = 3;
+}
+
+// ============================================================================
+//                              成员列表请求/响应
+// ============================================================================
+
+// MemberListRequest 成员列表请求
+message MemberListRequest {
+  string realm_id = 1;
+}
+
+// MemberListResponse 成员列表响应
+message MemberListResponse {
+  MemberList list = 1;
+}
+
+// ============================================================================
+//                              增量同步请求/响应
+// ============================================================================
+
+// MemberDeltaRequest 增量同步请求
+message MemberDeltaRequest {
+  string realm_id = 1;
+  uint64 since_version = 2;
+}
+
+// MemberDeltaResponse 增量同步响应
+message MemberDeltaResponse {
+  repeated MemberInfo added = 1;
+  repeated bytes removed = 2; // peer_ids
+  uint64 version = 3;
+}
+
+// ============================================================================
+//                              心跳请求/响应
+// ============================================================================
+
+// HeartbeatRequest 心跳请求
+message HeartbeatRequest {
+  bytes peer_id = 1;
+  int64 timestamp = 2;
+}
+
+// HeartbeatResponse 心跳响应
+message HeartbeatResponse {
+  bool ack = 1;
+  int64 timestamp = 2;
+}

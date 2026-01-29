@@ -69,15 +69,19 @@ func main() {
     log.SetOutput(os.Stdout)
     log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create: %v", err)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     fmt.Printf("Node ID: %s\n", node.ID())
     
@@ -136,13 +140,16 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create: %v", err)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start: %v", err)
+    }
 
     // Connection established event
     node.Endpoint().SetConnectedNotify(func(conn dep2p.Connection) {
@@ -161,7 +168,8 @@ func main() {
         )
     })
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     fmt.Println("Node monitoring started...")
     
@@ -237,18 +245,22 @@ var (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create: %v", err)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start: %v", err)
+    }
 
     // Set up all event monitoring
     setupEventHandlers(node)
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     fmt.Println("Event monitoring started")
 
@@ -402,16 +414,21 @@ func main() {
     // Production logging configuration
     setupProductionLogging()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetServer),
     )
     if err != nil {
-        slog.Error("Failed to start node", "error", err)
+        slog.Error("Failed to create node", "error", err)
         os.Exit(1)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        slog.Error("Failed to start node", "error", err)
+        os.Exit(1)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("production"))
+    realm, _ := node.Realm("production")
+    _ = realm.Join(ctx)
 
     // Set up monitoring
     setupMonitoring(node)

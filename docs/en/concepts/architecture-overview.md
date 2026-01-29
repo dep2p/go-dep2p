@@ -238,13 +238,13 @@ From the user's perspective, using DeP2P only requires three steps:
 ```mermaid
 flowchart LR
     subgraph Step1 [Step 1: Start Node]
-        Create["node, _ := dep2p.StartNode(ctx, preset)"]
+        Create["node, _ := dep2p.New(ctx, preset)\n_ = node.Start(ctx)"]
         L1Ready["Layer 1 auto-ready"]
         Create --> L1Ready
     end
     
     subgraph Step2 [Step 2: Join Realm]
-        Join["node.Realm().JoinRealm(ctx, realmID)"]
+        Join["realm, _ := node.Realm(\"name\")\n_ = realm.Join(ctx)"]
         L2Ready["Layer 2 access granted"]
         Join --> L2Ready
     end
@@ -282,8 +282,11 @@ func main() {
     // - DHT joined network
     // - NAT address discovery
     // - Bootstrap connections established
-    node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
     if err != nil {
+        log.Fatalf("Failed to create node: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
         log.Fatalf("Failed to start node: %v", err)
     }
     defer node.Close()
@@ -298,10 +301,14 @@ func main() {
     // - Execute RealmAuth verification
     // - Set currentRealm
     // - Can discover peers within Realm
-    if err := node.Realm().JoinRealm(ctx, "my-app-realm"); err != nil {
+    realm, err := node.Realm("my-app-realm")
+    if err != nil {
+        log.Fatalf("Failed to get Realm: %v", err)
+    }
+    if err := realm.Join(ctx); err != nil {
         log.Fatalf("Failed to join Realm: %v", err)
     }
-    fmt.Printf("Joined Realm: %s\n", node.Realm().CurrentRealm())
+    fmt.Printf("Joined Realm: %s\n", realm.ID())
     
     // ==========================================
     // Step 3: Business Communication

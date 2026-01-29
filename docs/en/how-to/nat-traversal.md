@@ -93,16 +93,21 @@ func main() {
     ctx := context.Background()
 
     // NAT traversal enabled by default in Desktop preset
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithNAT(true),  // Explicitly enable NAT
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm(types.RealmID("my-network"))
+    _ = realm.Join(ctx)
 
     fmt.Printf("Node started: %s\n", node.ID().ShortString())
     fmt.Println("NAT traversal enabled")
@@ -140,17 +145,22 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithNAT(true),
         // UPnP and NAT-PMP are automatically used when NAT is enabled
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm(types.RealmID("my-network"))
+    _ = realm.Join(ctx)
 
     // Wait for NAT mapping to complete
     time.Sleep(5 * time.Second)
@@ -186,17 +196,22 @@ func main() {
 
     // Custom STUN servers (optional)
     // Defaults to Google STUN servers
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithNAT(true),
         // STUN servers are specified via internal config
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm(types.RealmID("my-network"))
+    _ = realm.Join(ctx)
 
     fmt.Printf("Node started: %s\n", node.ID().ShortString())
 }
@@ -231,16 +246,21 @@ func main() {
     ctx := context.Background()
 
     // Hole Punching enabled by default in Desktop preset
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         // EnableHolePunching configured via preset
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm(types.RealmID("my-network"))
+    _ = realm.Join(ctx)
 
     fmt.Println("Hole Punching enabled")
     fmt.Println("System will auto-attempt hole punch to upgrade relay connections")
@@ -269,17 +289,22 @@ func main() {
     ctx := context.Background()
 
     // Public servers can explicitly declare external addresses
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetServer),
         dep2p.WithListenPort(4001),
         dep2p.WithExternalAddrs("/ip4/203.0.113.5/udp/4001/quic-v1"),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm(types.RealmID("my-network"))
+    _ = realm.Join(ctx)
 
     fmt.Println("External address declared")
     fmt.Println("Advertised addresses:")
@@ -374,10 +399,11 @@ sequenceDiagram
 
 ```go
 // Ensure relay is enabled as fallback
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithRelay(true),  // Ensure Relay enabled
 )
+_ = node.Start(ctx)
 ```
 
 ### Problem 3: Cannot Get Public Address
@@ -394,9 +420,10 @@ node, _ := dep2p.StartNode(ctx,
 // System will auto-obtain Relay address
 
 // 2. Manually declare address (if you know public IP)
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithExternalAddrs("/ip4/PUBLIC_IP/udp/4001/quic-v1"),
 )
+_ = node.Start(ctx)
 
 // 3. Check addresses
 candidates := node.BootstrapCandidates()

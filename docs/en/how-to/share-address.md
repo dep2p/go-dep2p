@@ -77,13 +77,17 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetServer))
+    node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetServer))
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create: %v", err)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     // Get shareable addresses (may be empty if not yet verified)
     addrs := node.ShareableAddrs()
@@ -118,13 +122,17 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetServer))
+    node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetServer))
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create: %v", err)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     // Wait for address verification (up to 30 seconds)
     waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -163,13 +171,17 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetServer))
+    node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetServer))
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create: %v", err)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     // Get all candidate addresses (not all guaranteed reachable)
     candidates := node.BootstrapCandidates()
@@ -249,16 +261,20 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetServer),
         dep2p.WithListenPort(4001),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create: %v", err)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     fmt.Println("Node info:")
     fmt.Printf("  NodeID: %s\n", node.ID())
@@ -364,10 +380,11 @@ if node.ConnectionCount() == 0 {
 }
 
 // 3. Use Relay as fallback
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithRelay(true),  // Enable Relay
 )
+_ = node.Start(ctx)
 ```
 
 ### Problem 2: Address Cannot Be Connected By Other Nodes
@@ -387,10 +404,11 @@ if !strings.Contains(addr, "/p2p/") {
 }
 
 // 2. For public servers, explicitly declare external address
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetServer),
     dep2p.WithExternalAddrs("/ip4/PUBLIC_IP/udp/4001/quic-v1"),
 )
+_ = node.Start(ctx)
 
 // 3. Check if port is open
 // sudo ufw allow 4001/udp

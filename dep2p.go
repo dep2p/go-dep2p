@@ -1,253 +1,171 @@
-// Package dep2p 提供 DeP2P 的用户 API 入口
+// Package dep2p 提供简洁可靠的 P2P 网络库
 //
-// dep2p 是一个简洁、可靠的 P2P 网络库，专为业务应用设计。
-// 本包提供面向用户的简洁 API，隐藏底层复杂性。
+// DeP2P (Decentralized P2P) 是一个模块化、可扩展的 P2P 网络库，
+// 融合了 Iroh 的简洁性和 libp2p 的功能性。
 //
-// 快速开始:
+// # 核心创新：Realm 业务隔离
 //
-//	// 最简启动（使用默认配置）
-//	endpoint, err := dep2p.QuickStart(ctx)
+// Realm 是 DeP2P 的核心创新，提供独立的 P2P 子网络：
+//   - PSK 准入控制：通过预共享密钥验证成员身份
+//   - 协议级隔离：不同 Realm 的节点无法互相通信
+//   - 独立发现：节点只发现同 Realm 的其他节点
 //
-//	// 使用预设配置
-//	endpoint, err := dep2p.New(
+// # 快速开始
+//
+// 最简单的使用方式：
+//
+//	import "github.com/dep2p/go-dep2p"
+//
+//	// 1. 创建并启动节点
+//	node, err := dep2p.Start(ctx,
 //	    dep2p.WithPreset(dep2p.PresetDesktop),
 //	)
-//
-//	// 自定义配置
-//	endpoint, err := dep2p.New(
-//	    dep2p.WithListenPort(4001),
-//	    dep2p.WithConnectionLimits(50, 100),
-//	)
-package dep2p
-
-import (
-	"context"
-	"fmt"
-
-	"github.com/dep2p/go-dep2p/internal/app"
-	"github.com/dep2p/go-dep2p/pkg/interfaces/endpoint"
-)
-
-// Version 当前版本
-const Version = "0.1.0"
-
-// ============================================================================
-//                              类型别名
-// ============================================================================
-
-// Endpoint 是用户使用的主接口
-// 通过类型别名暴露，避免用户直接依赖内部包
-type Endpoint = endpoint.Endpoint
-
-// Connection 连接接口
-type Connection = endpoint.Connection
-
-// Stream 流接口
-type Stream = endpoint.Stream
-
-// ProtocolHandler 协议处理器
-type ProtocolHandler = endpoint.ProtocolHandler
-
-// NodeID 节点唯一标识符
-type NodeID = endpoint.NodeID
-
-// ProtocolID 协议标识符
-type ProtocolID = endpoint.ProtocolID
-
-// Address 网络地址接口
-type Address = endpoint.Address
-
-// PeerInfo 节点信息（用于发现回调）
-type PeerInfo = endpoint.PeerInfo
-
-// ============================================================================
-//                              网络模式
-// ============================================================================
-
-// NetworkMode 网络模式
-type NetworkMode int
-
-const (
-	// NetworkModeProduction 生产模式（默认）
-	NetworkModeProduction NetworkMode = iota
-	// NetworkModeLocalTest 本地测试模式
-	NetworkModeLocalTest
-)
-
-// ============================================================================
-//                              创建函数
-// ============================================================================
-
-// New 创建一个新的 dep2p 节点
-//
-// 使用 Option 模式配置节点：
-//
-//	endpoint, err := dep2p.New(
-//	    dep2p.WithPreset(dep2p.PresetDesktop),
-//	    dep2p.WithListenPort(4001),
-//	)
-//
-// 如果不传入任何选项，将使用 PresetDesktop 作为默认配置。
-func New(opts ...Option) (Endpoint, error) {
-	// 解析用户选项
-	options := newOptions()
-	for _, opt := range opts {
-		if err := opt(options); err != nil {
-			return nil, fmt.Errorf("应用选项失败: %w", err)
-		}
-	}
-
-	// 如果没有设置预设，使用默认预设
-	if options.preset == nil {
-		options.preset = PresetDesktop
-	}
-
-	// 转换为内部配置
-	internalConfig := options.toInternalConfig()
-
-	// 创建 bootstrap
-	bootstrap := app.NewBootstrap(internalConfig)
-
-	// 构建并返回 Endpoint
-	endpoint, err := bootstrap.Build()
-	if err != nil {
-		return nil, fmt.Errorf("构建节点失败: %w", err)
-	}
-
-	return endpoint, nil
-}
-
-// Start 创建并启动一个 dep2p 节点
-//
-// 这是 New() + Listen() 的便捷方法：
-//
-//	endpoint, err := dep2p.Start(ctx,
-//	    dep2p.WithPreset(dep2p.PresetDesktop),
-//	)
-func Start(ctx context.Context, opts ...Option) (Endpoint, error) {
-	endpoint, err := New(opts...)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := endpoint.Listen(ctx); err != nil {
-		_ = endpoint.Close()
-		return nil, fmt.Errorf("启动监听失败: %w", err)
-	}
-
-	return endpoint, nil
-}
-
-// QuickStart 使用默认配置快速启动节点
-//
-// 这是最简单的启动方式，适用于快速原型开发：
-//
-//	endpoint, err := dep2p.QuickStart(ctx)
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
-//	defer endpoint.Close()
+//	defer node.Close()
 //
-// 等价于:
+//	// 2. 加入业务域
+//	realmKey := []byte("my-secret-realm-key")
+//	realm, err := node.JoinRealm(ctx, realmKey)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 //
-//	dep2p.Start(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
-func QuickStart(ctx context.Context) (Endpoint, error) {
-	return Start(ctx, WithPreset(PresetDesktop))
+//	// 3. 使用协议层服务（多协议支持）
+//
+//	// Messaging - 点对点消息（多协议）
+//	messaging := realm.Messaging()
+//	messaging.RegisterHandler("chat", chatHandler)
+//	resp, _ := messaging.Send(ctx, peerID, "chat", []byte("hello"))
+//
+//	// PubSub - 发布订阅（多主题）
+//	pubsub := realm.PubSub()
+//	topic, _ := pubsub.Join("my-topic")
+//	topic.Publish(ctx, []byte("world"))
+//
+//	// Streams - 双向流（多协议）
+//	streams := realm.Streams()
+//	stream, _ := streams.Open(ctx, peerID, "file-transfer")
+//	stream.Write(fileData)
+//
+// # 预设配置
+//
+// DeP2P 提供四种预设配置：
+//
+//   - PresetMobile: 移动端优化，低资源占用
+//   - PresetDesktop: 桌面端默认配置（推荐）
+//   - PresetServer: 服务器优化，高性能
+//   - PresetMinimal: 最小配置，仅用于测试
+//
+// 使用预设：
+//
+//	node, err := dep2p.New(ctx,
+//	    dep2p.WithPreset(dep2p.PresetServer),
+//	    dep2p.WithListenPort(4001),
+//	)
+//
+// # 自定义配置
+//
+// 通过 Option 函数自定义配置：
+//
+//	node, err := dep2p.New(ctx,
+//	    dep2p.WithListenPort(4001),
+//	    dep2p.WithIdentityFromFile("~/.dep2p/identity.key"),
+//	    dep2p.WithBootstrapPeers(
+//	        "/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMG...",
+//	    ),
+//	    dep2p.WithRelay(true),
+//	    dep2p.WithNAT(true),
+//	    dep2p.WithConnectionLimits(50, 100),
+//	)
+//
+// # 五层软件架构
+//
+//	┌─────────────────────────────────────────────────────────────┐
+//	│  1. API Layer                                               │
+//	│     dep2p.New(), dep2p.Start()                              │
+//	│     用户入口，配置选项                                        │
+//	├─────────────────────────────────────────────────────────────┤
+//	│  2. Protocol Layer                                          │
+//	│     Messaging, PubSub, Streams, Liveness                    │
+//	│     用户级应用协议                                            │
+//	├─────────────────────────────────────────────────────────────┤
+//	│  3. Realm Layer                                             │
+//	│     Manager, Auth, Member, Relay                            │
+//	│     业务隔离，成员管理                                        │
+//	├─────────────────────────────────────────────────────────────┤
+//	│  4. Core Layer                                              │
+//	│     Host, Transport, Security, NAT, Relay                   │
+//	│     P2P 网络核心能力                                         │
+//	├─────────────────────────────────────────────────────────────┤
+//	│  5. Discovery Layer                                         │
+//	│     DHT, Bootstrap, mDNS                                    │
+//	│     节点发现服务                                             │
+//	└─────────────────────────────────────────────────────────────┘
+//
+// # 依赖方向
+//
+// # API → Protocol → Realm → Core ↔ Discovery
+//
+// # 更多文档
+//
+//   - 设计文档: /design
+//   - 架构指南: /design/03_architecture
+//   - 使用示例: /examples
+//
+// # 版本信息
+//
+// 当前版本: v0.2.0-beta.1
+//
+// 更多信息请访问: https://github.com/dep2p/go-dep2p
+package dep2p
+
+// Version 当前版本
+// 更新此版本号时，请同步更新 version.json
+const Version = "v0.2.0-beta.1"
+
+// BuildInfo 构建信息（通过 ldflags 注入）
+var (
+	// GitCommit Git 提交哈希
+	GitCommit string
+
+	// BuildDate 构建日期
+	BuildDate string
+
+	// GoVersion Go 版本
+	GoVersion string
+)
+
+// VersionInfo 返回完整版本信息字符串
+func VersionInfo() string {
+	info := "DeP2P " + Version
+	if GitCommit != "" {
+		info += " (" + GitCommit[:min(8, len(GitCommit))] + ")"
+	}
+	if BuildDate != "" {
+		info += " built " + BuildDate
+	}
+	return info
 }
 
-// ============================================================================
-//                              Facade: Node（推荐）
-// ============================================================================
-
-// NewNode 创建一个新的 dep2p Node（Facade）。
-//
-// Node 在 Endpoint 的最小稳定接口之上，提供 Send/Request/Publish/Subscribe 等高层 API，
-// 并且持有 fx Runtime 的 Stop 句柄，Close 时会正确释放资源。
-//
-// 优雅下线: 调用 Close() 时会先发送 Goodbye 消息，等待传播后再断开连接。
-// 可通过 WithGoodbyeWait() 配置等待时间。
-func NewNode(opts ...Option) (*Node, error) {
-	// 解析用户选项（与 New 保持一致）
-	options := newOptions()
-	for _, opt := range opts {
-		if err := opt(options); err != nil {
-			return nil, fmt.Errorf("应用选项失败: %w", err)
-		}
+func min(a, b int) int {
+	if a < b {
+		return a
 	}
-
-	if options.preset == nil {
-		options.preset = PresetDesktop
-	}
-
-	internalConfig := options.toInternalConfig()
-	bootstrap := app.NewBootstrap(internalConfig)
-	rt, err := bootstrap.BuildRuntime()
-	if err != nil {
-		return nil, fmt.Errorf("构建节点失败: %w", err)
-	}
-
-	return &Node{
-		rt:          rt,
-		goodbyeWait: options.shutdown.goodbyeWait,
-	}, nil
+	return b
 }
 
-// StartNode 创建并启动 dep2p Node（Facade）。
+// ════════════════════════════════════════════════════════════════════════════
+//                              类型别名
+// ════════════════════════════════════════════════════════════════════════════
+
+// Endpoint 是 Node 的类型别名
 //
-// 等价于 NewNode() + node.Endpoint().Listen()
-func StartNode(ctx context.Context, opts ...Option) (*Node, error) {
-	node, err := NewNode(opts...)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := node.Endpoint().Listen(ctx); err != nil {
-		_ = node.Close()
-		return nil, fmt.Errorf("启动监听失败: %w", err)
-	}
-
-	return node, nil
-}
-
-// QuickStartNode 使用默认配置快速启动 Node（Facade）。
-func QuickStartNode(ctx context.Context) (*Node, error) {
-	return StartNode(ctx, WithPreset(PresetDesktop))
-}
-
-// ============================================================================
-//                              辅助函数
-// ============================================================================
-
-// MustNew 创建节点，失败时 panic
-// 仅用于测试或确定不会失败的场景
-func MustNew(opts ...Option) Endpoint {
-	ep, err := New(opts...)
-	if err != nil {
-		panic(fmt.Sprintf("dep2p.MustNew failed: %v", err))
-	}
-	return ep
-}
-
-// MustStart 创建并启动节点，失败时 panic
-// 仅用于测试或确定不会失败的场景
-func MustStart(ctx context.Context, opts ...Option) Endpoint {
-	ep, err := Start(ctx, opts...)
-	if err != nil {
-		panic(fmt.Sprintf("dep2p.MustStart failed: %v", err))
-	}
-	return ep
-}
-
-// ============================================================================
-//                              地址解析
-// ============================================================================
-
-// 注意：ParseAddress、ParseAddresses、MustParseAddress 函数已移至 Node 方法
-//
-// 正确用法（通过 Node 获取）：
-//
-//	node, err := dep2p.NewNode(ctx, opts...)
-//	addr, err := node.ParseAddress("192.168.1.1:8000")
-//	addrs, err := node.ParseAddresses([]string{"192.168.1.1:8000"})
-//
-// 这样确保 AddressParser 通过 Fx 依赖注入获取，符合架构规范。
+// 为兼容旧 API 提供，新代码应直接使用 *Node。
+// Endpoint 提供网络端点功能：
+//   - ID() 获取节点 ID
+//   - ListenAddrs() 获取监听地址
+//   - ConnectionCount() 获取连接数
+//   - Close() 关闭端点
+type Endpoint = *Node

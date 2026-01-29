@@ -66,12 +66,15 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithIntrospect(true),  // 启用自省服务
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
@@ -369,15 +372,17 @@ curl http://127.0.0.1:6060/debug/introspect
 
 ```go
 // 确认启用自省服务
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithIntrospect(true),
 )
+_ = node.Start(ctx)
 
 // 或使用其他端口
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithIntrospect(true),
     dep2p.WithIntrospectAddr("127.0.0.1:9090"),
 )
+_ = node.Start(ctx)
 ```
 
 ### 问题 2：返回 503 Service Unavailable

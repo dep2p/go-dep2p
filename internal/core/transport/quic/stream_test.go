@@ -2,453 +2,535 @@ package quic
 
 import (
 	"context"
-	"io"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/dep2p/go-dep2p/internal/core/identity"
-	identityif "github.com/dep2p/go-dep2p/pkg/interfaces/identity"
-	transportif "github.com/dep2p/go-dep2p/pkg/interfaces/transport"
+	"github.com/dep2p/go-dep2p/pkg/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// setupTestConnection 创建测试用的连接对
-func setupTestConnection(t *testing.T) (*Conn, *Conn, func()) {
-	t.Helper()
+// ============================================================================
+//                 Stream 测试 - 覆盖 0% 函数
+// ============================================================================
 
-	// 创建服务端
-	mgr := identity.NewManager(identityif.DefaultConfig())
-	serverID, _ := mgr.Create()
-	serverTransport, _ := NewTransport(transportif.DefaultConfig(), serverID)
+// TestStream_CloseRead 测试关闭读取端
+func TestStream_CloseRead(t *testing.T) {
+	// 建立连接和流
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
 
-	listener, err := serverTransport.Listen(NewAddress("127.0.0.1", 0))
-	if err != nil {
-		t.Fatalf("监听失败: %v", err)
-	}
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
 
-	actualAddr := listener.Addr().(*Address)
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
 
-	// 创建客户端
-	clientID, _ := mgr.Create()
-	clientTransport, _ := NewTransport(transportif.DefaultConfig(), clientID)
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
 
-	// 接受连接
-	var serverConn transportif.Conn
-	var acceptErr error
-	acceptDone := make(chan struct{})
-	go func() {
-		defer close(acceptDone)
-		serverConn, acceptErr = listener.Accept()
-	}()
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
 
-	// 客户端连接
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	clientConn, err := clientTransport.Dial(ctx, actualAddr)
-	if err != nil {
-		t.Fatalf("拨号失败: %v", err)
-	}
-
-	// 等待服务端
-	select {
-	case <-acceptDone:
-		if acceptErr != nil {
-			t.Fatalf("接受连接失败: %v", acceptErr)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("接受连接超时")
-	}
-
-	cleanup := func() {
-		clientConn.Close()
-		serverConn.Close()
-		listener.Close()
-		clientTransport.Close()
-		serverTransport.Close()
-	}
-
-	return clientConn.(*Conn), serverConn.(*Conn), cleanup
-}
-
-// TestStreamOpenAndAccept 测试流的打开和接受
-func TestStreamOpenAndAccept(t *testing.T) {
-	clientConn, serverConn, cleanup := setupTestConnection(t)
-	defer cleanup()
-
-	// 服务端接受流
-	var serverStream transportif.Stream
-	var acceptErr error
-	acceptDone := make(chan struct{})
-	go func() {
-		defer close(acceptDone)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		serverStream, acceptErr = serverConn.AcceptStream(ctx)
-	}()
-
-	// 稍微延迟确保服务端准备好
-	time.Sleep(50 * time.Millisecond)
-
-	// 客户端打开流
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	clientStream, err := clientConn.OpenStream(ctx)
-	if err != nil {
-		t.Fatalf("打开流失败: %v", err)
-	}
-
-	// 写入数据以触发流建立
-	_, err = clientStream.Write([]byte("hello"))
-	if err != nil {
-		t.Fatalf("写入数据失败: %v", err)
-	}
-
-	// 等待服务端接受
-	select {
-	case <-acceptDone:
-		if acceptErr != nil {
-			t.Fatalf("接受流失败: %v", acceptErr)
+	// 接受连接
+	go func() {
+		conn, _ := listener.Accept()
+		if conn != nil {
+			defer conn.Close()
+			stream, _ := conn.AcceptStream()
+			if stream != nil {
+				stream.Close()
+			}
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("接受流超时")
-	}
+	}()
 
-	clientStream.Close()
-	if serverStream != nil {
-		serverStream.Close()
-	}
+	dialedConn, err := transport1.Dial(ctx, listener.Addr(), peer2)
+	require.NoError(t, err)
+	defer dialedConn.Close()
 
-	// 验证流 ID
-	t.Logf("客户端流 ID: %d", clientStream.ID())
+	stream, err := dialedConn.NewStream(ctx)
+	require.NoError(t, err)
+	defer stream.Close()
+
+	s := stream.(*Stream)
+
+	// 验证初始状态
+	assert.Equal(t, types.StreamStateOpen, s.State())
+
+	// 关闭读取端
+	err = s.CloseRead()
+	assert.NoError(t, err)
+
+	// 状态应该变为 ReadClosed
+	assert.Equal(t, types.StreamStateReadClosed, s.State())
+
+	t.Log("✅ CloseRead 测试通过")
 }
 
-// TestStreamReadWrite 测试流的读写
-func TestStreamReadWrite(t *testing.T) {
-	clientConn, serverConn, cleanup := setupTestConnection(t)
-	defer cleanup()
+// TestStream_CloseWrite 测试关闭写入端
+func TestStream_CloseWrite(t *testing.T) {
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
 
-	testData := []byte("Hello, Stream!")
-	var receivedData []byte
-	var wg sync.WaitGroup
-	wg.Add(2)
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
 
-	// 服务端读取
-	var serverErr error
-	go func() {
-		defer wg.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
 
-		stream, err := serverConn.AcceptStream(ctx)
-		if err != nil {
-			serverErr = err
-			return
-		}
-		defer func() { _ = stream.Close() }()
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
 
-		receivedData, serverErr = io.ReadAll(stream)
-	}()
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
 
-	// 客户端写入
-	var clientErr error
-	go func() {
-		defer wg.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		stream, err := clientConn.OpenStream(ctx)
-		if err != nil {
-			clientErr = err
-			return
-		}
-
-		_, clientErr = stream.Write(testData)
-		stream.Close()
-	}()
-
-	wg.Wait()
-
-	if serverErr != nil {
-		t.Fatalf("服务端错误: %v", serverErr)
-	}
-	if clientErr != nil {
-		t.Fatalf("客户端错误: %v", clientErr)
-	}
-
-	if string(receivedData) != string(testData) {
-		t.Errorf("数据不匹配: 期望 %s，实际 %s", testData, receivedData)
-	}
-}
-
-// TestStreamBidirectional 测试双向流
-func TestStreamBidirectional(t *testing.T) {
-	clientConn, serverConn, cleanup := setupTestConnection(t)
-	defer cleanup()
-
-	clientData := []byte("Hello from client")
-	serverData := []byte("Hello from server")
-
-	var clientReceived, serverReceived []byte
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	// 服务端
-	var serverErr error
-	go func() {
-		defer wg.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		stream, err := serverConn.AcceptStream(ctx)
-		if err != nil {
-			serverErr = err
-			return
-		}
-		defer func() { _ = stream.Close() }()
-
-		// 读取
-		buf := make([]byte, len(clientData))
-		n, err := stream.Read(buf)
-		if err != nil && err != io.EOF {
-			serverErr = err
-			return
-		}
-		serverReceived = buf[:n]
-
-		// 写入
-		_, serverErr = stream.Write(serverData)
-	}()
-
-	// 客户端
-	var clientErr error
-	go func() {
-		defer wg.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		stream, err := clientConn.OpenStream(ctx)
-		if err != nil {
-			clientErr = err
-			return
-		}
-		defer func() { _ = stream.Close() }()
-
-		// 写入
-		if _, err := stream.Write(clientData); err != nil {
-			clientErr = err
-			return
-		}
-
-		// 读取
-		buf := make([]byte, len(serverData))
-		n, err := stream.Read(buf)
-		if err != nil && err != io.EOF {
-			clientErr = err
-			return
-		}
-		clientReceived = buf[:n]
-	}()
-
-	wg.Wait()
-
-	if serverErr != nil {
-		t.Logf("服务端错误: %v (可能由于流关闭顺序)", serverErr)
-	}
-	if clientErr != nil {
-		t.Logf("客户端错误: %v (可能由于流关闭顺序)", clientErr)
-	}
-
-	// 验证至少一方收到了数据
-	if len(serverReceived) > 0 && string(serverReceived) != string(clientData) {
-		t.Errorf("服务端收到的数据不匹配: 期望 %s，实际 %s", clientData, serverReceived)
-	}
-	_ = clientReceived // 使用变量避免警告
-}
-
-// TestStreamDeadline 测试流超时
-func TestStreamDeadline(t *testing.T) {
-	clientConn, serverConn, cleanup := setupTestConnection(t)
-	defer cleanup()
-
-	// 服务端接受流但不读取
-	go func() {
-		ctx := context.Background()
-		stream, err := serverConn.AcceptStream(ctx)
-		if err != nil {
-			return
-		}
-		defer func() { _ = stream.Close() }()
-		// 不读取，让客户端超时
-		time.Sleep(2 * time.Second)
-	}()
-
-	// 客户端打开流并设置超时
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	stream, err := clientConn.OpenStream(ctx)
-	if err != nil {
-		t.Fatalf("打开流失败: %v", err)
-	}
-	defer func() { _ = stream.Close() }()
-
-	// 设置读超时
-	deadline := time.Now().Add(100 * time.Millisecond)
-	if err := stream.SetReadDeadline(deadline); err != nil {
-		t.Logf("设置读超时: %v", err)
-	}
-
-	// 设置写超时
-	if err := stream.SetWriteDeadline(deadline); err != nil {
-		t.Logf("设置写超时: %v", err)
-	}
-
-	// 设置统一超时
-	if err := stream.SetDeadline(deadline); err != nil {
-		t.Logf("设置超时: %v", err)
-	}
-}
-
-// TestStreamClose 测试流关闭
-func TestStreamClose(t *testing.T) {
-	clientConn, _, cleanup := setupTestConnection(t)
-	defer cleanup()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	stream, err := clientConn.OpenStream(ctx)
-	if err != nil {
-		t.Fatalf("打开流失败: %v", err)
-	}
-
-	// 关闭流
-	if err := stream.Close(); err != nil {
-		t.Errorf("关闭流失败: %v", err)
-	}
-
-	// 关闭后写入应失败
-	_, err = stream.Write([]byte("test"))
-	if err == nil {
-		t.Error("关闭后写入应失败")
-	}
-}
-
-// TestStreamCloseRead 测试关闭读端
-func TestStreamCloseRead(t *testing.T) {
-	clientConn, serverConn, cleanup := setupTestConnection(t)
-	defer cleanup()
-
-	// 服务端接受流
 	go func() {
-		ctx := context.Background()
-		stream, err := serverConn.AcceptStream(ctx)
-		if err != nil {
-			return
+		conn, _ := listener.Accept()
+		if conn != nil {
+			defer conn.Close()
+			stream, _ := conn.AcceptStream()
+			if stream != nil {
+				stream.Close()
+			}
 		}
-		defer func() { _ = stream.Close() }()
-		time.Sleep(time.Second)
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	dialedConn, err := transport1.Dial(ctx, listener.Addr(), peer2)
+	require.NoError(t, err)
+	defer dialedConn.Close()
 
-	stream, err := clientConn.OpenStream(ctx)
-	if err != nil {
-		t.Fatalf("打开流失败: %v", err)
-	}
-	defer func() { _ = stream.Close() }()
+	stream, err := dialedConn.NewStream(ctx)
+	require.NoError(t, err)
+	defer stream.Close()
 
-	// 关闭读端
-	if err := stream.CloseRead(); err != nil {
-		t.Errorf("关闭读端失败: %v", err)
-	}
+	s := stream.(*Stream)
+
+	// 关闭写入端
+	err = s.CloseWrite()
+	assert.NoError(t, err)
+
+	// 状态应该变为 WriteClosed
+	assert.Equal(t, types.StreamStateWriteClosed, s.State())
+
+	t.Log("✅ CloseWrite 测试通过")
 }
 
-// TestStreamCloseWrite 测试关闭写端
-func TestStreamCloseWrite(t *testing.T) {
-	clientConn, serverConn, cleanup := setupTestConnection(t)
-	defer cleanup()
+// TestStream_Reset 测试重置流
+func TestStream_Reset(t *testing.T) {
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
 
-	// 服务端接受流
-	go func() {
-		ctx := context.Background()
-		stream, err := serverConn.AcceptStream(ctx)
-		if err != nil {
-			return
-		}
-		defer func() { _ = stream.Close() }()
-		io.ReadAll(stream)
-	}()
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
+
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
+
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	stream, err := clientConn.OpenStream(ctx)
-	if err != nil {
-		t.Fatalf("打开流失败: %v", err)
-	}
-	defer func() { _ = stream.Close() }()
+	go func() {
+		conn, _ := listener.Accept()
+		if conn != nil {
+			defer conn.Close()
+			stream, _ := conn.AcceptStream()
+			if stream != nil {
+				stream.Close()
+			}
+		}
+	}()
+
+	dialedConn, err := transport1.Dial(ctx, listener.Addr(), peer2)
+	require.NoError(t, err)
+	defer dialedConn.Close()
+
+	stream, err := dialedConn.NewStream(ctx)
+	require.NoError(t, err)
+
+	s := stream.(*Stream)
+
+	// 重置流
+	err = s.Reset()
+	assert.NoError(t, err)
+
+	// 状态应该变为 Reset
+	assert.Equal(t, types.StreamStateReset, s.State())
+	assert.True(t, s.IsClosed())
+
+	t.Log("✅ Reset 测试通过")
+}
+
+// TestStream_ID 测试流 ID
+func TestStream_ID(t *testing.T) {
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
+
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
+
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
+
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
+
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	go func() {
+		conn, _ := listener.Accept()
+		if conn != nil {
+			defer conn.Close()
+			stream, _ := conn.AcceptStream()
+			if stream != nil {
+				stream.Close()
+			}
+		}
+	}()
+
+	dialedConn, err := transport1.Dial(ctx, listener.Addr(), peer2)
+	require.NoError(t, err)
+	defer dialedConn.Close()
+
+	stream, err := dialedConn.NewStream(ctx)
+	require.NoError(t, err)
+	defer stream.Close()
+
+	s := stream.(*Stream)
+
+	// 获取流 ID
+	streamID := s.ID()
+	assert.NotEmpty(t, streamID)
+	t.Logf("流 ID: %s", streamID)
+
+	t.Log("✅ ID 测试通过")
+}
+
+// TestStream_Protocol 测试协议设置和获取
+func TestStream_Protocol(t *testing.T) {
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
+
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
+
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
+
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
+
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	go func() {
+		conn, _ := listener.Accept()
+		if conn != nil {
+			defer conn.Close()
+			stream, _ := conn.AcceptStream()
+			if stream != nil {
+				stream.Close()
+			}
+		}
+	}()
+
+	dialedConn, err := transport1.Dial(ctx, listener.Addr(), peer2)
+	require.NoError(t, err)
+	defer dialedConn.Close()
+
+	stream, err := dialedConn.NewStream(ctx)
+	require.NoError(t, err)
+	defer stream.Close()
+
+	s := stream.(*Stream)
+
+	// 初始协议应该为空
+	assert.Empty(t, s.Protocol())
+
+	// 设置协议
+	s.SetProtocol("/test/1.0.0")
+
+	// 验证协议
+	assert.Equal(t, "/test/1.0.0", s.Protocol())
+
+	t.Log("✅ Protocol/SetProtocol 测试通过")
+}
+
+// TestStream_Conn 测试获取底层连接
+func TestStream_Conn(t *testing.T) {
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
+
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
+
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
+
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
+
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	go func() {
+		conn, _ := listener.Accept()
+		if conn != nil {
+			defer conn.Close()
+			stream, _ := conn.AcceptStream()
+			if stream != nil {
+				stream.Close()
+			}
+		}
+	}()
+
+	dialedConn, err := transport1.Dial(ctx, listener.Addr(), peer2)
+	require.NoError(t, err)
+	defer dialedConn.Close()
+
+	stream, err := dialedConn.NewStream(ctx)
+	require.NoError(t, err)
+	defer stream.Close()
+
+	s := stream.(*Stream)
+
+	// 获取底层连接
+	conn := s.Conn()
+	assert.NotNil(t, conn)
+	assert.Equal(t, peer1, conn.LocalPeer())
+	assert.Equal(t, peer2, conn.RemotePeer())
+
+	t.Log("✅ Conn 测试通过")
+}
+
+// TestStream_Stat 测试流统计
+func TestStream_Stat(t *testing.T) {
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
+
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
+
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
+
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
+
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	go func() {
+		conn, _ := listener.Accept()
+		if conn != nil {
+			defer conn.Close()
+			stream, _ := conn.AcceptStream()
+			if stream != nil {
+				// 读取数据
+				buf := make([]byte, 100)
+				stream.Read(buf)
+				stream.Close()
+			}
+		}
+	}()
+
+	dialedConn, err := transport1.Dial(ctx, listener.Addr(), peer2)
+	require.NoError(t, err)
+	defer dialedConn.Close()
+
+	stream, err := dialedConn.NewStream(ctx)
+	require.NoError(t, err)
+	defer stream.Close()
+
+	s := stream.(*Stream)
 
 	// 写入数据
-	stream.Write([]byte("test"))
+	testData := []byte("hello world")
+	_, err = s.Write(testData)
+	require.NoError(t, err)
 
-	// 关闭写端
-	if err := stream.CloseWrite(); err != nil {
-		t.Errorf("关闭写端失败: %v", err)
-	}
+	// 获取统计
+	stat := s.Stat()
+	assert.Equal(t, int64(len(testData)), stat.BytesWritten)
+	assert.NotZero(t, stat.Opened)
+
+	t.Log("✅ Stat 测试通过")
 }
 
-// TestMultipleStreams 测试多个流
-func TestMultipleStreams(t *testing.T) {
-	clientConn, serverConn, cleanup := setupTestConnection(t)
-	defer cleanup()
+// TestStream_SetDeadline 测试设置截止时间
+func TestStream_SetDeadline(t *testing.T) {
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
 
-	numStreams := 3
-	var wg sync.WaitGroup
-	wg.Add(numStreams * 2)
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
 
-	// 服务端接受多个流
-	for i := 0; i < numStreams; i++ {
-		go func(id int) {
-			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
 
-			stream, err := serverConn.AcceptStream(ctx)
-			if err != nil {
-				t.Logf("接受流 %d 失败: %v", id, err)
-				return
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
+
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	go func() {
+		conn, _ := listener.Accept()
+		if conn != nil {
+			defer conn.Close()
+			stream, _ := conn.AcceptStream()
+			if stream != nil {
+				stream.Close()
 			}
-			defer func() { _ = stream.Close() }()
+		}
+	}()
 
-			buf := make([]byte, 100)
-			n, _ := stream.Read(buf)
-			t.Logf("流 %d 收到: %s", id, buf[:n])
-		}(i)
-	}
+	dialedConn, err := transport1.Dial(ctx, listener.Addr(), peer2)
+	require.NoError(t, err)
+	defer dialedConn.Close()
 
-	// 客户端打开多个流
-	for i := 0; i < numStreams; i++ {
-		go func(id int) {
-			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+	stream, err := dialedConn.NewStream(ctx)
+	require.NoError(t, err)
+	defer stream.Close()
 
-			stream, err := clientConn.OpenStream(ctx)
-			if err != nil {
-				t.Logf("打开流 %d 失败: %v", id, err)
-				return
-			}
-			defer func() { _ = stream.Close() }()
+	s := stream.(*Stream)
 
-			msg := []byte("Hello from stream " + string(rune('0'+id)))
-			stream.Write(msg)
-		}(i)
-	}
+	// 设置截止时间
+	deadline := time.Now().Add(time.Second)
+	err = s.SetDeadline(deadline)
+	assert.NoError(t, err)
 
-	wg.Wait()
+	err = s.SetReadDeadline(deadline)
+	assert.NoError(t, err)
+
+	err = s.SetWriteDeadline(deadline)
+	assert.NoError(t, err)
+
+	t.Log("✅ SetDeadline 系列测试通过")
 }
 
+// TestStream_StateTransitions 测试状态转换
+func TestStream_StateTransitions(t *testing.T) {
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
+
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
+
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
+
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
+
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	go func() {
+		conn, _ := listener.Accept()
+		if conn != nil {
+			defer conn.Close()
+			stream, _ := conn.AcceptStream()
+			if stream != nil {
+				stream.Close()
+			}
+		}
+	}()
+
+	dialedConn, err := transport1.Dial(ctx, listener.Addr(), peer2)
+	require.NoError(t, err)
+	defer dialedConn.Close()
+
+	stream, err := dialedConn.NewStream(ctx)
+	require.NoError(t, err)
+
+	s := stream.(*Stream)
+
+	// 初始状态
+	assert.Equal(t, types.StreamStateOpen, s.State())
+
+	// 先关闭读，再关闭写 -> Closed
+	s.CloseRead()
+	assert.Equal(t, types.StreamStateReadClosed, s.State())
+
+	s.CloseWrite()
+	assert.Equal(t, types.StreamStateClosed, s.State())
+
+	t.Log("✅ 状态转换测试通过")
+}

@@ -81,7 +81,7 @@ func main() {
     ctx := context.Background()
 
     // 单点 Relay 服务器
-    relay, err := dep2p.StartNode(ctx,
+    relay, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetServer),
         dep2p.WithRelayServer(true),
         dep2p.WithListenPort(4001),
@@ -89,12 +89,16 @@ func main() {
         dep2p.WithConnectionLimits(100, 200),
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := relay.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer relay.Close()
 
-    // 加入 Realm（可选，用于 Realm Relay）
-    relay.Realm().JoinRealm(ctx, types.RealmID("my-realm"))
+    // 加入 Realm（可选，用于 Realm 内部转发）
+    realm := relay.Realm("my-realm")
+    realm.Join(ctx)
 
     log.Printf("Relay 已启动: %s", relay.ID())
     select {}
@@ -167,19 +171,21 @@ flowchart TB
 
 ```go
 // relay_cn.go
-relay, _ := dep2p.StartNode(ctx,
+relay, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetServer),
     dep2p.WithRelayServer(true),
     dep2p.WithListenPort(4001),
 )
-relay.Realm().JoinRealm(ctx, types.RealmID("my-realm"))
+_ = relay.Start(ctx)
+realm := relay.Realm("my-realm")
+realm.Join(ctx)
 ```
 
 #### 客户端配置
 
 ```go
 // 配置多个 Relay 作为 Bootstrap
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithBootstrapPeers(
         "/ip4/cn-relay.example.com/udp/4001/quic-v1/p2p/...",
@@ -188,6 +194,7 @@ node, _ := dep2p.StartNode(ctx,
     ),
     dep2p.WithRelay(true),
 )
+_ = node.Start(ctx)
 ```
 
 ### 客户端发现机制
@@ -309,7 +316,7 @@ flowchart TB
 │  ✅ 提供单实例 Relay Server 实现                                     │
 │  ✅ 提供 Relay Client 实现                                           │
 │  ✅ 提供 AutoRelay 发现机制                                          │
-│  ✅ 支持 System Relay / Realm Relay 分层                            │
+│  ✅ 支持统一 Relay v2.0 架构                                         │
 │                                                                      │
 │  DeP2P **不提供**：                                                  │
 │  ❌ 多实例 Relay 状态同步                                            │

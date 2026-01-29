@@ -1,0 +1,87 @@
+// DeP2P Realm Protocol Definitions
+// Realm 认证协议消息定义
+//
+// Protocol: /dep2p/realm/<realmID>/auth/1.0.0
+
+syntax = "proto3";
+
+package dep2p.realm;
+
+option go_package = "github.com/dep2p/dep2p/pkg/proto/realm";
+
+// AuthRequest Realm 认证请求
+message AuthRequest {
+  // realm_id Realm ID
+  bytes realm_id = 1;
+  
+  // peer_id 请求者节点 ID
+  bytes peer_id = 2;
+  
+  // challenge_response 质询响应（PSK 派生的签名）
+  bytes challenge_response = 3;
+  
+  // timestamp 请求时间戳
+  uint64 timestamp = 4;
+  
+  // nonce 随机数（防重放）
+  bytes nonce = 5;
+}
+
+// AuthResponse Realm 认证响应
+message AuthResponse {
+  enum Status {
+    OK = 0;                     // 认证成功
+    E_INVALID_REALM = 100;      // 无效的 Realm
+    E_INVALID_PEER = 101;       // 无效的节点
+    E_AUTH_FAILED = 102;        // 认证失败
+    E_EXPIRED = 103;            // 请求过期
+    E_REPLAY_ATTACK = 104;      // 重放攻击
+    E_INTERNAL_ERROR = 200;     // 内部错误
+  }
+  
+  Status status = 1;
+  string status_text = 2;
+  
+  // member_token 成员令牌（认证成功时）
+  bytes member_token = 3;
+  
+  // expiration 令牌过期时间
+  uint64 expiration = 4;
+}
+
+// JoinRequest 加入 Realm 请求
+message JoinRequest {
+  bytes realm_id = 1;
+  bytes peer_id = 2;
+  bytes psk = 3;  // Pre-Shared Key
+  uint64 timestamp = 4;
+}
+
+// JoinResponse 加入 Realm 响应
+message JoinResponse {
+  enum Status {
+    OK = 0;
+    E_INVALID_PSK = 100;
+    E_REALM_FULL = 101;
+    E_REJECTED = 102;
+  }
+  
+  Status status = 1;
+  string status_text = 2;
+  bytes member_token = 3;
+}
+
+// MemberInfo 成员信息
+message MemberInfo {
+  bytes peer_id = 1;
+  repeated bytes addrs = 2;
+  uint64 joined_at = 3;
+  map<string, string> metadata = 4;
+}
+
+// MemberList 成员列表
+message MemberList {
+  bytes realm_id = 1;
+  repeated MemberInfo members = 2;
+  uint64 version = 3;  // 列表版本号
+}

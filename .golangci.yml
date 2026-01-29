@@ -1,0 +1,758 @@
+# golangci-lint 配置 (v2.x 格式)
+# 参考: https://golangci-lint.run/usage/configuration/
+version: "2"
+
+run:
+  timeout: 5m
+  concurrency: 4
+  tests: false
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gocritic
+    - gosec
+    - misspell
+    - unparam
+    - revive
+    - bodyclose
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+      exclude-functions:
+        # io.Closer - Close() 错误通常可忽略
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (net.Conn).Close
+        - (*net.TCPConn).Close
+        - (*net.UDPConn).Close
+        - (*bufio.Writer).Flush
+        # 网络超时设置
+        - (net.Conn).SetDeadline
+        - (net.Conn).SetReadDeadline
+        - (net.Conn).SetWriteDeadline
+        - (*net.TCPConn).SetDeadline
+        - (*net.TCPConn).SetReadDeadline
+        - (*net.TCPConn).SetWriteDeadline
+        - (*net.UDPConn).SetDeadline
+        - (*net.UDPConn).SetReadDeadline
+        - (*net.UDPConn).SetWriteDeadline
+        # fmt 打印函数
+        - fmt.Fprintf
+        - fmt.Fprint
+        - fmt.Fprintln
+        - fmt.Printf
+        - fmt.Print
+        - fmt.Println
+
+    gosec:
+      severity: medium
+      confidence: medium
+      excludes:
+        - G115
+
+    gocritic:
+      disabled-checks:
+        - appendAssign
+        - ifElseChain
+
+    revive:
+      min-confidence: 0.8
+      rules:
+        - name: var-naming
+          disabled: true
+
+  exclusions:
+    generated: lax
+    paths:
+      - vendor
+      - docs
+      - design
+      - data
+      - bin
+      - ".*\\.pb\\.go$"
+      - ".*_test\\.go$"
+
+    rules:
+      # 测试文件放宽检查
+      - path: '_test\.go$'
+        linters:
+          - errcheck
+          - gosec
+
+      # 测试辅助文件放宽检查
+      - path: 'testing\.go$'
+        linters:
+          - unused
+          - revive
+          - errcheck
+
+      - path: 'mock_.*\.go$'
+        linters:
+          - unused
+          - revive
+          - errcheck
+
+      # 示例文件放宽检查
+      - path: 'examples/.*\.go$'
+        linters:
+          - errcheck
+          - gosec
+
+      # Protobuf 生成文件放宽检查
+      - path: 'pkg/proto/.*\.go$'
+        linters:
+          - revive
+          - gocritic
+
+      # scripts 目录
+      - path: 'scripts/'
+        linters:
+          - unused
+
+      # cmd 目录
+      - path: 'cmd/'
+        linters:
+          - unused
+          - errcheck
+
+      # tests/mocks 目录
+      - path: 'tests/mocks/'
+        linters:
+          - errcheck
+
+      # unused: mu 字段预留
+      - text: "field `mu` is unused|field `Mu` is unused"
+        linters:
+          - unused
+
+      # unparam: ctx 参数预留
+      - text: "ctx.* is unused"
+        linters:
+          - unparam
+
+      # unparam: 返回值总是 nil
+      - text: "result .* is always nil"
+        linters:
+          - unparam
+
+      # unparam: 参数总是相同值
+      - text: "always receives"
+        linters:
+          - unparam
+
+      # unparam: 未使用的参数
+      - text: "is unused$"
+        linters:
+          - unparam
+
+      # unparam: 返回值未使用
+      - text: "is never used"
+        linters:
+          - unparam
+
+      # errcheck: Close 方法
+      - text: '\.Close\(\)'
+        linters:
+          - errcheck
+
+      # errcheck: emitter 操作
+      - text: 'emitter\.'
+        linters:
+          - errcheck
+
+      # errcheck: conn 关闭
+      - text: 'conn\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: stream 操作
+      - text: 'stream\.'
+        linters:
+          - errcheck
+
+      # errcheck: sub 关闭
+      - text: 'sub\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: TLS 连接关闭
+      - text: 'tlsConn\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: SetDeadline
+      - text: 'SetDeadline'
+        linters:
+          - errcheck
+
+      # errcheck: topic 操作
+      - text: 'topic\.'
+        linters:
+          - errcheck
+
+      # errcheck: writeStatus
+      - text: 'writeStatus'
+        linters:
+          - errcheck
+
+      # errcheck: store.Delete
+      - text: 'store\.Delete'
+        linters:
+          - errcheck
+
+      # errcheck: persistPeer
+      - text: 'persistPeer'
+        linters:
+          - errcheck
+
+      # errcheck: sm.transition
+      - text: 'sm\.transition'
+        linters:
+          - errcheck
+
+      # errcheck: AddMapping
+      - text: 'AddMapping'
+        linters:
+          - errcheck
+
+      # errcheck: 状态更新
+      - text: 'UpdateStatus|UpdateLastSeen|UpdateDialAttempt|MarkOnline|MarkOffline'
+        linters:
+          - errcheck
+
+      # errcheck: Stop 方法
+      - text: '\.Stop\('
+        linters:
+          - errcheck
+
+      # errcheck: authenticator
+      - text: 'authenticator\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: 文件关闭
+      - text: 'File\.Close|file\.Close|logFile\.Close|tmpFile\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: 会话/连接关闭
+      - text: 'session\.Close|secConn\.Close|rawConn\.Close|transportConn\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: UDP WriteTo
+      - text: 'WriteTo'
+        linters:
+          - errcheck
+
+      # errcheck: 成员管理器
+      - text: 'memberMgr\.Close|addrBook\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: Remove 操作
+      - text: '\.Remove\('
+        linters:
+          - errcheck
+
+      # errcheck: 监听器关闭
+      - text: 'l\.Close|ln\.Close|listener\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: entry.conn
+      - text: 'entry\.conn\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: QUIC/UDP 传输
+      - text: 'quicTransport\.Close|udpConn\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: walker/publisher
+      - text: 'walker\.Stop|publisher\.Stop'
+        linters:
+          - errcheck
+
+      # errcheck: dstStream
+      - text: 'dstStream\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: 协议路由
+      - text: 'protocol\.AddRoute|protocol\.RemoveRoute'
+        linters:
+          - errcheck
+
+      # errcheck: jitter
+      - text: 'jitter\.Stop'
+        linters:
+          - errcheck
+
+      # errcheck: config.Validate
+      - text: 'config\.Validate'
+        linters:
+          - errcheck
+
+      # errcheck: 编码操作
+      - text: 'encoder\.Encode|proto\.Marshal'
+        linters:
+          - errcheck
+
+      # errcheck: CloseWrite
+      - text: 'CloseWrite'
+        linters:
+          - errcheck
+
+      # errcheck: quicConn.CloseWithError
+      - text: 'quicConn\.CloseWithError'
+        linters:
+          - errcheck
+
+      # errcheck: saveUnlocked
+      - text: 'saveUnlocked'
+        linters:
+          - errcheck
+
+      # errcheck: rd.Discover
+      - text: 'rd\.Discover'
+        linters:
+          - errcheck
+
+      # errcheck: pubKey.Raw
+      - text: 'pubKey\.Raw'
+        linters:
+          - errcheck
+
+      # errcheck: Transcoder
+      - text: 'Transcoder\.BytesToString'
+        linters:
+          - errcheck
+
+      # errcheck: 路由表操作
+      - text: 'table\.AddNode|table\.RemoveNode'
+        linters:
+          - errcheck
+
+      # errcheck: 同步操作
+      - text: 'syncMemberToRouting|syncRoutingToGateway'
+        linters:
+          - errcheck
+
+      # errcheck: 打洞操作
+      - text: 'simultaneousDial|verifyAddressWithDialBack'
+        linters:
+          - errcheck
+
+      # errcheck: 传输设置
+      - text: 'AddTransport|SetUpgrader'
+        linters:
+          - errcheck
+
+      # errcheck: disconnect
+      - text: 'disconnect'
+        linters:
+          - errcheck
+
+      # errcheck: AddRoute/RemoveRoute
+      - text: 'AddRoute|RemoveRoute'
+        linters:
+          - errcheck
+
+      # errcheck: Accept
+      - text: 'ln\.Accept|listener\.Accept'
+        linters:
+          - errcheck
+
+      # errcheck: wrapper deadline
+      - text: 'wrapper\.Set.*Deadline'
+        linters:
+          - errcheck
+
+      # errcheck: MeasureLatency
+      - text: 'MeasureLatency'
+        linters:
+          - errcheck
+
+      # errcheck: prober
+      - text: 'prober\.\(Start|Stop\)'
+        linters:
+          - errcheck
+
+      # errcheck: CloseConnection
+      - text: 'CloseConnection'
+        linters:
+          - errcheck
+
+      # errcheck: app.Stop
+      - text: 'app\.Stop'
+        linters:
+          - errcheck
+
+      # errcheck: lifecycleCoordinator.AdvanceTo
+      - text: 'lifecycleCoordinator\.AdvanceTo'
+        linters:
+          - errcheck
+
+      # errcheck: c.Close (通用)
+      - text: 'c\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: probe.Stop
+      - text: 'probe\.Stop'
+        linters:
+          - errcheck
+
+      # errcheck: os.Remove
+      - text: 'os\.Remove'
+        linters:
+          - errcheck
+
+      # errcheck: router/realm/circuit/quicStream Close
+      - text: 'router\.Close|realm\.Close|circuit\.Close|quicStream\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: pkConn 操作
+      - text: 'pkConn\.'
+        linters:
+          - errcheck
+
+      # errcheck: multiaddr.NewMultiaddr
+      - text: 'multiaddr\.NewMultiaddr'
+        linters:
+          - errcheck
+
+      # errcheck: m.Stop
+      - text: 'm\.Stop'
+        linters:
+          - errcheck
+
+      # errcheck: io.Copy
+      - text: 'io\.Copy'
+        linters:
+          - errcheck
+
+      # errcheck: fmt.Sscanf
+      - text: 'fmt\.Sscanf'
+        linters:
+          - errcheck
+
+      # errcheck: addressBookProvider
+      - text: 'addressBookProvider\.'
+        linters:
+          - errcheck
+
+      # errcheck: writeControl
+      - text: 'writeControl'
+        linters:
+          - errcheck
+
+      # errcheck: controlStream
+      - text: 'controlStream\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: Announce
+      - text: 'Announce'
+        linters:
+          - errcheck
+
+      # errcheck: store 操作
+      - text: 'store\.PutJSON|store\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: MapPort
+      - text: 'MapPort'
+        linters:
+          - errcheck
+
+      # errcheck: gossip.Leave
+      - text: 'gossip\.Leave'
+        linters:
+          - errcheck
+
+      # errcheck: t.Close
+      - text: 't\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: syscall 操作
+      - text: 'syscall\.'
+        linters:
+          - errcheck
+
+      # errcheck: subscription.Close
+      - text: 'subscription\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: src.Close
+      - text: 'src\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: shutdown/server.Stop
+      - text: 'shutdown|server\.Stop'
+        linters:
+          - errcheck
+
+      # errcheck: performSync
+      - text: 'performSync'
+        linters:
+          - errcheck
+
+      # errcheck: 更多 Close 方法
+      - text: '\.Close$'
+        linters:
+          - errcheck
+
+      # errcheck: rendezvous 操作
+      - text: 'rv\.|rp\.'
+        linters:
+          - errcheck
+
+      # errcheck: sender/receiver
+      - text: 'sender\.|receiver\.'
+        linters:
+          - errcheck
+
+      # errcheck: provider 操作
+      - text: 'provider\.'
+        linters:
+          - errcheck
+
+      # errcheck: req/resp
+      - text: 'req\.|resp\.'
+        linters:
+          - errcheck
+
+      # errcheck: m.Remove
+      - text: 'm\.Remove'
+        linters:
+          - errcheck
+
+      # errcheck: multicastResponse
+      - text: 'multicastResponse'
+        linters:
+          - errcheck
+
+      # errcheck: book.Close
+      - text: 'book\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: ClosePeer
+      - text: 'ClosePeer'
+        linters:
+          - errcheck
+
+      # errcheck: s.Close
+      - text: 's\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: relay.Disconnect
+      - text: 'relay\.Disconnect'
+        linters:
+          - errcheck
+
+      # errcheck: realmConnector
+      - text: 'realmConnector\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: peerstore 操作
+      - text: 'peerstore\.GetProtocols|GetProtocols'
+        linters:
+          - errcheck
+
+      # errcheck: rand.Read
+      - text: 'rand\.Read'
+        linters:
+          - errcheck
+
+      # errcheck: r.stop
+      - text: 'r\.stop'
+        linters:
+          - errcheck
+
+      # errcheck: r.routing/prober/member/gateway/auth
+      - text: 'r\.routing\.|r\.prober\.|r\.member\.|r\.gateway\.|r\.auth'
+        linters:
+          - errcheck
+
+      # errcheck: Sub.Close
+      - text: 'Sub\.Close|disconnSub\.Close|connSub\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: authHandler
+      - text: 'authHandler\.Close'
+        linters:
+          - errcheck
+
+      # errcheck: r.Stop
+      - text: 'r\.Stop'
+        linters:
+          - errcheck
+
+      # errcheck: store.Add
+      - text: 'store\.Add'
+        linters:
+          - errcheck
+
+      # errcheck: rd.Advertise
+      - text: 'rd\.Advertise'
+        linters:
+          - errcheck
+
+      # pkg/lib/zeroconf - 第三方库风格代码
+      - path: 'pkg/lib/zeroconf/'
+        linters:
+          - errcheck
+
+      # pkg/lib/multiaddr - 地址解析库
+      - path: 'pkg/lib/multiaddr/'
+        linters:
+          - errcheck
+
+      # pkg/types/multiaddr.go
+      - path: 'pkg/types/multiaddr\.go$'
+        linters:
+          - errcheck
+
+      # internal/core/connmgr - 连接管理内部操作
+      - path: 'internal/core/connmgr/'
+        linters:
+          - errcheck
+
+      # internal/core/nat - NAT 相关操作
+      - path: 'internal/core/nat/'
+        linters:
+          - errcheck
+
+      # internal/core/peerstore - 对等节点存储
+      - path: 'internal/core/peerstore/'
+        linters:
+          - errcheck
+
+      # internal/core/protocol - 协议模块
+      - path: 'internal/core/protocol/'
+        linters:
+          - errcheck
+
+      # internal/core/reachability - 可达性协调
+      - path: 'internal/core/reachability/'
+        linters:
+          - errcheck
+
+      # internal/core/recovery - 恢复模块
+      - path: 'internal/core/recovery/'
+        linters:
+          - errcheck
+
+      # internal/core/relay - 中继模块
+      - path: 'internal/core/relay/'
+        linters:
+          - errcheck
+
+      # internal/core/storage - 存储模块
+      - path: 'internal/core/storage/'
+        linters:
+          - errcheck
+
+      # internal/core/swarm - swarm 模块
+      - path: 'internal/core/swarm/'
+        linters:
+          - errcheck
+
+      # internal/core/transport - 传输模块
+      - path: 'internal/core/transport/'
+        linters:
+          - errcheck
+
+      # internal/core/upgrader - 升级器
+      - path: 'internal/core/upgrader/'
+        linters:
+          - errcheck
+
+      # internal/discovery - 发现模块
+      - path: 'internal/discovery/'
+        linters:
+          - errcheck
+
+      # internal/protocol - 协议实现
+      - path: 'internal/protocol/'
+        linters:
+          - errcheck
+
+      # internal/realm - Realm 模块
+      - path: 'internal/realm/'
+        linters:
+          - errcheck
+
+      # internal/debug - 调试模块
+      - path: 'internal/debug/'
+        linters:
+          - errcheck
+
+      # internal/core/host - Host 模块
+      - path: 'internal/core/host/'
+        linters:
+          - errcheck
+
+      # internal/core/muxer - Muxer 模块
+      - path: 'internal/core/muxer/'
+        linters:
+          - errcheck
+
+      # internal/core/security - 安全模块
+      - path: 'internal/core/security/'
+        linters:
+          - errcheck
+
+      # internal/core/resourcemgr - 资源管理
+      - path: 'internal/core/resourcemgr/'
+        linters:
+          - errcheck
+
+      # internal/core/lifecycle - 生命周期
+      - path: 'internal/core/lifecycle/'
+        linters:
+          - errcheck
+
+      # internal/core/identity - 身份模块
+      - path: 'internal/core/identity/'
+        linters:
+          - errcheck
+
+      # 根目录文件
+      - path: '^[^/]+\.go$'
+        linters:
+          - errcheck
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  new: false
+  fix: false
+
+output:
+  formats:
+    text:
+      path: stdout
+      colors: true
+      print-issued-lines: true
+      print-linter-name: true

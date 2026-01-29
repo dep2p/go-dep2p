@@ -69,8 +69,11 @@ func main() {
     ctx := context.Background()
     
     // Step 1: Create node (one line of code)
-    node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
     if err != nil {
+        log.Fatalf("Failed to create node: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
         log.Fatalf("Failed to start node: %v", err)
     }
     defer node.Close()
@@ -80,10 +83,14 @@ func main() {
     fmt.Printf("Listen Addresses: %v\n", node.ListenAddrs())
     
     // Step 2: Join business network (required!)
-    if err := node.Realm().JoinRealm(ctx, "my-first-realm"); err != nil {
+    realm, err := node.Realm("my-first-realm")
+    if err != nil {
+        log.Fatalf("Failed to get Realm: %v", err)
+    }
+    if err := realm.Join(ctx); err != nil {
         log.Fatalf("Failed to join Realm: %v", err)
     }
-    fmt.Printf("Joined: %s\n", node.Realm().CurrentRealm())
+    fmt.Printf("Joined: %s\n", realm.ID())
     
     // Step 3: Now you can use business APIs
     fmt.Println("Node is ready for communication!")
@@ -142,13 +149,16 @@ DeP2P provides multiple preset configurations for different scenarios:
 
 ```go
 // Use preset
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
 
 // Server scenario
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetServer))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetServer))
+_ = node.Start(ctx)
 
 // Mobile scenario
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetMobile))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetMobile))
+_ = node.Start(ctx)
 ```
 
 ---
@@ -181,14 +191,17 @@ node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetMobile))
 
 ```go
 // ❌ Wrong: Call business API without JoinRealm
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
 err := node.Send(ctx, peerID, "/dep2p/app/chat/1.0.0", data)
 // err == ErrNotMember
 
 // ✅ Correct: JoinRealm first
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
-node.Realm().JoinRealm(ctx, "my-realm")
-err := node.Send(ctx, peerID, "/dep2p/app/chat/1.0.0", data)
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
+realm, _ := node.Realm("my-realm")
+_ = realm.Join(ctx)
+err := realm.Messaging().Send(ctx, peerID, "/dep2p/app/chat/1.0.0", data)
 // err == nil
 ```
 
@@ -201,7 +214,7 @@ err := node.Send(ctx, peerID, "/dep2p/app/chat/1.0.0", data)
 │                    Encountering Issues? Quick Check                 │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
-│  ErrNotMember         → Call JoinRealmWithKey() first               │
+│  ErrNotMember         → Call JoinRealm() first                      │
 │  Connection timeout   → Check network, enable Relay                 │
 │  Invalid address      → Use ShareableAddrs() to get full address   │
 │  Auth failed          → Ensure all members use the same realmKey    │

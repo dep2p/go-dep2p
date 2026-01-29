@@ -12,7 +12,8 @@
 </pre>
 
 **Simple, Reliable, Secure P2P Networking Foundation (QUIC-first)**  
-**NodeID Direct Connect + Realm Isolation + NAT Traversal/Relay Fallback, Ready to Use**
+**NodeID Direct Connect + Realm Isolation + NAT Traversal/Relay Fallback, Ready to Use**  
+**Make decentralization as natural as the internet, make connections as elegant as function calls**
 
 📖 **[English](README_EN.md) | [中文](README.md)**
 
@@ -21,7 +22,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)]()
 [![Status](https://img.shields.io/badge/Status-Active-green.svg)]()
 
-<sub>📊 Codebase: 148K lines of Go code</sub>
+<sub>📊 Codebase: 161K lines of Go code (250K total, incl. comments/blank lines)</sub>
 
 </div>
 
@@ -30,6 +31,7 @@
 ## 📑 Table of Contents
 
 - [Core Vision](#-core-vision)
+- [The Big Picture](#-the-big-picture)
 - [Why Choose DeP2P?](#-why-choose-dep2p)
 - [Core Features](#-core-features)
 - [Quick Start](#-quick-start)
@@ -64,6 +66,20 @@ DeP2P's vision is not "rebuilding a P2P protocol collection", but converging pro
 
 ---
 
+## 🌠 The Big Picture
+
+DeP2P aims to become the **network foundation connecting Web3 and the real world**. We want to eliminate connection boundaries, enabling systems to span cloud, edge, devices, blockchain, and global networks:
+
+- **Decentralized Applications**: Enable every application to have its own private network with global reachability
+- **AI and Agent Networks**: Enable intelligent agents to interconnect and collaborate like function calls
+- **Edge and IoT**: Maintain "reachable, controllable, explainable" in unstable networks
+- **Cross-Regional Collaboration**: Stable interconnection across multiple countries, networks, and carriers
+- **Open Infrastructure**: Make every node both a user and part of the network
+
+We believe the future network is not "more servers", but "more nodes". What DeP2P does is make every node part of the world.
+
+---
+
 ## 🆚 Why Choose DeP2P?
 
 ### 5 Major Pain Points of Traditional P2P Libraries
@@ -72,8 +88,8 @@ DeP2P's vision is not "rebuilding a P2P protocol collection", but converging pro
 |------------|---------------------|----------------|
 | **Complex API** | Configure Host, Transport, Muxer, Security... | `realm.Messaging().Send(ctx, nodeID, data)` 3-step flow |
 | **Network Pollution** | Routing table filled with unrelated nodes | Realm isolation, only discover nodes in same business |
-| **Cold Start Difficulty** | Need to build all infrastructure | Shared DHT/Relay, isolated by Realm |
-| **Unclear Status** | Don't know if node is offline/crashed/unstable | Three-state model + graceful shutdown + heartbeat |
+| **Cold Start Difficulty** | Need to build all infrastructure | DHT authoritative directory + known_peers direct connect |
+| **Unclear Status** | Don't know if node is offline/crashed/unstable | Multi-layer disconnect detection + witness mechanism + reconnect grace |
 | **Resource Out of Control** | Connection count explodes, resources exhausted | Watermark control + important connection protection |
 
 ### Comparison with Other P2P Libraries
@@ -83,7 +99,7 @@ DeP2P's vision is not "rebuilding a P2P protocol collection", but converging pro
 | **API Simplicity** | ⚠️ Complex configuration | ⚠️ Many concepts | **✅ Minimal API** |
 | **Business Isolation** | ❌ No native support | ⚠️ Manual implementation | **✅ Realm Isolation** |
 | **Connection Reliability** | ⚠️ Manual configuration | ⚠️ Manual configuration | **✅ Automatic Fallback** |
-| **Node Status Awareness** | ⚠️ Self-implementation | ⚠️ Self-implementation | **✅ Three-State Model** |
+| **Disconnect Detection** | ⚠️ Self-implementation | ⚠️ Self-implementation | **✅ Multi-layer + Witness** |
 | **Zero-Config Startup** | ❌ Requires configuration | ⚠️ Requires configuration | **✅ Ready to Use** |
 
 ---
@@ -96,7 +112,8 @@ DeP2P's vision is not "rebuilding a P2P protocol collection", but converging pro
 | **Identity-First** | Connection target is NodeID (public key), not IP address |
 | **Realm Isolation** | Independent business networks, preventing node pollution |
 | **Smart Connection** | Automatic NAT traversal, address discovery, transparent relay fallback |
-| **Node Status Awareness** | Three-state model + heartbeat detection, transparent network status |
+| **Multi-layer Disconnect Detection** | QUIC heartbeat + reconnect grace + witness mechanism + flapping suppression |
+| **DHT Authoritative Model** | DHT stores signed PeerRecord, Relay as cache acceleration |
 | **Connection Management** | Watermark control + important connection protection + automatic pruning |
 | **QUIC-First** | Modern transport protocol with built-in encryption and multiplexing |
 | **Zero-Config Startup** | Sensible defaults, ready to use |
@@ -133,9 +150,12 @@ import (
 func main() {
     ctx := context.Background()
     
-    // Step 1: Start node (system layer auto-ready)
-    node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    // Step 1: Create and start node (system layer auto-ready)
+    node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
     if err != nil {
+        log.Fatalf("Failed to create node: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
         log.Fatalf("Failed to start node: %v", err)
     }
     defer node.Close()
@@ -143,9 +163,11 @@ func main() {
     fmt.Printf("Node ID: %s\n", node.ID())
     
     // Step 2: Join business network (required!)
-    realmKey := types.GenerateRealmKey()
-    realm, err := node.JoinRealmWithKey(ctx, "my-first-realm", realmKey)
+    realm, err := node.Realm("my-first-realm")
     if err != nil {
+        log.Fatalf("Failed to get Realm: %v", err)
+    }
+    if err := realm.Join(ctx); err != nil {
         log.Fatalf("Failed to join Realm: %v", err)
     }
     
@@ -161,6 +183,29 @@ func main() {
 - ✅ **3 lines of code to establish connection**: Start node → Join Realm → Send message
 - ✅ **Automatically handles complex details**: NAT traversal, address discovery, relay fallback
 - ✅ **Identity-first**: Only need NodeID, no need to care about IP address
+
+### Cloud Server Deployment
+
+Recommended configuration for cloud servers:
+
+```go
+// Cloud server: Use known_peers direct connect + trust STUN addresses
+node, err := dep2p.New(ctx,
+    dep2p.WithPreset(dep2p.PresetServer),
+    dep2p.WithKnownPeers([]dep2p.KnownPeer{
+        {PeerID: "12D3KooW...", Addrs: []string{"/ip4/1.2.3.4/udp/4001/quic-v1"}},
+    }),
+    dep2p.WithTrustSTUNAddresses(true),  // Skip inbound verification, accelerate startup
+)
+if err != nil {
+    log.Fatalf("Failed to create node: %v", err)
+}
+if err := node.Start(ctx); err != nil {
+    log.Fatalf("Failed to start node: %v", err)
+}
+```
+
+> 📖 **Detailed Configuration**: [Configuration Guide](docs/configuration.md)
 
 ### More Examples
 
@@ -217,7 +262,7 @@ DeP2P adopts a three-layer architecture design, clearly separating system founda
 | **P1 Important** | Security | End-to-end encryption, identity unforgeable |
 | **P1 Important** | Modularity | Each module independently testable and replaceable |
 
-> 📖 **Detailed Architecture**: [Architecture Overview](design/architecture/overview.md) | [Three-Layer Architecture](design/architecture/layers.md)
+> 📖 **Detailed Architecture**: [Architecture Overview](design/03_architecture/) | [Design Decisions](design/01_context/decisions/)
 
 ---
 
@@ -308,41 +353,13 @@ DeP2P is not just a P2P library, but the **core network layer of Web3 infrastruc
 
 ## 📋 Documentation
 
-### Navigation by Role
-
-| Role | Recommended Path |
-|------|------------------|
-| **User/Developer** | [Quick Start](#-quick-start) → [5-Minute Quickstart](docs/en/getting-started/quickstart.md) → [Tutorials](docs/en/tutorials/) |
-| **Architect** | [Architecture Overview](design/architecture/overview.md) → [Protocol Specifications](design/protocols/README.md) → [ADRs](design/adr/) |
-| **Contributor** | [Development Setup](docs/en/contributing/development-setup.md) → [Code Style](docs/en/contributing/code-style.md) |
-
-### Core Documents
-
-| Document | Description |
+| Resource | Description |
 |----------|-------------|
-| [What is DeP2P](docs/en/concepts/what-is-dep2p.md) | Core vision, design goals, and use cases |
-| [Core Concepts](docs/en/concepts/core-concepts.md) | Identity-first, three-layer architecture, Realm |
-| [Architecture Overview](design/architecture/overview.md) | Detailed overall architecture design |
-| [Design Documentation](design/README.md) | Architecture decisions, protocol specifications, implementation details |
-| [API Reference](docs/en/reference/api/node.md) | Complete API documentation |
-| [Example Collection](examples/README.md) | Progressive example code |
-
-### Documentation Structure
-
-```
-dep2p.git/
-├── README.md              # 📍 This file - Project overview
-├── README_EN.md           # 📍 English version
-├── design/                # Design docs (for architects/contributors)
-│   ├── architecture/      # Architecture design
-│   ├── protocols/        # Protocol specifications
-│   ├── adr/               # Architecture Decision Records
-│   └── invariants/       # System invariants
-├── docs/                  # User docs (for developers)
-│   ├── zh/                # Chinese documentation
-│   └── en/                # English documentation
-└── examples/              # Example code
-```
+| 📖 [**Documentation Center**](docs/en/README.md) | Complete English documentation with tutorials, concepts, API reference |
+| 🎯 [5-Minute Quickstart](docs/en/getting-started/quickstart.md) | Quick start tutorial from scratch |
+| 💡 [Example Code](examples/) | Complete examples from simple to complex |
+| ⚙️ [Configuration Guide](docs/configuration.md) | Preset configurations, connectivity optimization, deployment tips |
+| 🏗️ [Design Documents](design/README.md) | Architecture decisions, protocol specifications (for contributors) |
 
 ---
 
@@ -390,7 +407,8 @@ git push origin your-branch
 netstat -tulpn | grep :4001
 
 # Solution: Use auto-assigned port
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
 ```
 </details>
 
@@ -400,12 +418,13 @@ node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
 **Cause**: Calling business API without joining Realm
 
 ```go
-// ❌ Wrong
-err := node.Send(ctx, peerID, data) // err == ErrNotMember
+// ❌ Wrong: Calling business API without joining Realm
+// err == ErrNotMember
 
-// ✅ Correct: Join Realm first
-realm, _ := node.JoinRealmWithKey(ctx, "my-realm", realmKey)
-err := realm.Messaging().Send(ctx, peerID, data)
+// ✅ Correct: Get Realm and join first
+realm, _ := node.Realm("my-realm")
+_ = realm.Join(ctx)
+err := realm.Messaging().Send(ctx, peerID, "/my/protocol/1.0", data)
 ```
 </details>
 

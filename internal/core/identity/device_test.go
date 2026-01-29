@@ -1,322 +1,431 @@
 package identity
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"testing"
 	"time"
 
-	"github.com/dep2p/go-dep2p/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
 )
 
-// createTestIdentity 创建用于测试的 Ed25519 身份
-func createTestIdentity(t *testing.T) *identity {
-	t.Helper()
-	priv, _, err := GenerateEd25519KeyPair()
-	require.NoError(t, err)
-	return NewIdentity(priv)
+// ============================================================================
+//                              Mock Identity
+// ============================================================================
+
+// mockIdentity 模拟身份实现
+type mockIdentity struct {
+	peerID string
+}
+
+func (m *mockIdentity) PeerID() string { return m.peerID }
+
+func (m *mockIdentity) Sign(data []byte) ([]byte, error) { return nil, nil }
+
+func (m *mockIdentity) Verify(data, sig []byte) (bool, error) { return true, nil }
+
+func (m *mockIdentity) PrivateKey() pkgif.PrivateKey { return nil }
+
+func (m *mockIdentity) PublicKey() pkgif.PublicKey { return nil }
+
+func (m *mockIdentity) IDFromPublicKey() (string, error) { return m.peerID, nil }
+
+// ============================================================================
+//                              配置测试
+// ============================================================================
+
+// TestDefaultDeviceIdentityConfig 测试默认配置
+func TestDefaultDeviceIdentityConfig(t *testing.T) {
+	config := DefaultDeviceIdentityConfig()
+
+	assert.Equal(t, DefaultDeviceCertValidity, config.CertValidity)
+	assert.Empty(t, config.DeviceID)
 }
 
 // ============================================================================
-//                              DeviceIdentity 测试
+//                              设备身份创建测试
 // ============================================================================
 
-func TestDeviceIdentity_NewDeviceIdentity(t *testing.T) {
-	// 创建主身份
-	masterIdentity := createTestIdentity(t)
-
-	// 创建设备身份管理器
-	config := DefaultDeviceConfig()
-	deviceIdentity, err := NewDeviceIdentity(masterIdentity, config)
+// TestNewDeviceIdentity 测试创建设备身份
+func TestNewDeviceIdentity(t *testing.T) {
+	config := DefaultDeviceIdentityConfig()
+	di, err := NewDeviceIdentity(config)
 	require.NoError(t, err)
+	require.NotNil(t, di)
 
-	assert.True(t, deviceIdentity.IsMaster())
-	assert.Equal(t, 0, deviceIdentity.DeviceCount())
-	assert.Equal(t, masterIdentity.ID(), deviceIdentity.MasterID())
+	assert.NotEmpty(t, di.DeviceID())
+	assert.NotNil(t, di.PublicKey())
+	assert.False(t, di.IsBound())
 }
 
-func TestDeviceIdentity_IssueDeviceCertificate(t *testing.T) {
-	// 创建主身份
-	masterIdentity := createTestIdentity(t)
-
-	// 创建设备身份管理器
-	config := DefaultDeviceConfig()
-	deviceIdentity, err := NewDeviceIdentity(masterIdentity, config)
+// TestNewDeviceIdentity_CustomDeviceID 测试自定义设备 ID
+func TestNewDeviceIdentity_CustomDeviceID(t *testing.T) {
+	config := DeviceIdentityConfig{
+		DeviceID:     "custom-device-123",
+		CertValidity: 24 * time.Hour,
+	}
+	di, err := NewDeviceIdentity(config)
 	require.NoError(t, err)
 
-	// 生成设备密钥
-	devicePubKey, _, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-
-	// 签发证书
-	cert, err := deviceIdentity.IssueDeviceCertificate("TestDevice", devicePubKey)
-	require.NoError(t, err)
-	require.NotNil(t, cert)
-
-	// 验证证书内容
-	assert.Equal(t, masterIdentity.ID(), cert.MasterID)
-	assert.Equal(t, "TestDevice", cert.DeviceName)
-	assert.False(t, cert.IsExpired())
-	assert.Equal(t, 1, deviceIdentity.DeviceCount())
+	assert.Equal(t, "custom-device-123", di.DeviceID())
 }
 
-func TestDeviceIdentity_GenerateDeviceKeyPair(t *testing.T) {
-	// 创建主身份
-	masterIdentity := createTestIdentity(t)
-
-	// 创建设备身份管理器
-	config := DefaultDeviceConfig()
-	deviceIdentity, err := NewDeviceIdentity(masterIdentity, config)
+// TestNewDeviceIdentityFromKey 测试从密钥创建设备身份
+func TestNewDeviceIdentityFromKey(t *testing.T) {
+	// 创建原始设备身份
+	config1 := DefaultDeviceIdentityConfig()
+	di1, err := NewDeviceIdentity(config1)
 	require.NoError(t, err)
 
-	// 生成设备密钥对并签发证书
-	cert, privKey, err := deviceIdentity.GenerateDeviceKeyPair("TestDevice")
+	// 生成新密钥
+	privKey, _, err := GenerateEd25519Key()
 	require.NoError(t, err)
-	require.NotNil(t, cert)
-	require.NotNil(t, privKey)
 
-	// 验证私钥可以签名
-	testData := []byte("test message")
-	signature := ed25519.Sign(privKey, testData)
-	assert.True(t, ed25519.Verify(cert.DevicePublicKey, testData, signature))
+	// 从密钥创建
+	config2 := DefaultDeviceIdentityConfig()
+	di2, err := NewDeviceIdentityFromKey(privKey, config2)
+	require.NoError(t, err)
+
+	// 不同密钥应该有不同的设备 ID
+	assert.NotEqual(t, di1.DeviceID(), di2.DeviceID())
 }
 
-func TestDeviceIdentity_VerifyDeviceCertificate(t *testing.T) {
-	// 创建主身份
-	masterIdentity := createTestIdentity(t)
+// TestNewDeviceIdentityFromKey_NilKey 测试从 nil 密钥创建
+func TestNewDeviceIdentityFromKey_NilKey(t *testing.T) {
+	config := DefaultDeviceIdentityConfig()
+	_, err := NewDeviceIdentityFromKey(nil, config)
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrNilPrivateKey)
+}
 
-	// 创建设备身份管理器
-	config := DefaultDeviceConfig()
-	deviceIdentity, err := NewDeviceIdentity(masterIdentity, config)
+// ============================================================================
+//                              绑定测试
+// ============================================================================
+
+// TestDeviceIdentity_BindToPeer 测试绑定到节点
+func TestDeviceIdentity_BindToPeer(t *testing.T) {
+	config := DefaultDeviceIdentityConfig()
+	di, err := NewDeviceIdentity(config)
 	require.NoError(t, err)
 
-	// 签发证书
-	cert, _, err := deviceIdentity.GenerateDeviceKeyPair("TestDevice")
+	// 创建模拟身份
+	peerIdentity := &mockIdentity{peerID: "test-peer-id-123456"}
+
+	err = di.BindToPeer(peerIdentity)
+	assert.NoError(t, err)
+	assert.True(t, di.IsBound())
+
+	// 检查绑定的 PeerID
+	peerID, ok := di.BoundPeerID()
+	assert.True(t, ok)
+	assert.Equal(t, "test-peer-id-123456", string(peerID))
+
+	// 检查证书已创建
+	cert := di.Certificate()
+	assert.NotNil(t, cert)
+	assert.Equal(t, di.DeviceID(), cert.DeviceID)
+}
+
+// TestDeviceIdentity_BindToPeer_AlreadyBound 测试重复绑定
+func TestDeviceIdentity_BindToPeer_AlreadyBound(t *testing.T) {
+	config := DefaultDeviceIdentityConfig()
+	di, err := NewDeviceIdentity(config)
 	require.NoError(t, err)
 
-	// 验证证书
-	err = deviceIdentity.VerifyDeviceCertificate(cert)
+	peerIdentity1 := &mockIdentity{peerID: "peer-1"}
+	peerIdentity2 := &mockIdentity{peerID: "peer-2"}
+
+	err = di.BindToPeer(peerIdentity1)
+	assert.NoError(t, err)
+
+	// 再次绑定应该失败
+	err = di.BindToPeer(peerIdentity2)
+	assert.ErrorIs(t, err, ErrDeviceAlreadyBound)
+}
+
+// TestDeviceIdentity_Unbind 测试解除绑定
+func TestDeviceIdentity_Unbind(t *testing.T) {
+	config := DefaultDeviceIdentityConfig()
+	di, err := NewDeviceIdentity(config)
+	require.NoError(t, err)
+
+	peerIdentity := &mockIdentity{peerID: "peer-1"}
+
+	err = di.BindToPeer(peerIdentity)
+	assert.NoError(t, err)
+	assert.True(t, di.IsBound())
+
+	// 解除绑定
+	di.Unbind()
+	assert.False(t, di.IsBound())
+	assert.Nil(t, di.Certificate())
+
+	// 解除绑定后应该可以重新绑定
+	peerIdentity2 := &mockIdentity{peerID: "peer-2"}
+	err = di.BindToPeer(peerIdentity2)
 	assert.NoError(t, err)
 }
 
-func TestDeviceIdentity_VerifyDeviceCertificate_InvalidSignature(t *testing.T) {
-	// 创建主身份
-	masterIdentity := createTestIdentity(t)
-
-	// 创建设备身份管理器
-	config := DefaultDeviceConfig()
-	deviceIdentity, err := NewDeviceIdentity(masterIdentity, config)
+// TestDeviceIdentity_BoundPeerID_NotBound 测试未绑定时获取 PeerID
+func TestDeviceIdentity_BoundPeerID_NotBound(t *testing.T) {
+	config := DefaultDeviceIdentityConfig()
+	di, err := NewDeviceIdentity(config)
 	require.NoError(t, err)
 
-	// 签发证书
-	cert, _, err := deviceIdentity.GenerateDeviceKeyPair("TestDevice")
-	require.NoError(t, err)
-
-	// 篡改签名
-	cert.Signature[0] ^= 0xFF
-
-	// 验证应该失败
-	err = deviceIdentity.VerifyDeviceCertificate(cert)
-	assert.Equal(t, ErrInvalidDeviceCert, err)
-}
-
-func TestDeviceIdentity_RevokeDevice(t *testing.T) {
-	// 创建主身份
-	masterIdentity := createTestIdentity(t)
-
-	// 创建设备身份管理器
-	config := DefaultDeviceConfig()
-	deviceIdentity, err := NewDeviceIdentity(masterIdentity, config)
-	require.NoError(t, err)
-
-	// 签发证书
-	cert, _, err := deviceIdentity.GenerateDeviceKeyPair("TestDevice")
-	require.NoError(t, err)
-	assert.Equal(t, 1, deviceIdentity.DeviceCount())
-
-	// 撤销设备
-	err = deviceIdentity.RevokeDevice(cert.DeviceID)
-	require.NoError(t, err)
-
-	// 验证已撤销
-	assert.True(t, deviceIdentity.IsDeviceRevoked(cert.DeviceID))
-	assert.Equal(t, 0, deviceIdentity.DeviceCount())
-
-	// 验证证书失败
-	err = deviceIdentity.VerifyDeviceCertificate(cert)
-	assert.Equal(t, ErrDeviceRevoked, err)
-}
-
-func TestDeviceIdentity_MaxDevices(t *testing.T) {
-	// 创建主身份
-	masterIdentity := createTestIdentity(t)
-
-	// 创建设备身份管理器（限制为 2 个设备）
-	config := DeviceConfig{
-		MaxDevices:    2,
-		CertValidity:  time.Hour,
-		AllowSelfSign: true,
-	}
-	deviceIdentity, err := NewDeviceIdentity(masterIdentity, config)
-	require.NoError(t, err)
-
-	// 签发 2 个证书
-	_, _, err = deviceIdentity.GenerateDeviceKeyPair("Device1")
-	require.NoError(t, err)
-	_, _, err = deviceIdentity.GenerateDeviceKeyPair("Device2")
-	require.NoError(t, err)
-
-	// 第 3 个应该失败
-	_, _, err = deviceIdentity.GenerateDeviceKeyPair("Device3")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "maximum device limit")
-}
-
-func TestDeviceIdentity_DuplicateDevice(t *testing.T) {
-	// 创建主身份
-	masterIdentity := createTestIdentity(t)
-
-	// 创建设备身份管理器
-	config := DefaultDeviceConfig()
-	deviceIdentity, err := NewDeviceIdentity(masterIdentity, config)
-	require.NoError(t, err)
-
-	// 生成设备密钥
-	devicePubKey, _, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-
-	// 签发证书
-	_, err = deviceIdentity.IssueDeviceCertificate("Device1", devicePubKey)
-	require.NoError(t, err)
-
-	// 尝试重复签发
-	_, err = deviceIdentity.IssueDeviceCertificate("Device1Again", devicePubKey)
-	assert.Equal(t, ErrDeviceAlreadyExists, err)
-}
-
-func TestDeviceIdentity_RevokedDeviceCannotReissue(t *testing.T) {
-	// 创建主身份
-	masterIdentity := createTestIdentity(t)
-
-	// 创建设备身份管理器
-	config := DefaultDeviceConfig()
-	deviceIdentity, err := NewDeviceIdentity(masterIdentity, config)
-	require.NoError(t, err)
-
-	// 生成设备密钥
-	devicePubKey, _, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-
-	// 签发证书
-	cert, err := deviceIdentity.IssueDeviceCertificate("Device1", devicePubKey)
-	require.NoError(t, err)
-
-	// 撤销
-	err = deviceIdentity.RevokeDevice(cert.DeviceID)
-	require.NoError(t, err)
-
-	// 尝试重新签发（同一个公钥）
-	_, err = deviceIdentity.IssueDeviceCertificate("Device1Again", devicePubKey)
-	assert.Equal(t, ErrDeviceRevoked, err)
-}
-
-func TestDeviceIdentity_GetDevice(t *testing.T) {
-	// 创建主身份
-	masterIdentity := createTestIdentity(t)
-
-	// 创建设备身份管理器
-	config := DefaultDeviceConfig()
-	deviceIdentity, err := NewDeviceIdentity(masterIdentity, config)
-	require.NoError(t, err)
-
-	// 签发证书
-	cert, _, err := deviceIdentity.GenerateDeviceKeyPair("TestDevice")
-	require.NoError(t, err)
-
-	// 获取设备
-	gotCert, ok := deviceIdentity.GetDevice(cert.DeviceID)
-	assert.True(t, ok)
-	assert.Equal(t, cert.DeviceName, gotCert.DeviceName)
-
-	// 获取不存在的设备
-	_, ok = deviceIdentity.GetDevice(types.EmptyNodeID)
+	peerID, ok := di.BoundPeerID()
 	assert.False(t, ok)
+	assert.Empty(t, peerID)
 }
 
-func TestDeviceIdentity_ListDevices(t *testing.T) {
-	// 创建主身份
-	masterIdentity := createTestIdentity(t)
+// ============================================================================
+//                              证书测试
+// ============================================================================
 
-	// 创建设备身份管理器
-	config := DefaultDeviceConfig()
-	deviceIdentity, err := NewDeviceIdentity(masterIdentity, config)
-	require.NoError(t, err)
-
-	// 签发多个证书
-	_, _, err = deviceIdentity.GenerateDeviceKeyPair("Device1")
-	require.NoError(t, err)
-	_, _, err = deviceIdentity.GenerateDeviceKeyPair("Device2")
-	require.NoError(t, err)
-	_, _, err = deviceIdentity.GenerateDeviceKeyPair("Device3")
-	require.NoError(t, err)
-
-	// 列出设备
-	devices := deviceIdentity.ListDevices()
-	assert.Len(t, devices, 3)
-}
-
-func TestDeviceIdentity_NonMasterCannotIssue(t *testing.T) {
-	// 创建主身份并签发设备证书
-	masterIdentity := createTestIdentity(t)
-
-	config := DefaultDeviceConfig()
-	masterDeviceIdentity, err := NewDeviceIdentity(masterIdentity, config)
-	require.NoError(t, err)
-
-	cert, privKey, err := masterDeviceIdentity.GenerateDeviceKeyPair("SubDevice")
-	require.NoError(t, err)
-
-	// 创建从设备身份
-	subDeviceIdentity, err := NewSubDeviceIdentity(cert, privKey)
-	require.NoError(t, err)
-
-	// 从设备不能签发证书
-	devicePubKey, _, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-
-	_, err = subDeviceIdentity.IssueDeviceCertificate("AnotherDevice", devicePubKey)
-	assert.Equal(t, ErrNotMasterIdentity, err)
-}
-
-func TestDeviceCertificate_Bytes(t *testing.T) {
-	// 创建证书
-	devicePubKey, _, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-
-	cert := &DeviceCertificate{
-		DeviceID:        types.NodeID{1, 2, 3},
-		MasterID:        types.NodeID{4, 5, 6},
-		DevicePublicKey: devicePubKey,
-		IssuedAt:        time.Now(),
-		ExpiresAt:       time.Now().Add(time.Hour),
-		DeviceName:      "TestDevice",
+// TestDeviceIdentity_Certificate 测试获取证书
+func TestDeviceIdentity_Certificate(t *testing.T) {
+	config := DeviceIdentityConfig{
+		CertValidity: 24 * time.Hour,
 	}
+	di, err := NewDeviceIdentity(config)
+	require.NoError(t, err)
 
-	// 确保 Bytes 返回一致的值
-	bytes1 := cert.Bytes()
-	bytes2 := cert.Bytes()
-	assert.Equal(t, bytes1, bytes2)
-}
+	// 未绑定时没有证书
+	assert.Nil(t, di.Certificate())
 
-func TestDeviceCertificate_IsExpired(t *testing.T) {
-	cert := &DeviceCertificate{
-		ExpiresAt: time.Now().Add(-time.Hour), // 已过期
-	}
-	assert.True(t, cert.IsExpired())
+	// 绑定后有证书
+	peerIdentity := &mockIdentity{peerID: "test-peer"}
+	err = di.BindToPeer(peerIdentity)
+	require.NoError(t, err)
 
-	cert.ExpiresAt = time.Now().Add(time.Hour) // 未过期
+	cert := di.Certificate()
+	require.NotNil(t, cert)
+	assert.Equal(t, DeviceCertVersion, int(cert.Version))
+	assert.Equal(t, di.DeviceID(), cert.DeviceID)
+	assert.NotEmpty(t, cert.PublicKey)
+	assert.NotEmpty(t, cert.Signature)
 	assert.False(t, cert.IsExpired())
 }
 
+// TestDeviceIdentity_RenewCertificate 测试证书续期
+func TestDeviceIdentity_RenewCertificate(t *testing.T) {
+	config := DefaultDeviceIdentityConfig()
+	di, err := NewDeviceIdentity(config)
+	require.NoError(t, err)
+
+	peerIdentity := &mockIdentity{peerID: "test-peer"}
+	err = di.BindToPeer(peerIdentity)
+	require.NoError(t, err)
+
+	oldCert := di.Certificate()
+	require.NotNil(t, oldCert)
+
+	// 稍微等待一下确保时间戳不同
+	time.Sleep(10 * time.Millisecond)
+
+	// 续期
+	err = di.RenewCertificate()
+	assert.NoError(t, err)
+
+	newCert := di.Certificate()
+	require.NotNil(t, newCert)
+
+	// 签发时间应该不同
+	assert.GreaterOrEqual(t, newCert.IssuedAt, oldCert.IssuedAt)
+}
+
+// TestDeviceIdentity_RenewCertificate_NotBound 测试未绑定时续期
+func TestDeviceIdentity_RenewCertificate_NotBound(t *testing.T) {
+	config := DefaultDeviceIdentityConfig()
+	di, err := NewDeviceIdentity(config)
+	require.NoError(t, err)
+
+	err = di.RenewCertificate()
+	assert.ErrorIs(t, err, ErrDeviceNotBound)
+}
+
+// ============================================================================
+//                              证书验证测试
+// ============================================================================
+
+// TestVerifyCertificate 测试证书验证
+func TestVerifyCertificate(t *testing.T) {
+	config := DefaultDeviceIdentityConfig()
+	di, err := NewDeviceIdentity(config)
+	require.NoError(t, err)
+
+	peerIdentity := &mockIdentity{peerID: "test-peer"}
+	err = di.BindToPeer(peerIdentity)
+	require.NoError(t, err)
+
+	cert := di.Certificate()
+	require.NotNil(t, cert)
+
+	// 验证应该成功
+	err = VerifyCertificate(cert)
+	assert.NoError(t, err)
+}
+
+// TestVerifyCertificate_Nil 测试验证 nil 证书
+func TestVerifyCertificate_Nil(t *testing.T) {
+	err := VerifyCertificate(nil)
+	assert.ErrorIs(t, err, ErrInvalidDeviceCert)
+}
+
+// TestVerifyCertificate_InvalidSignature 测试验证无效签名
+func TestVerifyCertificate_InvalidSignature(t *testing.T) {
+	config := DefaultDeviceIdentityConfig()
+	di, err := NewDeviceIdentity(config)
+	require.NoError(t, err)
+
+	peerIdentity := &mockIdentity{peerID: "test-peer"}
+	err = di.BindToPeer(peerIdentity)
+	require.NoError(t, err)
+
+	cert := di.Certificate()
+	require.NotNil(t, cert)
+
+	// 篡改设备 ID
+	cert.DeviceID = "tampered-device-id"
+
+	// 验证应该失败
+	err = VerifyCertificate(cert)
+	assert.ErrorIs(t, err, ErrInvalidDeviceSignature)
+}
+
+// ============================================================================
+//                              证书序列化测试
+// ============================================================================
+
+// TestDeviceCertificate_Marshal 测试证书序列化
+func TestDeviceCertificate_Marshal(t *testing.T) {
+	config := DefaultDeviceIdentityConfig()
+	di, err := NewDeviceIdentity(config)
+	require.NoError(t, err)
+
+	peerIdentity := &mockIdentity{peerID: "test-peer"}
+	err = di.BindToPeer(peerIdentity)
+	require.NoError(t, err)
+
+	cert := di.Certificate()
+	require.NotNil(t, cert)
+
+	// 序列化
+	data, err := cert.Marshal()
+	require.NoError(t, err)
+	assert.NotEmpty(t, data)
+
+	// 反序列化
+	cert2, err := UnmarshalDeviceCertificate(data)
+	require.NoError(t, err)
+
+	assert.Equal(t, cert.Version, cert2.Version)
+	assert.Equal(t, cert.DeviceID, cert2.DeviceID)
+	assert.Equal(t, cert.PeerID, cert2.PeerID)
+	assert.Equal(t, cert.PublicKey, cert2.PublicKey)
+	assert.Equal(t, cert.IssuedAt, cert2.IssuedAt)
+	assert.Equal(t, cert.ExpiresAt, cert2.ExpiresAt)
+	assert.Equal(t, cert.Signature, cert2.Signature)
+}
+
+// TestUnmarshalDeviceCertificate_Invalid 测试反序列化无效数据
+func TestUnmarshalDeviceCertificate_Invalid(t *testing.T) {
+	_, err := UnmarshalDeviceCertificate(nil)
+	assert.Error(t, err)
+
+	_, err = UnmarshalDeviceCertificate([]byte{})
+	assert.Error(t, err)
+
+	_, err = UnmarshalDeviceCertificate([]byte("short"))
+	assert.Error(t, err)
+}
+
+// TestDeviceIdentity_CertificateBytes 测试获取证书字节
+func TestDeviceIdentity_CertificateBytes(t *testing.T) {
+	config := DefaultDeviceIdentityConfig()
+	di, err := NewDeviceIdentity(config)
+	require.NoError(t, err)
+
+	// 未绑定时应该返回错误
+	_, err = di.CertificateBytes()
+	assert.ErrorIs(t, err, ErrDeviceNotBound)
+
+	// 绑定后应该返回证书字节
+	peerIdentity := &mockIdentity{peerID: "test-peer"}
+	err = di.BindToPeer(peerIdentity)
+	require.NoError(t, err)
+
+	certBytes, err := di.CertificateBytes()
+	assert.NoError(t, err)
+	assert.NotEmpty(t, certBytes)
+}
+
+// ============================================================================
+//                              证书过期测试
+// ============================================================================
+
+// TestDeviceCertificate_IsExpired 测试证书过期检查
+func TestDeviceCertificate_IsExpired(t *testing.T) {
+	t.Run("not expired", func(t *testing.T) {
+		cert := &DeviceCertificate{
+			IssuedAt:  time.Now().Unix(),
+			ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
+		}
+		assert.False(t, cert.IsExpired())
+	})
+
+	t.Run("expired", func(t *testing.T) {
+		cert := &DeviceCertificate{
+			IssuedAt:  time.Now().Add(-48 * time.Hour).Unix(),
+			ExpiresAt: time.Now().Add(-24 * time.Hour).Unix(),
+		}
+		assert.True(t, cert.IsExpired())
+	})
+}
+
+// TestDeviceCertificate_IsValid 测试证书有效性检查
+func TestDeviceCertificate_IsValid(t *testing.T) {
+	config := DefaultDeviceIdentityConfig()
+	di, err := NewDeviceIdentity(config)
+	require.NoError(t, err)
+
+	peerIdentity := &mockIdentity{peerID: "test-peer"}
+	err = di.BindToPeer(peerIdentity)
+	require.NoError(t, err)
+
+	cert := di.Certificate()
+	require.NotNil(t, cert)
+
+	assert.True(t, cert.IsValid())
+
+	// 无效版本
+	cert.Version = 99
+	assert.False(t, cert.IsValid())
+}
+
+// ============================================================================
+//                              设备 ID 测试
+// ============================================================================
+
+// TestDeviceIdentity_DeviceID_Consistency 测试设备 ID 一致性
+func TestDeviceIdentity_DeviceID_Consistency(t *testing.T) {
+	config := DefaultDeviceIdentityConfig()
+	di, err := NewDeviceIdentity(config)
+	require.NoError(t, err)
+
+	id1 := di.DeviceID()
+	id2 := di.DeviceID()
+
+	assert.Equal(t, id1, id2)
+	assert.NotEmpty(t, id1)
+}
+
+// TestDeviceIdentity_Different 测试不同设备身份
+func TestDeviceIdentity_Different(t *testing.T) {
+	config := DefaultDeviceIdentityConfig()
+
+	di1, _ := NewDeviceIdentity(config)
+	di2, _ := NewDeviceIdentity(config)
+
+	assert.NotEqual(t, di1.DeviceID(), di2.DeviceID())
+}

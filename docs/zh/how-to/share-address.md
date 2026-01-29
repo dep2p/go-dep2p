@@ -77,13 +77,17 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetServer))
+    node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetServer))
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     // 获取可分享地址（可能为空，如果还未验证）
     addrs := node.ShareableAddrs()
@@ -118,13 +122,17 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetServer))
+    node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetServer))
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     // 等待地址验证（最多 30 秒）
     waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -163,13 +171,17 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetServer))
+    node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetServer))
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     // 获取所有候选地址（不保证全部可达）
     candidates := node.BootstrapCandidates()
@@ -249,16 +261,20 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetServer),
         dep2p.WithListenPort(4001),
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     fmt.Println("节点信息:")
     fmt.Printf("  NodeID: %s\n", node.ID())
@@ -364,10 +380,11 @@ if node.ConnectionCount() == 0 {
 }
 
 // 3. 使用 Relay 作为备选
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithRelay(true),  // 启用 Relay
 )
+_ = node.Start(ctx)
 ```
 
 ### 问题 2：地址无法被其他节点连接
@@ -387,10 +404,11 @@ if !strings.Contains(addr, "/p2p/") {
 }
 
 // 2. 对于公网服务器，显式声明外部地址
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetServer),
     dep2p.WithExternalAddrs("/ip4/公网IP/udp/4001/quic-v1"),
 )
+_ = node.Start(ctx)
 
 // 3. 检查端口是否开放
 // sudo ufw allow 4001/udp

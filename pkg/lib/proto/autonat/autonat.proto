@@ -1,0 +1,48 @@
+// DeP2P AutoNAT Protocol Definitions
+// 自动 NAT 类型检测协议消息定义
+
+syntax = "proto3";
+
+package dep2p.autonat;
+
+option go_package = "github.com/dep2p/dep2p/pkg/proto/autonat";
+
+// MessageType 消息类型
+enum MessageType {
+  DIAL = 0;
+  DIAL_RESPONSE = 1;
+}
+
+// ResponseStatus 响应状态
+enum ResponseStatus {
+  OK = 0;
+  E_DIAL_ERROR = 100;
+  E_DIAL_REFUSED = 101;
+  E_BAD_REQUEST = 200;
+  E_INTERNAL_ERROR = 300;
+}
+
+// PeerInfo 节点信息
+message PeerInfo {
+  bytes id = 1;
+  repeated bytes addrs = 2;
+}
+
+// Dial 拨号请求
+message Dial {
+  PeerInfo peer = 1;
+}
+
+// DialResponse 拨号响应
+message DialResponse {
+  ResponseStatus status = 1;
+  string status_text = 2;
+  bytes addr = 3;
+}
+
+// Message AutoNAT 协议消息
+message Message {
+  MessageType type = 1;
+  Dial dial = 2;
+  DialResponse dial_response = 3;
+}

@@ -1,116 +1,118 @@
-// Package quic 提供基于 QUIC 的传输层实现
+// Package quic 实现 QUIC 传输
 package quic
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"sync/atomic"
+	"net"
 
+	tlssec "github.com/dep2p/go-dep2p/internal/core/security/tls"
+	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
+	"github.com/dep2p/go-dep2p/pkg/types"
 	"github.com/quic-go/quic-go"
-
-	"github.com/dep2p/go-dep2p/pkg/interfaces/endpoint"
-	transportif "github.com/dep2p/go-dep2p/pkg/interfaces/transport"
 )
 
-// 错误定义
-var (
-	// ErrListenerClosed 监听器已关闭
-	ErrListenerClosed = errors.New("listener closed")
-)
+// 确保实现了接口
+var _ pkgif.Listener = (*Listener)(nil)
 
-// Listener QUIC 监听器实现
+// Listener QUIC 监听器
 type Listener struct {
 	quicListener *quic.Listener
-	addr         *Address
+	localAddr    types.Multiaddr
+	localPeer    types.PeerID
 	transport    *Transport
-	closed       atomic.Bool
 }
 
-// 确保实现 transport.Listener 接口
-var _ transportif.Listener = (*Listener)(nil)
-
-// NewListener 创建监听器
-func NewListener(ql *quic.Listener, addr *Address, transport *Transport) *Listener {
-	return &Listener{
-		quicListener: ql,
-		addr:         addr,
-		transport:    transport,
-	}
-}
-
-// Accept 接受连接
-// 注意: 此方法会阻塞直到有新连接或监听器关闭
-// 推荐使用 AcceptWithContext 以支持超时和取消
-func (l *Listener) Accept() (transportif.Conn, error) {
-	if l.closed.Load() {
-		return nil, ErrListenerClosed
-	}
-
-	// 接受 QUIC 连接
-	// 当监听器关闭时，Accept 会返回错误
+// Accept 接受新连接
+func (l *Listener) Accept() (pkgif.Connection, error) {
 	quicConn, err := l.quicListener.Accept(context.Background())
 	if err != nil {
-		// 检查是否是监听器关闭导致的错误
-		if l.closed.Load() {
-			return nil, ErrListenerClosed
-		}
-		return nil, fmt.Errorf("接受连接失败: %w", err)
+		return nil, err
 	}
 
-	// 创建连接封装
-	conn := NewConn(quicConn, l.transport)
-
-	return conn, nil
-}
-
-// AcceptWithContext 使用上下文接受连接
-// 支持通过 context 进行超时控制和取消
-func (l *Listener) AcceptWithContext(ctx context.Context) (transportif.Conn, error) {
-	if l.closed.Load() {
-		return nil, ErrListenerClosed
-	}
-
-	// 接受 QUIC 连接
-	quicConn, err := l.quicListener.Accept(ctx)
+	// 提取远程地址
+	remoteUDPAddr := quicConn.RemoteAddr().(*net.UDPAddr)
+	remoteAddrStr := fmt.Sprintf("/ip4/%s/udp/%d/quic-v1", remoteUDPAddr.IP.String(), remoteUDPAddr.Port)
+	remoteAddr, err := types.NewMultiaddr(remoteAddrStr)
 	if err != nil {
-		// 检查是否是监听器关闭导致的错误
-		if l.closed.Load() {
-			return nil, ErrListenerClosed
-		}
-		return nil, fmt.Errorf("接受连接失败: %w", err)
+		quicConn.CloseWithError(1, "invalid remote address")
+		return nil, err
 	}
 
-	// 创建连接封装
-	conn := NewConn(quicConn, l.transport)
+	// 从 TLS 连接状态提取远程 PeerID
+	remotePeer, err := extractPeerIDFromConn(quicConn)
+	if err != nil {
+		quicConn.CloseWithError(1, "failed to extract peer ID")
+		return nil, err
+	}
 
-	return conn, nil
-}
-
-// Addr 返回监听地址
-func (l *Listener) Addr() endpoint.Address {
-	return l.addr
+	return newConnection(quicConn, l.localPeer, remotePeer, remoteAddr, pkgif.DirInbound), nil
 }
 
 // Close 关闭监听器
 func (l *Listener) Close() error {
-	if l.closed.Swap(true) {
-		return nil // 已经关闭
-	}
 	return l.quicListener.Close()
 }
 
-// Multiaddr 返回多地址格式的监听地址
-func (l *Listener) Multiaddr() string {
-	return l.addr.Multiaddr()
+// Addr 返回监听地址
+func (l *Listener) Addr() types.Multiaddr {
+	// 获取实际监听的地址（可能与请求的不同，如端口为 0）
+	if l.quicListener == nil {
+		return nil
+	}
+	rawAddr := l.quicListener.Addr()
+	if rawAddr == nil {
+		return nil
+	}
+	actualAddr, ok := rawAddr.(*net.UDPAddr)
+	if !ok {
+		return nil
+	}
+	
+	// 根据 IP 类型选择协议
+	var actualAddrStr string
+	ip := actualAddr.IP
+	if ip4 := ip.To4(); ip4 != nil {
+		// IPv4 地址
+		actualAddrStr = fmt.Sprintf("/ip4/%s/udp/%d/quic-v1", ip4.String(), actualAddr.Port)
+	} else if ip.IsUnspecified() {
+		// 未指定地址 (0.0.0.0 或 ::)，使用 0.0.0.0
+		actualAddrStr = fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", actualAddr.Port)
+	} else {
+		// IPv6 地址
+		actualAddrStr = fmt.Sprintf("/ip6/%s/udp/%d/quic-v1", ip.String(), actualAddr.Port)
+	}
+	
+	addr, err := types.NewMultiaddr(actualAddrStr)
+	if err != nil {
+		return nil
+	}
+	return addr
 }
 
-// QuicListener 返回底层 QUIC 监听器
-func (l *Listener) QuicListener() *quic.Listener {
-	return l.quicListener
+// Multiaddr 返回多地址格式
+func (l *Listener) Multiaddr() types.Multiaddr {
+	return l.Addr()
 }
 
-// IsClosed 检查监听器是否已关闭
-func (l *Listener) IsClosed() bool {
-	return l.closed.Load()
+// extractPeerIDFromConn 从 QUIC 连接提取 PeerID
+func extractPeerIDFromConn(conn *quic.Conn) (types.PeerID, error) {
+	// 获取 TLS 连接状态
+	connState := conn.ConnectionState().TLS
+	
+	// 检查是否有对端证书
+	if len(connState.PeerCertificates) == 0 {
+		return "", fmt.Errorf("no peer certificates")
+	}
+	
+	// 获取第一个证书
+	cert := connState.PeerCertificates[0]
+	
+	// 从证书中提取 PeerID
+	peerID, err := tlssec.ExtractPeerIDFromCert(cert)
+	if err != nil {
+		return "", fmt.Errorf("extract peer id from cert: %w", err)
+	}
+	
+	return types.PeerID(peerID), nil
 }

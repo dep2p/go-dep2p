@@ -1,450 +1,582 @@
-// Package identity 提供身份管理模块的实现
+// Package identity 实现身份管理
 //
-// 设备身份支持：
-// - 主从身份模型
-// - 设备证书签发
-// - 设备撤销机制
+// DeviceIdentity 提供设备身份管理功能：
+//   - 设备证书的创建和验证
+//   - 设备与节点身份的绑定
+//   - 设备证书的持久化存储
 package identity
 
 import (
+	"bytes"
 	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
-	"github.com/dep2p/go-dep2p/internal/util/logger"
-	identityif "github.com/dep2p/go-dep2p/pkg/interfaces/identity"
+	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
+	"github.com/dep2p/go-dep2p/pkg/lib/log"
 	"github.com/dep2p/go-dep2p/pkg/types"
 )
 
-// 包级别日志实例
-var log = logger.Logger("identity.device")
+var deviceLogger = log.Logger("identity/device")
 
 // ============================================================================
 //                              错误定义
 // ============================================================================
 
-// 设备管理相关错误
 var (
-	// ErrDeviceAlreadyExists 设备已存在
-	ErrDeviceAlreadyExists = errors.New("device already exists")
-	ErrDeviceNotFound      = errors.New("device not found")
-	ErrDeviceRevoked       = errors.New("device has been revoked")
-	ErrInvalidDeviceCert   = errors.New("invalid device certificate")
-	ErrNotMasterIdentity   = errors.New("not a master identity")
-	ErrCertExpired         = errors.New("device certificate expired")
+	// ErrInvalidDeviceCert 无效的设备证书
+	ErrInvalidDeviceCert = errors.New("invalid device certificate")
+
+	// ErrDeviceCertExpired 设备证书已过期
+	ErrDeviceCertExpired = errors.New("device certificate expired")
+
+	// ErrDeviceNotBound 设备未绑定
+	ErrDeviceNotBound = errors.New("device not bound to peer")
+
+	// ErrDeviceAlreadyBound 设备已绑定
+	ErrDeviceAlreadyBound = errors.New("device already bound")
+
+	// ErrInvalidDeviceSignature 无效的设备签名
+	ErrInvalidDeviceSignature = errors.New("invalid device signature")
+
+	// ErrDeviceStoreClosed 设备存储已关闭
+	ErrDeviceStoreClosed = errors.New("device store closed")
 )
 
 // ============================================================================
-//                              设备身份配置
+//                              常量定义
 // ============================================================================
 
-// DeviceConfig 设备身份配置
-type DeviceConfig struct {
-	// MaxDevices 最大设备数
-	MaxDevices int
+const (
+	// DeviceCertVersion 设备证书版本
+	DeviceCertVersion = 1
 
-	// CertValidity 证书有效期
-	CertValidity time.Duration
+	// DefaultDeviceCertValidity 默认设备证书有效期（1年）
+	DefaultDeviceCertValidity = 365 * 24 * time.Hour
 
-	// AllowSelfSign 允许自签名
-	AllowSelfSign bool
-}
+	// DeviceSignaturePrefix 签名前缀
+	DeviceSignaturePrefix = "dep2p-device-cert-v1:"
 
-// DefaultDeviceConfig 返回默认配置
-func DefaultDeviceConfig() DeviceConfig {
-	return DeviceConfig{
-		MaxDevices:    10,
-		CertValidity:  365 * 24 * time.Hour, // 1 年
-		AllowSelfSign: true,
-	}
-}
+	// MinDeviceCertSize 最小证书大小
+	MinDeviceCertSize = 1 + 8 + 8 + 32 + 64
+)
 
 // ============================================================================
-//                              DeviceCertificate 设备证书
+//                              DeviceCertificate 结构
 // ============================================================================
 
 // DeviceCertificate 设备证书
+//
+// 设备证书用于标识和验证一个物理设备的身份。
+// 每个设备可以绑定到一个节点身份。
 type DeviceCertificate struct {
-	// DeviceID 设备 ID
-	DeviceID types.NodeID
+	// Version 证书版本
+	Version uint8
 
-	// MasterID 主身份 ID
-	MasterID types.NodeID
+	// DeviceID 设备唯一标识
+	DeviceID string
 
-	// DevicePublicKey 设备公钥
-	DevicePublicKey ed25519.PublicKey
+	// PeerID 绑定的节点 ID
+	PeerID types.PeerID
+
+	// PublicKey 设备公钥
+	PublicKey []byte
 
 	// IssuedAt 签发时间
-	IssuedAt time.Time
+	IssuedAt int64
 
 	// ExpiresAt 过期时间
-	ExpiresAt time.Time
+	ExpiresAt int64
 
-	// DeviceName 设备名称
-	DeviceName string
-
-	// Signature 主身份签名
+	// Signature 签名（由设备私钥签名）
 	Signature []byte
+
+	// Metadata 元数据
+	Metadata map[string]string
 }
 
 // IsExpired 检查证书是否过期
 func (c *DeviceCertificate) IsExpired() bool {
-	return time.Now().After(c.ExpiresAt)
+	return time.Now().Unix() > c.ExpiresAt
 }
 
-// Bytes 返回证书的字节表示（用于签名）
-func (c *DeviceCertificate) Bytes() []byte {
-	// 格式: DeviceID(32) + MasterID(32) + DevicePublicKey(32) + IssuedAt(8) + ExpiresAt(8) + DeviceName
-	buf := make([]byte, 0, 32+32+32+8+8+len(c.DeviceName))
-	buf = append(buf, c.DeviceID[:]...)
-	buf = append(buf, c.MasterID[:]...)
-	buf = append(buf, c.DevicePublicKey...)
-
-	issuedBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(issuedBytes, uint64(c.IssuedAt.Unix()))
-	buf = append(buf, issuedBytes...)
-
-	expiresBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(expiresBytes, uint64(c.ExpiresAt.Unix()))
-	buf = append(buf, expiresBytes...)
-
-	buf = append(buf, []byte(c.DeviceName)...)
-	return buf
+// IsValid 检查证书是否有效
+func (c *DeviceCertificate) IsValid() bool {
+	if c.Version != DeviceCertVersion {
+		return false
+	}
+	if c.IsExpired() {
+		return false
+	}
+	if len(c.PublicKey) != ed25519.PublicKeySize {
+		return false
+	}
+	if len(c.Signature) != ed25519.SignatureSize {
+		return false
+	}
+	return true
 }
 
 // ============================================================================
-//                              DeviceIdentity 设备身份
+//                              DeviceIdentity 结构
 // ============================================================================
 
-// DeviceIdentity 设备身份
+// DeviceIdentity 设备身份管理器
+//
+// 管理设备证书的创建、验证和存储。
 type DeviceIdentity struct {
-	config DeviceConfig
+	// 设备密钥对
+	privateKey pkgif.PrivateKey
+	publicKey  pkgif.PublicKey
 
-	// 主身份
-	masterIdentity identityif.Identity
-	isMaster       bool
+	// 设备 ID
+	deviceID string
 
-	// 设备列表
-	devices   map[types.NodeID]*deviceInfo
-	devicesMu sync.RWMutex
+	// 当前证书
+	certificate *DeviceCertificate
+	certMu      sync.RWMutex
 
-	// 撤销列表
-	revokedDevices   map[types.NodeID]time.Time
-	revokedDevicesMu sync.RWMutex
+	// 绑定的节点身份
+	peerIdentity pkgif.Identity
+	peerMu       sync.RWMutex
+
+	// 证书有效期
+	certValidity time.Duration
 }
 
-// deviceInfo 设备信息
-type deviceInfo struct {
-	Certificate *DeviceCertificate
-	PrivateKey  ed25519.PrivateKey // 仅当是本地设备时有值
-	CreatedAt   time.Time
-	LastSeen    time.Time
+// DeviceIdentityConfig 设备身份配置
+type DeviceIdentityConfig struct {
+	// DeviceID 设备 ID（如果为空则自动生成）
+	DeviceID string
+
+	// CertValidity 证书有效期
+	CertValidity time.Duration
 }
 
-// NewDeviceIdentity 创建设备身份管理器
-func NewDeviceIdentity(masterIdentity identityif.Identity, config DeviceConfig) (*DeviceIdentity, error) {
-	return &DeviceIdentity{
-		config:         config,
-		masterIdentity: masterIdentity,
-		isMaster:       true,
-		devices:        make(map[types.NodeID]*deviceInfo),
-		revokedDevices: make(map[types.NodeID]time.Time),
-	}, nil
+// DefaultDeviceIdentityConfig 返回默认配置
+func DefaultDeviceIdentityConfig() DeviceIdentityConfig {
+	return DeviceIdentityConfig{
+		CertValidity: DefaultDeviceCertValidity,
+	}
 }
 
-// NewSubDeviceIdentity 创建从设备身份
-func NewSubDeviceIdentity(cert *DeviceCertificate, privateKey ed25519.PrivateKey) (*DeviceIdentity, error) {
+// ============================================================================
+//                              构造函数
+// ============================================================================
+
+// NewDeviceIdentity 创建设备身份
+func NewDeviceIdentity(config DeviceIdentityConfig) (*DeviceIdentity, error) {
+	// 生成设备密钥对
+	privKey, pubKey, err := GenerateEd25519Key()
+	if err != nil {
+		return nil, fmt.Errorf("generate device key: %w", err)
+	}
+
+	// 设备 ID
+	deviceID := config.DeviceID
+	if deviceID == "" {
+		// 从公钥派生设备 ID
+		pubKeyBytes, _ := pubKey.Raw()
+		deviceID = fmt.Sprintf("device-%x", pubKeyBytes[:8])
+	}
+
+	// 证书有效期
+	validity := config.CertValidity
+	if validity <= 0 {
+		validity = DefaultDeviceCertValidity
+	}
+
 	di := &DeviceIdentity{
-		config:         DefaultDeviceConfig(),
-		isMaster:       false,
-		devices:        make(map[types.NodeID]*deviceInfo),
-		revokedDevices: make(map[types.NodeID]time.Time),
+		privateKey:   privKey,
+		publicKey:    pubKey,
+		deviceID:     deviceID,
+		certValidity: validity,
 	}
 
-	// 添加自己作为设备
-	di.devices[cert.DeviceID] = &deviceInfo{
-		Certificate: cert,
-		PrivateKey:  privateKey,
-		CreatedAt:   cert.IssuedAt,
-		LastSeen:    time.Now(),
-	}
+	deviceLogger.Info("设备身份已创建",
+		"deviceID", deviceID,
+		"certValidity", validity)
 
 	return di, nil
 }
 
+// NewDeviceIdentityFromKey 从现有密钥创建设备身份
+func NewDeviceIdentityFromKey(privKey pkgif.PrivateKey, config DeviceIdentityConfig) (*DeviceIdentity, error) {
+	if privKey == nil {
+		return nil, ErrNilPrivateKey
+	}
+
+	pubKey := privKey.PublicKey()
+
+	deviceID := config.DeviceID
+	if deviceID == "" {
+		pubKeyBytes, _ := pubKey.Raw()
+		deviceID = fmt.Sprintf("device-%x", pubKeyBytes[:8])
+	}
+
+	validity := config.CertValidity
+	if validity <= 0 {
+		validity = DefaultDeviceCertValidity
+	}
+
+	return &DeviceIdentity{
+		privateKey:   privKey,
+		publicKey:    pubKey,
+		deviceID:     deviceID,
+		certValidity: validity,
+	}, nil
+}
+
 // ============================================================================
-//                              设备管理
+//                              绑定管理
 // ============================================================================
 
-// IssueDeviceCertificate 签发设备证书
-func (d *DeviceIdentity) IssueDeviceCertificate(deviceName string, devicePubKey ed25519.PublicKey) (*DeviceCertificate, error) {
-	if !d.isMaster {
-		return nil, ErrNotMasterIdentity
+// BindToPeer 绑定到节点身份
+func (di *DeviceIdentity) BindToPeer(peerIdentity pkgif.Identity) error {
+	di.peerMu.Lock()
+	defer di.peerMu.Unlock()
+
+	if di.peerIdentity != nil {
+		return ErrDeviceAlreadyBound
 	}
 
-	// 检查设备数量限制
-	d.devicesMu.RLock()
-	if len(d.devices) >= d.config.MaxDevices {
-		d.devicesMu.RUnlock()
-		return nil, errors.New("maximum device limit reached")
-	}
-	d.devicesMu.RUnlock()
+	di.peerIdentity = peerIdentity
 
-	// 生成设备 ID
-	deviceID := nodeIDFromEd25519PublicKey(devicePubKey)
-
-	// 检查是否已存在
-	d.devicesMu.RLock()
-	if _, ok := d.devices[deviceID]; ok {
-		d.devicesMu.RUnlock()
-		return nil, ErrDeviceAlreadyExists
-	}
-	d.devicesMu.RUnlock()
-
-	// 检查是否被撤销
-	d.revokedDevicesMu.RLock()
-	if _, ok := d.revokedDevices[deviceID]; ok {
-		d.revokedDevicesMu.RUnlock()
-		return nil, ErrDeviceRevoked
-	}
-	d.revokedDevicesMu.RUnlock()
-
-	now := time.Now()
-
-	// 创建证书
-	cert := &DeviceCertificate{
-		DeviceID:        deviceID,
-		MasterID:        d.masterIdentity.ID(),
-		DevicePublicKey: devicePubKey,
-		IssuedAt:        now,
-		ExpiresAt:       now.Add(d.config.CertValidity),
-		DeviceName:      deviceName,
+	// 创建新证书
+	cert, err := di.createCertificate(peerIdentity.PeerID())
+	if err != nil {
+		di.peerIdentity = nil
+		return err
 	}
 
-	// 签名证书
-	signature, err := d.masterIdentity.Sign(cert.Bytes())
+	di.certMu.Lock()
+	di.certificate = cert
+	di.certMu.Unlock()
+
+	deviceLogger.Info("设备已绑定到节点",
+		"deviceID", di.deviceID,
+		"peerID", peerIdentity.PeerID())
+
+	return nil
+}
+
+// Unbind 解除绑定
+func (di *DeviceIdentity) Unbind() {
+	di.peerMu.Lock()
+	di.peerIdentity = nil
+	di.peerMu.Unlock()
+
+	di.certMu.Lock()
+	di.certificate = nil
+	di.certMu.Unlock()
+
+	deviceLogger.Info("设备已解除绑定", "deviceID", di.deviceID)
+}
+
+// IsBound 检查是否已绑定
+func (di *DeviceIdentity) IsBound() bool {
+	di.peerMu.RLock()
+	defer di.peerMu.RUnlock()
+	return di.peerIdentity != nil
+}
+
+// BoundPeerID 返回绑定的节点 ID
+func (di *DeviceIdentity) BoundPeerID() (types.PeerID, bool) {
+	di.peerMu.RLock()
+	defer di.peerMu.RUnlock()
+
+	if di.peerIdentity == nil {
+		return "", false
+	}
+	return types.PeerID(di.peerIdentity.PeerID()), true
+}
+
+// ============================================================================
+//                              证书管理
+// ============================================================================
+
+// createCertificate 创建设备证书
+func (di *DeviceIdentity) createCertificate(peerID string) (*DeviceCertificate, error) {
+	pubKeyBytes, err := di.publicKey.Raw()
 	if err != nil {
 		return nil, err
 	}
-	cert.Signature = signature
 
-	// 添加到设备列表
-	d.devicesMu.Lock()
-	d.devices[deviceID] = &deviceInfo{
-		Certificate: cert,
-		CreatedAt:   now,
-		LastSeen:    now,
+	now := time.Now()
+	cert := &DeviceCertificate{
+		Version:   DeviceCertVersion,
+		DeviceID:  di.deviceID,
+		PeerID:    types.PeerID(peerID),
+		PublicKey: pubKeyBytes,
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(di.certValidity).Unix(),
+		Metadata:  make(map[string]string),
 	}
-	d.devicesMu.Unlock()
 
-	log.Info("签发设备证书",
-		"deviceID", deviceID.ShortString(),
-		"deviceName", deviceName)
+	// 签名证书
+	sigData := cert.signatureData()
+	privKeyBytes, err := di.privateKey.Raw()
+	if err != nil {
+		return nil, err
+	}
+
+	cert.Signature = ed25519.Sign(privKeyBytes, sigData)
 
 	return cert, nil
 }
 
-// GenerateDeviceKeyPair 生成设备密钥对并签发证书
-func (d *DeviceIdentity) GenerateDeviceKeyPair(deviceName string) (*DeviceCertificate, ed25519.PrivateKey, error) {
-	// 生成新的 Ed25519 密钥对
-	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// 签发证书
-	cert, err := d.IssueDeviceCertificate(deviceName, pubKey)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// 存储私钥
-	d.devicesMu.Lock()
-	if info, ok := d.devices[cert.DeviceID]; ok {
-		info.PrivateKey = privKey
-	}
-	d.devicesMu.Unlock()
-
-	return cert, privKey, nil
+// Certificate 返回当前证书
+func (di *DeviceIdentity) Certificate() *DeviceCertificate {
+	di.certMu.RLock()
+	defer di.certMu.RUnlock()
+	return di.certificate
 }
 
-// VerifyDeviceCertificate 验证设备证书
-func (d *DeviceIdentity) VerifyDeviceCertificate(cert *DeviceCertificate) error {
+// RenewCertificate 续期证书
+func (di *DeviceIdentity) RenewCertificate() error {
+	di.peerMu.RLock()
+	peerIdentity := di.peerIdentity
+	di.peerMu.RUnlock()
+
+	if peerIdentity == nil {
+		return ErrDeviceNotBound
+	}
+
+	cert, err := di.createCertificate(peerIdentity.PeerID())
+	if err != nil {
+		return err
+	}
+
+	di.certMu.Lock()
+	di.certificate = cert
+	di.certMu.Unlock()
+
+	deviceLogger.Info("证书已续期",
+		"deviceID", di.deviceID,
+		"expiresAt", time.Unix(cert.ExpiresAt, 0))
+
+	return nil
+}
+
+// ============================================================================
+//                              证书验证
+// ============================================================================
+
+// VerifyCertificate 验证设备证书
+func VerifyCertificate(cert *DeviceCertificate) error {
+	if cert == nil {
+		return ErrInvalidDeviceCert
+	}
+
+	// 检查版本
+	if cert.Version != DeviceCertVersion {
+		return fmt.Errorf("%w: unsupported version %d", ErrInvalidDeviceCert, cert.Version)
+	}
+
 	// 检查过期
 	if cert.IsExpired() {
-		return ErrCertExpired
+		return ErrDeviceCertExpired
 	}
 
-	// 检查撤销
-	d.revokedDevicesMu.RLock()
-	if _, ok := d.revokedDevices[cert.DeviceID]; ok {
-		d.revokedDevicesMu.RUnlock()
-		return ErrDeviceRevoked
+	// 检查公钥
+	if len(cert.PublicKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("%w: invalid public key length", ErrInvalidDeviceCert)
 	}
-	d.revokedDevicesMu.RUnlock()
+
+	// 检查签名
+	if len(cert.Signature) != ed25519.SignatureSize {
+		return fmt.Errorf("%w: invalid signature length", ErrInvalidDeviceCert)
+	}
 
 	// 验证签名
-	var masterPubKeyBytes []byte
-	if d.masterIdentity != nil {
-		masterPubKeyBytes = d.masterIdentity.PublicKey().Bytes()
-	} else {
-		// 从设备列表获取主身份公钥（如果是从设备）
-		return ErrInvalidDeviceCert
-	}
-
-	masterPubKey := ed25519.PublicKey(masterPubKeyBytes)
-	if !ed25519.Verify(masterPubKey, cert.Bytes(), cert.Signature) {
-		return ErrInvalidDeviceCert
+	sigData := cert.signatureData()
+	if !ed25519.Verify(cert.PublicKey, sigData, cert.Signature) {
+		return ErrInvalidDeviceSignature
 	}
 
 	return nil
 }
 
-// RevokeDevice 撤销设备
-func (d *DeviceIdentity) RevokeDevice(deviceID types.NodeID) error {
-	if !d.isMaster {
-		return ErrNotMasterIdentity
-	}
+// signatureData 生成签名数据
+func (c *DeviceCertificate) signatureData() []byte {
+	var buf bytes.Buffer
 
-	// 从设备列表移除
-	d.devicesMu.Lock()
-	delete(d.devices, deviceID)
-	d.devicesMu.Unlock()
+	// 前缀
+	buf.WriteString(DeviceSignaturePrefix)
 
-	// 添加到撤销列表
-	d.revokedDevicesMu.Lock()
-	d.revokedDevices[deviceID] = time.Now()
-	d.revokedDevicesMu.Unlock()
+	// 版本
+	buf.WriteByte(c.Version)
 
-	log.Info("撤销设备",
-		"deviceID", deviceID.ShortString())
+	// 设备 ID
+	buf.WriteString(c.DeviceID)
 
-	return nil
-}
+	// 节点 ID
+	buf.WriteString(string(c.PeerID))
 
-// IsDeviceRevoked 检查设备是否被撤销
-func (d *DeviceIdentity) IsDeviceRevoked(deviceID types.NodeID) bool {
-	d.revokedDevicesMu.RLock()
-	defer d.revokedDevicesMu.RUnlock()
-	_, ok := d.revokedDevices[deviceID]
-	return ok
-}
+	// 公钥
+	buf.Write(c.PublicKey)
 
-// ============================================================================
-//                              查询方法
-// ============================================================================
+	// 签发时间
+	ts := make([]byte, 8)
+	binary.BigEndian.PutUint64(ts, uint64(c.IssuedAt))
+	buf.Write(ts)
 
-// GetDevice 获取设备信息
-func (d *DeviceIdentity) GetDevice(deviceID types.NodeID) (*DeviceCertificate, bool) {
-	d.devicesMu.RLock()
-	defer d.devicesMu.RUnlock()
+	// 过期时间
+	binary.BigEndian.PutUint64(ts, uint64(c.ExpiresAt))
+	buf.Write(ts)
 
-	info, ok := d.devices[deviceID]
-	if !ok {
-		return nil, false
-	}
-	return info.Certificate, true
-}
-
-// ListDevices 列出所有设备
-func (d *DeviceIdentity) ListDevices() []*DeviceCertificate {
-	d.devicesMu.RLock()
-	defer d.devicesMu.RUnlock()
-
-	certs := make([]*DeviceCertificate, 0, len(d.devices))
-	for _, info := range d.devices {
-		certs = append(certs, info.Certificate)
-	}
-	return certs
-}
-
-// ListRevokedDevices 列出撤销的设备
-func (d *DeviceIdentity) ListRevokedDevices() []types.NodeID {
-	d.revokedDevicesMu.RLock()
-	defer d.revokedDevicesMu.RUnlock()
-
-	ids := make([]types.NodeID, 0, len(d.revokedDevices))
-	for id := range d.revokedDevices {
-		ids = append(ids, id)
-	}
-	return ids
-}
-
-// DeviceCount 返回设备数量
-func (d *DeviceIdentity) DeviceCount() int {
-	d.devicesMu.RLock()
-	defer d.devicesMu.RUnlock()
-	return len(d.devices)
-}
-
-// IsMaster 检查是否是主身份
-func (d *DeviceIdentity) IsMaster() bool {
-	return d.isMaster
-}
-
-// MasterID 返回主身份 ID
-func (d *DeviceIdentity) MasterID() types.NodeID {
-	if d.masterIdentity != nil {
-		return d.masterIdentity.ID()
-	}
-
-	// 从设备证书获取
-	d.devicesMu.RLock()
-	defer d.devicesMu.RUnlock()
-
-	for _, info := range d.devices {
-		return info.Certificate.MasterID
-	}
-
-	return types.EmptyNodeID
+	return buf.Bytes()
 }
 
 // ============================================================================
-//                              更新设备状态
+//                              序列化
 // ============================================================================
 
-// UpdateDeviceLastSeen 更新设备最后活跃时间
-func (d *DeviceIdentity) UpdateDeviceLastSeen(deviceID types.NodeID) {
-	d.devicesMu.Lock()
-	defer d.devicesMu.Unlock()
+// Marshal 序列化证书
+func (c *DeviceCertificate) Marshal() ([]byte, error) {
+	var buf bytes.Buffer
 
-	if info, ok := d.devices[deviceID]; ok {
-		info.LastSeen = time.Now()
-	}
+	// 版本 (1 字节)
+	buf.WriteByte(c.Version)
+
+	// 设备 ID
+	deviceIDBytes := []byte(c.DeviceID)
+	deviceIDLen := make([]byte, 2)
+	binary.BigEndian.PutUint16(deviceIDLen, uint16(len(deviceIDBytes)))
+	buf.Write(deviceIDLen)
+	buf.Write(deviceIDBytes)
+
+	// 节点 ID
+	peerIDBytes := []byte(c.PeerID)
+	peerIDLen := make([]byte, 2)
+	binary.BigEndian.PutUint16(peerIDLen, uint16(len(peerIDBytes)))
+	buf.Write(peerIDLen)
+	buf.Write(peerIDBytes)
+
+	// 公钥
+	pubKeyLen := make([]byte, 2)
+	binary.BigEndian.PutUint16(pubKeyLen, uint16(len(c.PublicKey)))
+	buf.Write(pubKeyLen)
+	buf.Write(c.PublicKey)
+
+	// 时间戳 (8 字节)
+	ts := make([]byte, 8)
+	binary.BigEndian.PutUint64(ts, uint64(c.IssuedAt))
+	buf.Write(ts)
+	binary.BigEndian.PutUint64(ts, uint64(c.ExpiresAt))
+	buf.Write(ts)
+
+	// 签名
+	sigLen := make([]byte, 2)
+	binary.BigEndian.PutUint16(sigLen, uint16(len(c.Signature)))
+	buf.Write(sigLen)
+	buf.Write(c.Signature)
+
+	return buf.Bytes(), nil
 }
 
-// CleanupExpiredDevices 清理过期设备证书
-func (d *DeviceIdentity) CleanupExpiredDevices() int {
-	d.devicesMu.Lock()
-	defer d.devicesMu.Unlock()
-
-	count := 0
-	for id, info := range d.devices {
-		if info.Certificate.IsExpired() {
-			delete(d.devices, id)
-			count++
-		}
+// UnmarshalDeviceCertificate 反序列化证书
+func UnmarshalDeviceCertificate(data []byte) (*DeviceCertificate, error) {
+	if len(data) < MinDeviceCertSize {
+		return nil, fmt.Errorf("%w: data too short", ErrInvalidDeviceCert)
 	}
 
-	if count > 0 {
-		log.Info("清理过期设备证书",
-			"count", count)
+	c := &DeviceCertificate{
+		Metadata: make(map[string]string),
 	}
+	offset := 0
 
-	return count
+	// 版本
+	c.Version = data[offset]
+	offset++
+
+	// 设备 ID
+	if offset+2 > len(data) {
+		return nil, ErrInvalidDeviceCert
+	}
+	deviceIDLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+	offset += 2
+	if offset+deviceIDLen > len(data) {
+		return nil, ErrInvalidDeviceCert
+	}
+	c.DeviceID = string(data[offset : offset+deviceIDLen])
+	offset += deviceIDLen
+
+	// 节点 ID
+	if offset+2 > len(data) {
+		return nil, ErrInvalidDeviceCert
+	}
+	peerIDLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+	offset += 2
+	if offset+peerIDLen > len(data) {
+		return nil, ErrInvalidDeviceCert
+	}
+	c.PeerID = types.PeerID(data[offset : offset+peerIDLen])
+	offset += peerIDLen
+
+	// 公钥
+	if offset+2 > len(data) {
+		return nil, ErrInvalidDeviceCert
+	}
+	pubKeyLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+	offset += 2
+	if offset+pubKeyLen > len(data) {
+		return nil, ErrInvalidDeviceCert
+	}
+	c.PublicKey = make([]byte, pubKeyLen)
+	copy(c.PublicKey, data[offset:offset+pubKeyLen])
+	offset += pubKeyLen
+
+	// 时间戳
+	if offset+16 > len(data) {
+		return nil, ErrInvalidDeviceCert
+	}
+	c.IssuedAt = int64(binary.BigEndian.Uint64(data[offset : offset+8]))
+	offset += 8
+	c.ExpiresAt = int64(binary.BigEndian.Uint64(data[offset : offset+8]))
+	offset += 8
+
+	// 签名
+	if offset+2 > len(data) {
+		return nil, ErrInvalidDeviceCert
+	}
+	sigLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+	offset += 2
+	if offset+sigLen > len(data) {
+		return nil, ErrInvalidDeviceCert
+	}
+	c.Signature = make([]byte, sigLen)
+	copy(c.Signature, data[offset:offset+sigLen])
+
+	return c, nil
 }
 
 // ============================================================================
-//                              辅助函数
+//                              辅助方法
 // ============================================================================
 
-// nodeIDFromEd25519PublicKey 从 ed25519 公钥派生 NodeID
-func nodeIDFromEd25519PublicKey(pubKey ed25519.PublicKey) types.NodeID {
-	hash := sha256.Sum256(pubKey)
-	return types.NodeID(hash)
+// DeviceID 返回设备 ID
+func (di *DeviceIdentity) DeviceID() string {
+	return di.deviceID
 }
 
+// PublicKey 返回设备公钥
+func (di *DeviceIdentity) PublicKey() pkgif.PublicKey {
+	return di.publicKey
+}
+
+// CertificateBytes 返回证书字节
+func (di *DeviceIdentity) CertificateBytes() ([]byte, error) {
+	di.certMu.RLock()
+	cert := di.certificate
+	di.certMu.RUnlock()
+
+	if cert == nil {
+		return nil, ErrDeviceNotBound
+	}
+
+	return cert.Marshal()
+}

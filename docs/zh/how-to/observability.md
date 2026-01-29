@@ -69,15 +69,19 @@ func main() {
     log.SetOutput(os.Stdout)
     log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     fmt.Printf("节点 ID: %s\n", node.ID())
     
@@ -136,11 +140,14 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
@@ -161,7 +168,8 @@ func main() {
         )
     })
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     fmt.Println("节点监控已启动...")
     
@@ -237,18 +245,22 @@ var (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
-        log.Fatalf("启动失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
     }
     defer node.Close()
 
     // 设置所有事件监控
     setupEventHandlers(node)
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm := node.Realm("my-network")
+    realm.Join(ctx)
 
     fmt.Println("事件监控已启动")
 
@@ -402,16 +414,21 @@ func main() {
     // 生产环境日志配置
     setupProductionLogging()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetServer),
     )
     if err != nil {
-        slog.Error("节点启动失败", "error", err)
+        slog.Error("创建节点失败", "error", err)
+        os.Exit(1)
+    }
+    if err := node.Start(ctx); err != nil {
+        slog.Error("启动节点失败", "error", err)
         os.Exit(1)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("production"))
+    realm := node.Realm("production")
+    realm.Join(ctx)
 
     // 设置监控
     setupMonitoring(node)

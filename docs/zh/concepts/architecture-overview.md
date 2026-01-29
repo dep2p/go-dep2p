@@ -236,20 +236,20 @@ type Node interface {
 ```mermaid
 flowchart LR
     subgraph Step1 [Step 1: 启动节点]
-        Create["node, _ := dep2p.StartNode(ctx, preset)"]
+        Create["node, _ := dep2p.New(ctx, preset)<br/>node.Start(ctx)"]
         L1Ready["Layer 1 自动就绪"]
         Create --> L1Ready
     end
     
     subgraph Step2 [Step 2: 加入 Realm]
-        Join["node.Realm().JoinRealm(ctx, realmID)"]
+        Join["realm, _ := node.Realm(\"name\")\n_ = realm.Join(ctx)"]
         L2Ready["Layer 2 准入通过"]
         Join --> L2Ready
     end
     
     subgraph Step3 [Step 3: 业务通信]
-        Send["realm.Messaging().Send(ctx, peerID, proto, data)"]
-        Publish["realm.PubSub().Publish(ctx, topic, data)"]
+        Send["node.OpenStream(ctx, nodeID, proto)"]
+        Publish["node.PubSub().Publish(ctx, topic, data)"]
     end
     
     Step1 --> Step2
@@ -267,24 +267,29 @@ import (
     "log"
     
     "github.com/dep2p/go-dep2p"
+    "github.com/dep2p/go-dep2p/pkg/types"
 )
 
 func main() {
     ctx := context.Background()
     
     // ==========================================
-    // Step 1: 启动节点
+    // Step 1: 创建并启动节点
     // ==========================================
     // Layer 1 系统基础层自动就绪：
     // - Transport 传输层就绪
-    // - DHT 加入网络
+    // - DHT 加入网络（如果启用）
     // - NAT 地址发现
-    // - Bootstrap 连接完成
-    node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    // - known_peers 直连（如果配置）
+    node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
     if err != nil {
-        log.Fatalf("启动节点失败: %v", err)
+        log.Fatalf("创建节点失败: %v", err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("启动节点失败: %v", err)
+    }
     
     fmt.Printf("节点 ID: %s\n", node.ID())
     fmt.Printf("监听地址: %v\n", node.ListenAddrs())
@@ -296,34 +301,46 @@ func main() {
     // - 执行 RealmAuth 验证
     // - 设置 currentRealm
     // - 可以发现 Realm 内节点
-    if err := node.Realm().JoinRealm(ctx, "my-app-realm"); err != nil {
+    realm, err := node.Realm("my-app-realm")
+    if err != nil {
+        log.Fatalf("获取 Realm 失败: %v", err)
+    }
+    if err := realm.Join(ctx); err != nil {
         log.Fatalf("加入 Realm 失败: %v", err)
     }
-    fmt.Printf("已加入 Realm: %s\n", node.Realm().CurrentRealm())
+    fmt.Printf("已加入 Realm: %s\n", "my-app-realm")
     
     // ==========================================
     // Step 3: 业务通信
     // ==========================================
     // Layer 3 应用协议层：
     // - 注册协议处理器
-    // - 发送消息
+    // - 打开流发送消息
     // - 发布订阅
     
     // 注册协议处理器
-    node.SetStreamHandler("/my-app/echo/1.0", func(s dep2p.Stream) {
+    node.Endpoint().SetProtocolHandler("/my-app/echo/1.0", func(s dep2p.Stream) {
         defer s.Close()
         buf := make([]byte, 1024)
         n, _ := s.Read(buf)
         s.Write(buf[:n])  // Echo back
     })
     
-    // 发送消息给其他节点
-    // remoteNodeID := "..." // 其他节点的 ID
-    // realm, _ := node.JoinRealmWithKey(ctx, "my-realm", realmKey)
-    // realm.Messaging().Send(ctx, remoteNodeID, "/my-app/echo/1.0", []byte("Hello!"))
+    // 订阅成员事件
+    events, _ := node.Realm().SubscribeMemberEvents(ctx, realmID)
+    go func() {
+        for event := range events {
+            switch event.Type {
+            case dep2p.MemberJoined:
+                fmt.Printf("成员加入: %s\n", event.Member.ShortString())
+            case dep2p.MemberLeft:
+                fmt.Printf("成员离开: %s\n", event.Member.ShortString())
+            }
+        }
+    }()
     
     // 发布消息到主题
-    // node.Publish(ctx, "my-app-topic", []byte("Broadcast message"))
+    // node.PubSub().Publish(ctx, "my-app-topic", []byte("Broadcast message"))
     
     fmt.Println("节点已就绪，等待消息...")
     select {} // 保持运行
@@ -389,6 +406,97 @@ sequenceDiagram
     end
     
     Node-->>App: 返回连接
+```
+
+---
+
+## 五层软件架构
+
+从实现角度，DeP2P 采用五层软件架构：
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        五层软件架构                                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  API Layer (入口层)                                                     │ │
+│  │  • Node 门面接口                                                        │ │
+│  │  • 预设配置（Desktop/Server/Mobile/Minimal）                            │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                    ↓                                         │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  Protocol Layer (协议层)                                                │ │
+│  │  • Messaging - 消息传递                                                 │ │
+│  │  • PubSub - 发布订阅                                                    │ │
+│  │  • Streams - 双向流                                                     │ │
+│  │  • Liveness - 存活检测                                                  │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                    ↓                                         │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  Realm Layer (Realm 层)  ★ "仅 ID 连接"支持                            │ │
+│  │  • Connector - 连接建立                                                 │ │
+│  │  • AddressResolver - 地址解析                                           │ │
+│  │  • Authenticator - PSK 认证                                             │ │
+│  │  • MemberCache - 成员管理                                               │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                    ↓                                         │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  Core Layer (核心层)                                                    │ │
+│  │  • Host/Swarm - 连接群管理                                              │ │
+│  │  • Transport - QUIC 传输                                                │ │
+│  │  • Relay - 中继服务（三大职责）                                          │ │
+│  │  • NAT - NAT 穿透                                                       │ │
+│  │  • ConnMgr - 连接管理                                                   │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                    ↕ 双向协作                                │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  Discovery Layer (发现层)                                               │ │
+│  │  • Coordinator - 发现协调                                               │ │
+│  │  • DHT - Kademlia DHT（权威目录）                                        │ │
+│  │  • Bootstrap - 引导发现                                                 │ │
+│  │  • mDNS - 局域网发现                                                    │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 节点就绪状态（ReadyLevel）
+
+节点启动过程经历多个就绪阶段：
+
+```mermaid
+stateDiagram-v2
+    [*] --> Created: New()
+    Created --> Network: Start()
+    Network --> Discovered: DHT 加入
+    Discovered --> Reachable: 地址验证
+    Reachable --> RealmReady: JoinRealm()
+    RealmReady --> [*]: Close()
+```
+
+| 状态 | 说明 | 可用功能 |
+|------|------|----------|
+| **Created** | 节点已创建 | 无 |
+| **Network** | 传输层就绪 | 基础连接 |
+| **Discovered** | DHT 已加入 | 节点发现 |
+| **Reachable** | 地址已验证 | 入站连接 |
+| **RealmReady** | Realm 已加入 | 业务 API |
+
+**示例**：
+
+```go
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+// 状态: Created
+
+node.Start(ctx)
+// 状态: Network → Discovered → Reachable（自动演进）
+
+realm, _ := node.Realm("realm-name")
+_ = realm.Join(ctx)
+// 状态: RealmReady（可使用业务 API）
 ```
 
 ---

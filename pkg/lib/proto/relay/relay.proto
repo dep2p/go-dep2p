@@ -1,0 +1,68 @@
+// DeP2P Relay Protocol Definitions
+// 中继协议消息定义（Circuit Relay v2）
+
+syntax = "proto3";
+
+package dep2p.relay;
+
+option go_package = "github.com/dep2p/dep2p/pkg/proto/relay";
+
+// HopMessage 中继跳消息（relay 端）
+message HopMessage {
+  enum Type {
+    RESERVE = 0;  // 预留请求
+    CONNECT = 1;  // 连接请求
+    STATUS = 2;   // 状态响应
+  }
+
+  Type type = 1;
+  Peer peer = 2;
+  Reservation reservation = 3;
+  Limit limit = 4;
+  Status status = 5;
+}
+
+// StopMessage 停止消息（客户端）
+message StopMessage {
+  enum Type {
+    CONNECT = 0;  // 连接请求
+    STATUS = 1;   // 状态响应
+  }
+
+  Type type = 1;
+  Peer peer = 2;
+  Limit limit = 3;
+  Status status = 4;
+}
+
+// Peer 节点信息
+message Peer {
+  bytes id = 1;
+  repeated bytes addrs = 2;
+}
+
+// Reservation 预留信息
+message Reservation {
+  uint64 expire = 1;        // Unix 过期时间（UTC）
+  repeated bytes addrs = 2; // 中继地址
+  bytes voucher = 3;        // 预留凭证
+}
+
+// Limit 限制信息
+message Limit {
+  uint32 duration = 1;  // 持续时间（秒）
+  uint64 data = 2;      // 数据量（字节）
+}
+
+// Status 状态码
+enum Status {
+  UNUSED = 0;                    // 未使用（proto3 兼容）
+  OK = 100;                      // 成功
+  RESERVATION_REFUSED = 200;     // 预留被拒绝
+  RESOURCE_LIMIT_EXCEEDED = 201; // 资源限制超出
+  PERMISSION_DENIED = 202;       // 权限拒绝
+  CONNECTION_FAILED = 203;       // 连接失败
+  NO_RESERVATION = 204;          // 无预留
+  MALFORMED_MESSAGE = 400;       // 消息格式错误
+  UNEXPECTED_MESSAGE = 401;      // 意外的消息
+}

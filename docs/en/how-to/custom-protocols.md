@@ -67,15 +67,20 @@ const myProtocol = "/myapp/echo/1.0.0"
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm(types.RealmID("my-network"))
+    _ = realm.Join(ctx)
 
     // Register protocol handler
     node.Endpoint().SetProtocolHandler(myProtocol, func(stream dep2p.Stream) {
@@ -126,15 +131,20 @@ const myProtocol = "/myapp/echo/1.0.0"
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm(types.RealmID("my-network"))
+    _ = realm.Join(ctx)
 
     // Connect to target node
     targetAddr := "/ip4/192.168.1.100/udp/4001/quic-v1/p2p/5Q2STWvBFn..."
@@ -212,15 +222,20 @@ const (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm(types.RealmID("my-network"))
+    _ = realm.Join(ctx)
 
     // Register v1 handler (backward compatible)
     node.Endpoint().SetProtocolHandler(protocolV1, handleV1)
@@ -301,15 +316,20 @@ type RPCResponse struct {
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm(types.RealmID("my-network"))
+    _ = realm.Join(ctx)
 
     // Register RPC handler
     node.Endpoint().SetProtocolHandler(rpcProtocol, handleRPC)

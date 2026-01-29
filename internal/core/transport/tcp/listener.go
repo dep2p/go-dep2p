@@ -1,128 +1,79 @@
-// Package tcp 提供基于 TCP 的传输层实现
+// Package tcp 实现 TCP 传输
 package tcp
 
 import (
+	"context"
 	"fmt"
 	"net"
-	"sync/atomic"
 
-	"github.com/dep2p/go-dep2p/pkg/interfaces/endpoint"
-	transportif "github.com/dep2p/go-dep2p/pkg/interfaces/transport"
+	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
+	"github.com/dep2p/go-dep2p/pkg/types"
 )
 
-// ============================================================================
-//                              Listener 实现
-// ============================================================================
+// 确保实现了接口
+var _ pkgif.Listener = (*Listener)(nil)
 
 // Listener TCP 监听器
 type Listener struct {
-	listener *net.TCPListener
-	addr     *Address
-	closed   atomic.Bool
+	tcpListener net.Listener
+	localAddr   types.Multiaddr
+	localPeer   types.PeerID
+	transport   *Transport
 }
 
-// 确保实现接口
-var _ transportif.Listener = (*Listener)(nil)
-
-// NewListener 创建 TCP 监听器
-func NewListener(addr *Address, _ transportif.ListenOptions) (*Listener, error) {
-	// 构建监听地址
-	listenAddr := fmt.Sprintf("%s:%d", addr.host, addr.port)
-	if addr.network == "tcp6" {
-		listenAddr = fmt.Sprintf("[%s]:%d", addr.host, addr.port)
-	}
-
-	// 监听
-	network := "tcp"
-	if addr.network == "tcp4" {
-		network = "tcp4"
-	} else if addr.network == "tcp6" {
-		network = "tcp6"
-	}
-
-	// 创建监听配置
-	lc := net.ListenConfig{
-		// KeepAlive 默认启用
-	}
-
-	// 创建监听器
-	l, err := lc.Listen(nil, network, listenAddr)
-	if err != nil {
-		return nil, fmt.Errorf("监听失败: %w", err)
-	}
-
-	tcpListener, ok := l.(*net.TCPListener)
-	if !ok {
-		_ = l.Close()
-		return nil, fmt.Errorf("不是 TCP 监听器")
-	}
-
-	// 获取实际监听地址（端口可能是 0）
-	actualAddr, err := NewAddressFromNetAddr(tcpListener.Addr())
-	if err != nil {
-		_ = tcpListener.Close()
-		return nil, fmt.Errorf("获取监听地址失败: %w", err)
-	}
-
-	return &Listener{
-		listener: tcpListener,
-		addr:     actualAddr,
-	}, nil
-}
-
-// ============================================================================
-//                              transport.Listener 接口实现
-// ============================================================================
-
-// Accept 接受连接
-func (l *Listener) Accept() (transportif.Conn, error) {
-	conn, err := l.listener.Accept()
+// Accept 接受新连接
+func (l *Listener) Accept() (pkgif.Connection, error) {
+	rawConn, err := l.tcpListener.Accept()
 	if err != nil {
 		return nil, err
 	}
 
-	tcpConn, ok := conn.(*net.TCPConn)
-	if !ok {
-		_ = conn.Close()
-		return nil, fmt.Errorf("不是 TCP 连接")
+	// 提取远程地址
+	remoteTCPAddr := rawConn.RemoteAddr().(*net.TCPAddr)
+	remoteAddrStr := fmt.Sprintf("/ip4/%s/tcp/%d", remoteTCPAddr.IP.String(), remoteTCPAddr.Port)
+	remoteAddr, err := types.NewMultiaddr(remoteAddrStr)
+	if err != nil {
+		rawConn.Close()
+		return nil, err
 	}
 
-	// 设置连接选项
-	tcpConn.SetNoDelay(true)
-	tcpConn.SetKeepAlive(true)
+	// 如果有 Upgrader，进行连接升级（Security + Muxer）
+	// Upgrader 会通过安全握手获取远程 PeerID
+	if l.transport.upgrader != nil {
+		ctx := context.Background() // 可以考虑加入超时
+		
+		// 入站升级：remotePeer 为空，由握手后确定
+		upgradedConn, err := l.transport.upgrader.Upgrade(ctx, rawConn, pkgif.DirInbound, "")
+		if err != nil {
+			rawConn.Close()
+			return nil, fmt.Errorf("upgrade connection: %w", err)
+		}
+		
+		// 包装为 Connection
+		return wrapUpgradedConn(upgradedConn, l.localPeer, remoteAddr), nil
+	}
 
-	return NewConn(tcpConn)
-}
-
-// Addr 返回监听地址
-func (l *Listener) Addr() endpoint.Address {
-	return l.addr
+	// 如果没有 Upgrader，返回原始 TCP 连接（不推荐，仅用于测试）
+	// 使用临时 PeerID（因为没有握手）
+	remotePeer := types.PeerID("temp_" + remoteTCPAddr.String())
+	return newConnection(rawConn, l.localPeer, remotePeer, remoteAddr, pkgif.DirInbound), nil
 }
 
 // Close 关闭监听器
 func (l *Listener) Close() error {
-	if l.closed.CompareAndSwap(false, true) {
-		return l.listener.Close()
-	}
-	return nil
+	return l.tcpListener.Close()
 }
 
-// Multiaddr 返回多地址格式的监听地址
-func (l *Listener) Multiaddr() string {
-	return l.addr.String()
+// Addr 返回监听地址
+func (l *Listener) Addr() types.Multiaddr {
+	// 获取实际监听的地址
+	actualAddr := l.tcpListener.Addr().(*net.TCPAddr)
+	actualAddrStr := fmt.Sprintf("/ip4/%s/tcp/%d", actualAddr.IP.String(), actualAddr.Port)
+	addr, _ := types.NewMultiaddr(actualAddrStr)
+	return addr
 }
 
-// ============================================================================
-//                              辅助方法
-// ============================================================================
-
-// NetListener 返回底层 net.Listener
-func (l *Listener) NetListener() *net.TCPListener {
-	return l.listener
+// Multiaddr 返回多地址格式
+func (l *Listener) Multiaddr() types.Multiaddr {
+	return l.Addr()
 }
-
-// IsClosed 检查监听器是否已关闭
-func (l *Listener) IsClosed() bool {
-	return l.closed.Load()
-}
-

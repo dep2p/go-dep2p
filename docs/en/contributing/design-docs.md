@@ -174,7 +174,6 @@ flowchart TD
 Each requirement (REQ-xxx) corresponds to specific API design:
 
 ```
-REQ-CONN-001 → pkg/interfaces/endpoint/endpoint.go
 REQ-REALM-001 → pkg/interfaces/realm/realm.go
 ```
 

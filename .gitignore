@@ -1,0 +1,38 @@
+# IDE
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+*.test
+*.out
+*.a
+*.o
+coverage/
+vendor/
+go.work
+go.work.sum
+
+# Build
+dist/
+bin/
+
+# Logs
+*.log
+*.ndjson
+
+# Cache
+.gocache/
+.gomodcache/
+.tmp/
+
+# Examples runtime
+examples/**/logs/
+examples/**/*.db

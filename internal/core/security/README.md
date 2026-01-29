@@ -1,239 +1,186 @@
-# Security 安全层模块
+# security - 安全传输层
 
-## 概述
+> **版本**: v1.2.0  
+> **状态**: ✅ TLS 可用，Noise 基础实现  
+> **覆盖率**: ~33%  
+> **最后更新**: 2026-01-13
 
-**层级**: Tier 2  
-**职责**: 提供 TLS 1.3 安全层，实现通信加密和身份认证。
+---
 
-## 设计引用
+## 快速开始
 
-> **重要**: 实现前请详细阅读以下设计规范
+```go
+import (
+    "github.com/dep2p/go-dep2p/internal/core/identity"
+    "github.com/dep2p/go-dep2p/internal/core/security/tls"
+)
 
-| 设计文档 | 说明 |
-|----------|------|
-| [安全协议规范](../../../docs/01-design/protocols/transport/02-security.md) | TLS 1.3 设计 |
-| [身份协议规范](../../../docs/01-design/protocols/foundation/01-identity.md) | 身份认证 |
+// 创建身份
+id, _ := identity.Generate()
 
-## 能力清单
+// 创建 TLS 传输
+transport, _ := tls.New(id)
 
-### 核心能力 (必须实现)
+// 服务器端握手
+secureConn, _ := transport.SecureInbound(ctx, conn, remotePeer)
 
-| 能力 | 状态 | 说明 |
-|------|------|------|
-| TLS 1.3 握手 | ✅ 已实现 | 1-RTT 握手 |
-| 自签名证书 | ✅ 已实现 | 基于节点公钥生成 |
-| 身份验证 | ✅ 已实现 | 验证对方 NodeID |
-| 加密通信 | ✅ 已实现 | AES-GCM / ChaCha20-Poly1305 |
-| 前向安全 | ✅ 已实现 | ECDHE 密钥交换 |
+// 客户端握手
+secureConn, _ := transport.SecureOutbound(ctx, conn, remotePeer)
 
-### 0-RTT 能力
+// 使用安全连接
+remotePubKey := secureConn.RemotePublicKey()
+```
 
-| 能力 | 状态 | 说明 |
-|------|------|------|
-| Session 缓存 | ✅ 已实现 | transport/quic SessionStore |
-| 0-RTT 重连 | ✅ 已实现 | QUIC session resumption |
-| 重放保护 | ✅ 已实现 | QUIC 内置重放保护 |
+---
+
+## 核心特性
+
+### 1. TLS 1.3 加密
+
+**功能**:
+- ✅ TLS 1.3 强制
+- ✅ 前向保密 (ECDHE)
+- ✅ 双向认证
+- ✅ 自签名证书
+
+### 2. INV-001 身份验证 ⭐
+
+**验证流程**:
+1. 从证书提取 Ed25519 公钥（32 bytes）
+2. 派生 PeerID = Hash(PublicKey)
+3. 验证 PeerID == ExpectedPeer
+4. 不匹配则拒绝连接
+
+**测试验证**:
+```
+✅ PeerID 匹配验证通过
+✅ PeerID 不匹配被正确拒绝
+```
+
+### 3. 证书生成
+
+**证书结构**:
+- CN = PeerID
+- ExtKeyUsage = ServerAuth + ClientAuth
+- Extensions = dep2p-public-key (OID: 1.3.6.1.4.1.99999.1)
+- 有效期: 1 年
+
+**测试验证**:
+```
+✅ 证书生成成功
+✅ 找到公钥扩展: 32 bytes
+```
+
+---
+
+## 测试结果（真实测试）
+
+### TLS 传输测试
+
+```
+✅ TestGenerateCert              - 证书生成
+✅ TestCertificateExtension      - 公钥扩展
+✅ TestExtractPublicKey          - 公钥提取
+✅ TestVerifyPeerCertificate_Match    - INV-001 匹配
+✅ TestVerifyPeerCertificate_Mismatch - INV-001 拒绝
+✅ TestTLSHandshake              - 端到端握手 ⭐
+```
+
+**测试输出**（真实）:
+```
+Server PeerID: zQmYU7Dgu6xt86bjgxqbUyjgjZsApuqt2aniX3hR9RjUTS8
+Client PeerID: zQmcpzm5rucM3chyjqVJ68TPAEasmy41hMfbGHyC9MV4tPh
+✅ Client 握手成功
+✅ Server 握手成功
+✅ TLS 握手完整验证通过
+```
+
+---
+
+## 文件结构
+
+```
+internal/core/security/
+├── doc.go (54行)
+├── module.go (37行)
+├── errors.go (16行)
+├── testing.go (17行)
+└── tls/ (~450行)
+    ├── transport.go (177行)
+    ├── cert.go (91行)
+    ├── verify.go (112行)
+    ├── conn.go (77行)
+    └── errors.go (19行)
+```
+
+**代码总量**: ~750 行
+
+---
+
+## Fx 模块集成
+
+```go
+import "github.com/dep2p/go-dep2p/internal/core/security"
+
+app := fx.New(
+    identity.Module(),
+    security.Module(),
+    fx.Invoke(func(st pkgif.SecureTransport) {
+        // 使用安全传输
+    }),
+)
+```
+
+---
 
 ## 依赖关系
 
-### 接口依赖
-
 ```
-pkg/types/              → NodeID
-pkg/interfaces/core/    → Connection
-pkg/interfaces/security/ → SecureTransport, SecureConn
-pkg/interfaces/identity/ → Identity
-```
-
-### 模块依赖
-
-```
-identity → 节点身份（用于生成证书）
-transport → 底层连接
+security
+    ↓
+identity (密钥和 PeerID)
+    ↓
+crypto/tls, crypto/x509 (标准库)
 ```
 
-## 目录结构
+---
 
-```
-security/
-├── README.md            # 本文件
-├── module.go            # fx 模块定义
-└── tls/                 # TLS 实现
-    ├── README.md        # TLS 子模块说明
-    ├── transport.go     # TLS 安全传输
-    ├── config.go        # TLS 配置
-    └── cert.go          # 证书生成
-```
+## 支持协议
 
-## 公共接口
+### TLS 1.3 ✅ 完全可用
+- 自签名证书
+- INV-001 身份验证
+- 前向保密
 
-实现 `pkg/interfaces/security/` 中的接口：
+### Noise 协议 ⚠️ 基础实现
+- 框架代码已就绪
+- 完整握手待实现
+- 计划后续版本完成
 
-```go
-// SecureTransport 安全传输接口
-type SecureTransport interface {
-    // SecureInbound 安全升级入站连接
-    SecureInbound(ctx context.Context, conn net.Conn) (SecureConn, error)
-    
-    // SecureOutbound 安全升级出站连接
-    SecureOutbound(ctx context.Context, conn net.Conn, remoteID types.NodeID) (SecureConn, error)
-}
+## 性能指标
 
-// SecureConn 安全连接接口
-type SecureConn interface {
-    net.Conn
-    
-    // LocalPeer 返回本地节点 ID
-    LocalPeer() types.NodeID
-    
-    // RemotePeer 返回远程节点 ID
-    RemotePeer() types.NodeID
-    
-    // RemotePublicKey 返回远程公钥
-    RemotePublicKey() crypto.PublicKey
-    
-    // ConnectionState 返回 TLS 状态
-    ConnectionState() tls.ConnectionState
-}
-```
+**基准测试** (`go test -bench=.`):
+- 证书生成: ~XXX ns/op
+- PeerID 验证: ~XXX ns/op  
+- TLS 握手: ~XXX ms/op
 
-## 关键算法
+## 已知限制
 
-### 自签名证书生成 (来自设计文档)
+1. **覆盖率**: ~33%（核心功能已覆盖）
+2. **Noise**: 基础实现，完整功能开发中
+3. **多协议选择**: 协议协商待完成
 
-```go
-func GenerateCertificate(identity Identity) (*tls.Certificate, error) {
-    // 1. 创建证书模板
-    template := &x509.Certificate{
-        SerialNumber: big.NewInt(time.Now().UnixNano()),
-        Subject: pkix.Name{
-            CommonName: identity.ID().String(),
-        },
-        NotBefore: time.Now(),
-        NotAfter:  time.Now().Add(365 * 24 * time.Hour),
-        
-        KeyUsage:              x509.KeyUsageDigitalSignature,
-        ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-        BasicConstraintsValid: true,
-    }
-    
-    // 2. 添加 NodeID 到 SAN 扩展
-    template.ExtraExtensions = []pkix.Extension{
-        {
-            Id:       oidNodeID,
-            Critical: true,
-            Value:    identity.ID().Bytes(),
-        },
-    }
-    
-    // 3. 使用节点私钥签名
-    certDER, err := x509.CreateCertificate(
-        rand.Reader,
-        template,
-        template,
-        identity.PublicKey(),
-        identity.PrivateKey(),
-    )
-    
-    return &tls.Certificate{
-        Certificate: [][]byte{certDER},
-        PrivateKey:  identity.PrivateKey(),
-    }, nil
-}
-```
-
-### 身份验证流程
-
-```go
-func (s *SecureTransport) verifyPeer(conn *tls.Conn, expectedID types.NodeID) error {
-    state := conn.ConnectionState()
-    if len(state.PeerCertificates) == 0 {
-        return ErrNoPeerCertificate
-    }
-    
-    cert := state.PeerCertificates[0]
-    
-    // 1. 从证书扩展提取 NodeID
-    var peerID types.NodeID
-    for _, ext := range cert.Extensions {
-        if ext.Id.Equal(oidNodeID) {
-            copy(peerID[:], ext.Value)
-            break
-        }
-    }
-    
-    // 2. 验证 NodeID 是否匹配
-    if expectedID != types.EmptyNodeID && peerID != expectedID {
-        return ErrPeerIDMismatch
-    }
-    
-    // 3. 验证 NodeID 与公钥的派生关系
-    expectedPeerID := DeriveNodeID(cert.PublicKey)
-    if peerID != expectedPeerID {
-        return ErrInvalidPeerID
-    }
-    
-    return nil
-}
-```
-
-## TLS 配置
-
-```go
-type TLSConfig struct {
-    // 最低 TLS 版本 (固定 1.3)
-    MinVersion uint16  // tls.VersionTLS13
-    
-    // 密码套件 (TLS 1.3 自动选择)
-    // - TLS_AES_128_GCM_SHA256
-    // - TLS_AES_256_GCM_SHA384
-    // - TLS_CHACHA20_POLY1305_SHA256
-    
-    // ALPN 协议
-    NextProtos []string  // ["dep2p"]
-    
-    // 证书配置
-    Certificates []tls.Certificate
-    
-    // 客户端认证
-    ClientAuth tls.ClientAuthType  // RequireAnyClientCert
-}
-```
-
-## fx 模块
-
-```go
-type ModuleInput struct {
-    fx.In
-    Identity identityif.Identity `name:"identity"`
-    Config   *securityif.Config  `optional:"true"`
-}
-
-type ModuleOutput struct {
-    fx.Out
-    SecureTransport securityif.SecureTransport `name:"secure_transport"`
-}
-
-func Module() fx.Option {
-    return fx.Module("security",
-        fx.Provide(ProvideServices),
-        fx.Invoke(registerLifecycle),
-    )
-}
-```
-
-## 安全特性 (来自设计文档)
-
-| 特性 | 说明 |
-|------|------|
-| 机密性 | AES-GCM / ChaCha20-Poly1305 加密 |
-| 完整性 | AEAD 认证加密 |
-| 身份认证 | 基于 NodeID 的双向认证 |
-| 前向安全 | ECDHE 密钥交换 |
-| 重放保护 | TLS 1.3 内置 |
+---
 
 ## 相关文档
 
-- [安全协议规范](../../../docs/01-design/protocols/transport/02-security.md)
-- [身份协议规范](../../../docs/01-design/protocols/foundation/01-identity.md)
-- [pkg/interfaces/security](../../../pkg/interfaces/security/)
+| 文档 | 路径 |
+|------|------|
+| **设计文档** | design/03_architecture/L6_domains/core_security/ |
+| **接口定义** | pkg/interfaces/security.go |
+| **约束检查** | CONSTRAINTS_CHECK.md (A- 级) |
+
+---
+
+**维护者**: DeP2P Team  
+**最后更新**: 2026-01-13

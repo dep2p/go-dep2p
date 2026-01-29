@@ -66,14 +66,18 @@ import (
 func main() {
     ctx := context.Background()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithIntrospect(true),  // Enable introspection service
     )
     if err != nil {
-        log.Fatalf("Start failed: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
+    }
 
     fmt.Println("Introspection service started: http://127.0.0.1:6060/debug/introspect")
     
@@ -369,15 +373,17 @@ curl http://127.0.0.1:6060/debug/introspect
 
 ```go
 // Confirm introspection service enabled
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithIntrospect(true),
 )
+_ = node.Start(ctx)
 
 // Or use different port
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithIntrospect(true),
     dep2p.WithIntrospectAddr("127.0.0.1:9090"),
 )
+_ = node.Start(ctx)
 ```
 
 ### Problem 2: Returns 503 Service Unavailable

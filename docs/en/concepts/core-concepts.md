@@ -161,7 +161,7 @@ DeP2P adopts a **three-layer architecture** design, which is the only layering s
 │  │   └──────────────────────────────────────────────────────────────┘   │  │
 │  │                                                                        │  │
 │  │   ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌──────────────┐  │  │
-│  │   │ System DHT │  │System Relay│  │    NAT     │  │   Bootstrap  │  │  │
+│  │   │ System DHT │  │   Relay    │  │    NAT     │  │   Bootstrap  │  │  │
 │  │   │  Routing   │  │  Fallback  │  │  Discovery │  │    Nodes     │  │  │
 │  │   └────────────┘  └────────────┘  └────────────┘  └──────────────┘  │  │
 │  │                                                                        │  │
@@ -243,13 +243,17 @@ Realm is one of the core concepts in DeP2P, used to implement business network i
 
 ```go
 // ❌ Wrong: Attempting to join multiple Realms simultaneously
-node.Realm().JoinRealm(ctx, "realm-a")
-node.Realm().JoinRealm(ctx, "realm-b")  // Returns ErrAlreadyJoined
+realmA, _ := node.Realm("realm-a")
+_ = realmA.Join(ctx)
+realmB, _ := node.Realm("realm-b")
+_ = realmB.Join(ctx)  // Returns ErrAlreadyJoined
 
 // ✅ Correct: Leave first, then join
-node.Realm().JoinRealm(ctx, "realm-a")
-node.Realm().LeaveRealm(ctx)
-node.Realm().JoinRealm(ctx, "realm-b")  // OK
+realmA, _ := node.Realm("realm-a")
+_ = realmA.Join(ctx)
+realmA.Leave(ctx)
+realmB, _ := node.Realm("realm-b")
+_ = realmB.Join(ctx)  // OK
 ```
 
 ---

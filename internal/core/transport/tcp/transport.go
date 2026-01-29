@@ -1,285 +1,348 @@
-// Package tcp 提供基于 TCP 的传输层实现
-//
-// TCP 传输是 QUIC 的备选方案，用于以下场景：
-// - UDP 被防火墙阻止
-// - 需要与只支持 TCP 的节点通信
-// - 调试和测试目的
-//
-// 注意：TCP 传输不提供原生多路复用，需要配合 Muxer 使用。
+// Package tcp 实现 TCP 传输
 package tcp
 
 import (
 	"context"
 	"fmt"
 	"net"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/dep2p/go-dep2p/pkg/interfaces/endpoint"
-	transportif "github.com/dep2p/go-dep2p/pkg/interfaces/transport"
+	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
+	"github.com/dep2p/go-dep2p/pkg/types"
 )
 
-// ============================================================================
-//                              Transport 实现
-// ============================================================================
+// 确保实现了接口
+var _ pkgif.Transport = (*Transport)(nil)
 
-// Transport TCP 传输层实现
+// Transport TCP 传输
 type Transport struct {
-	config transportif.Config
+	mu sync.RWMutex
 
-	listeners   map[string]*Listener
-	listenersMu sync.RWMutex
-
-	conns   map[string]*Conn
-	connsMu sync.RWMutex
-
-	closed atomic.Bool
+	localPeer types.PeerID
+	upgrader  pkgif.Upgrader
+	listeners map[string]*Listener
+	closed    bool
 }
 
-// 确保实现 transport.Transport 接口
-var _ transportif.Transport = (*Transport)(nil)
-
-// NewTransport 创建 TCP 传输层
-func NewTransport(config transportif.Config) *Transport {
+// New 创建 TCP 传输
+func New(localPeer types.PeerID, upgrader pkgif.Upgrader) *Transport {
 	return &Transport{
-		config:    config,
+		localPeer: localPeer,
+		upgrader:  upgrader,
 		listeners: make(map[string]*Listener),
-		conns:     make(map[string]*Conn),
 	}
 }
 
-// ============================================================================
-//                              Transport 接口实现
-// ============================================================================
+// Dial 拨号连接
+func (t *Transport) Dial(ctx context.Context, raddr types.Multiaddr, peerID types.PeerID) (pkgif.Connection, error) {
+	t.mu.RLock()
+	if t.closed {
+		t.mu.RUnlock()
+		return nil, ErrTransportClosed
+	}
+	t.mu.RUnlock()
 
-// Dial 建立出站连接
-func (t *Transport) Dial(ctx context.Context, addr endpoint.Address) (transportif.Conn, error) {
-	return t.DialWithOptions(ctx, addr, transportif.DefaultDialOptions())
+	// 解析地址
+	tcpAddr, err := parseMultiaddr(raddr)
+	if err != nil {
+		return nil, fmt.Errorf("parse address: %w", err)
+	}
+
+	// 建立 TCP 连接
+	var d net.Dialer
+	rawConn, err := d.DialContext(ctx, "tcp", tcpAddr.String())
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+
+	// 如果有 Upgrader，进行连接升级（Security + Muxer）
+	if t.upgrader != nil {
+		upgradedConn, err := t.upgrader.Upgrade(ctx, rawConn, pkgif.DirOutbound, peerID)
+		if err != nil {
+			rawConn.Close()
+			return nil, fmt.Errorf("upgrade connection: %w", err)
+		}
+		
+		// 将 UpgradedConn 转换为 Connection
+		// UpgradedConn 实现了 MuxedConn，需要包装为 Connection
+		return wrapUpgradedConn(upgradedConn, t.localPeer, raddr), nil
+	}
+
+	// 如果没有 Upgrader，返回原始 TCP 连接（不推荐，仅用于测试）
+	return newConnection(rawConn, t.localPeer, peerID, raddr, pkgif.DirOutbound), nil
 }
 
-// DialWithOptions 使用选项建立连接
-func (t *Transport) DialWithOptions(ctx context.Context, addr endpoint.Address, opts transportif.DialOptions) (transportif.Conn, error) {
-	if t.closed.Load() {
-		return nil, fmt.Errorf("传输层已关闭")
+// CanDial 检查是否支持拨号
+func (t *Transport) CanDial(addr types.Multiaddr) bool {
+	// 检查是否为 TCP 地址
+	_, err := addr.ValueForProtocol(types.ProtocolTCP)
+	return err == nil
+}
+
+// Listen 监听地址
+func (t *Transport) Listen(laddr types.Multiaddr) (pkgif.Listener, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.closed {
+		return nil, ErrTransportClosed
 	}
 
 	// 解析地址
-	tcpAddr, ok := addr.(*Address)
-	if !ok {
-		// 尝试从字符串解析
-		parsed, err := ParseAddress(addr.String())
-		if err != nil {
-			return nil, fmt.Errorf("无效的 TCP 地址: %w", err)
-		}
-		tcpAddr = parsed
-	}
-
-	// 创建拨号器
-	dialer := &net.Dialer{
-		Timeout:   opts.Timeout,
-		KeepAlive: opts.KeepAlive,
-	}
-
-	// 拨号
-	dialAddr := tcpAddr.NetDialString()
-	conn, err := dialer.DialContext(ctx, "tcp", dialAddr)
+	tcpAddr, err := parseMultiaddr(laddr)
 	if err != nil {
-		return nil, fmt.Errorf("连接失败: %w", err)
+		return nil, fmt.Errorf("parse address: %w", err)
 	}
 
-	tcpConn, ok := conn.(*net.TCPConn)
-	if !ok {
-		conn.Close()
-		return nil, fmt.Errorf("不是 TCP 连接")
-	}
-
-	// 设置连接选项
-	if opts.NoDelay {
-		tcpConn.SetNoDelay(true)
-	}
-	if opts.KeepAlive > 0 {
-		tcpConn.SetKeepAlive(true)
-		tcpConn.SetKeepAlivePeriod(opts.KeepAlive)
-	}
-
-	// 包装连接
-	wrappedConn, err := NewConn(tcpConn)
+	// 创建 TCP 监听器
+	tcpListener, err := net.Listen("tcp", tcpAddr.String())
 	if err != nil {
-		tcpConn.Close()
-		return nil, err
+		return nil, fmt.Errorf("listen: %w", err)
 	}
 
-	// 记录连接
-	t.connsMu.Lock()
-	t.conns[wrappedConn.RemoteAddr().String()] = wrappedConn
-	t.connsMu.Unlock()
-
-	return wrappedConn, nil
-}
-
-// Listen 监听入站连接
-func (t *Transport) Listen(addr endpoint.Address) (transportif.Listener, error) {
-	return t.ListenWithOptions(addr, transportif.DefaultListenOptions())
-}
-
-// ListenWithOptions 使用选项监听
-func (t *Transport) ListenWithOptions(addr endpoint.Address, opts transportif.ListenOptions) (transportif.Listener, error) {
-	if t.closed.Load() {
-		return nil, fmt.Errorf("传输层已关闭")
+	listener := &Listener{
+		tcpListener: tcpListener,
+		localAddr:   laddr,
+		localPeer:   t.localPeer,
+		transport:   t,
 	}
 
-	// 解析地址
-	tcpAddr, ok := addr.(*Address)
-	if !ok {
-		// 尝试从字符串解析
-		parsed, err := ParseAddress(addr.String())
-		if err != nil {
-			return nil, fmt.Errorf("无效的 TCP 地址: %w", err)
-		}
-		tcpAddr = parsed
-	}
-
-	// 创建监听器
-	listener, err := NewListener(tcpAddr, opts)
-	if err != nil {
-		return nil, err
-	}
-
-	// 记录监听器
-	t.listenersMu.Lock()
-	t.listeners[listener.Addr().String()] = listener
-	t.listenersMu.Unlock()
+	t.listeners[laddr.String()] = listener
 
 	return listener, nil
 }
 
 // Protocols 返回支持的协议
-func (t *Transport) Protocols() []string {
-	return []string{"tcp", "tcp4", "tcp6"}
+func (t *Transport) Protocols() []int {
+	return []int{types.ProtocolTCP}
 }
 
-// CanDial 检查是否可以拨号到指定地址
-func (t *Transport) CanDial(addr endpoint.Address) bool {
-	if t.closed.Load() {
-		return false
-	}
-
-	addrStr := addr.String()
-
-	// 检查是否是 TCP 地址格式
-	if strings.Contains(addrStr, "/tcp/") {
-		return true
-	}
-
-	// 检查网络类型
-	network := addr.Network()
-	return network == "tcp" || network == "tcp4" || network == "tcp6"
-}
-
-// Proxy 返回是否为代理传输
-//
-// TCP 是直连传输，不通过中间节点转发
-func (t *Transport) Proxy() bool {
-	return false
-}
-
-// Close 关闭传输层
+// Close 关闭传输
 func (t *Transport) Close() error {
-	if !t.closed.CompareAndSwap(false, true) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.closed {
 		return nil
 	}
 
-	var lastErr error
+	t.closed = true
 
 	// 关闭所有监听器
-	t.listenersMu.Lock()
 	for _, l := range t.listeners {
-		if err := l.Close(); err != nil {
-			lastErr = err
+		l.Close()
+	}
+
+	return nil
+}
+
+// parseMultiaddr 解析 Multiaddr 到 TCP 地址
+func parseMultiaddr(addr types.Multiaddr) (*net.TCPAddr, error) {
+	// 提取 IP
+	ip, err := addr.ValueForProtocol(types.ProtocolIP4)
+	if err != nil {
+		// 尝试 IPv6
+		ip, err = addr.ValueForProtocol(types.ProtocolIP6)
+		if err != nil {
+			return nil, fmt.Errorf("no IP in address")
 		}
 	}
-	t.listeners = make(map[string]*Listener)
-	t.listenersMu.Unlock()
 
-	// 关闭所有连接
-	t.connsMu.Lock()
-	for _, c := range t.conns {
-		if err := c.Close(); err != nil {
-			lastErr = err
-		}
+	// 提取 TCP 端口
+	portStr, err := addr.ValueForProtocol(types.ProtocolTCP)
+	if err != nil {
+		return nil, fmt.Errorf("no TCP port in address")
 	}
-	t.conns = make(map[string]*Conn)
-	t.connsMu.Unlock()
 
-	return lastErr
+	// 解析端口
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+
+	return &net.TCPAddr{
+		IP:   net.ParseIP(ip),
+		Port: port,
+	}, nil
 }
 
-// ============================================================================
-//                              辅助方法
-// ============================================================================
-
-// RemoveConn 移除连接记录
-func (t *Transport) RemoveConn(addr string) {
-	t.connsMu.Lock()
-	delete(t.conns, addr)
-	t.connsMu.Unlock()
+// wrapUpgradedConn 将 UpgradedConn 包装为 Connection
+//
+// UpgradedConn 是经过安全握手和多路复用升级后的连接，
+// 需要包装为 pkgif.Connection 以供 Swarm 使用。
+func wrapUpgradedConn(upgraded pkgif.UpgradedConn, localPeer types.PeerID, remoteAddr types.Multiaddr) pkgif.Connection {
+	return &upgradedConnection{
+		UpgradedConn: upgraded,
+		localPeer:    localPeer,
+		remoteAddr:   remoteAddr,
+		opened:       time.Now(),
+		streams:      make([]pkgif.Stream, 0),
+	}
 }
 
-// RemoveListener 移除监听器记录
-func (t *Transport) RemoveListener(addr string) {
-	t.listenersMu.Lock()
-	delete(t.listeners, addr)
-	t.listenersMu.Unlock()
+// upgradedConnection 升级后的连接（包装 UpgradedConn）
+type upgradedConnection struct {
+	pkgif.UpgradedConn
+	localPeer  types.PeerID
+	remoteAddr types.Multiaddr
+	opened     time.Time
+	
+	mu      sync.RWMutex
+	streams []pkgif.Stream
+	closed  bool
 }
 
-// ConnCount 返回连接数量
-func (t *Transport) ConnCount() int {
-	t.connsMu.RLock()
-	defer t.connsMu.RUnlock()
-	return len(t.conns)
+// 确保实现接口
+var _ pkgif.Connection = (*upgradedConnection)(nil)
+
+// LocalMultiaddr 返回本地多地址
+func (c *upgradedConnection) LocalMultiaddr() types.Multiaddr {
+	// 升级后的连接没有保存本地地址，返回空
+	return nil
 }
 
-// ListenerCount 返回监听器数量
-func (t *Transport) ListenerCount() int {
-	t.listenersMu.RLock()
-	defer t.listenersMu.RUnlock()
-	return len(t.listeners)
+// RemoteMultiaddr 返回远程多地址
+func (c *upgradedConnection) RemoteMultiaddr() types.Multiaddr {
+	return c.remoteAddr
 }
 
-// IsClosed 检查是否已关闭
-func (t *Transport) IsClosed() bool {
-	return t.closed.Load()
+// GetStreams 获取所有流
+func (c *upgradedConnection) GetStreams() []pkgif.Stream {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	
+	// 返回副本
+	result := make([]pkgif.Stream, len(c.streams))
+	copy(result, c.streams)
+	return result
 }
 
-// 注意：TransportFactory 接口已删除（v1.1 清理）。
-// TCP transport 通过 NewTransport() 函数直接创建，无需工厂模式。
+// Stat 返回连接统计信息
+func (c *upgradedConnection) Stat() pkgif.ConnectionStat {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	
+	return pkgif.ConnectionStat{
+		Direction:  pkgif.DirOutbound,
+		Opened:     c.opened.Unix(),
+		Transient:  false,
+		NumStreams: len(c.streams),
+	}
+}
 
-// ============================================================================
-//                              辅助函数
-// ============================================================================
+// IsClosed 检查连接是否已关闭
+func (c *upgradedConnection) IsClosed() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.closed
+}
 
-// DialTimeout 使用超时拨号
-func DialTimeout(addr string, timeout time.Duration) (*Conn, error) {
-	tcpAddr, err := ParseAddress(addr)
+// NewStream 创建新流
+func (c *upgradedConnection) NewStream(ctx context.Context) (pkgif.Stream, error) {
+	// UpgradedConn 的 OpenStream 返回 MuxedStream
+	muxedStream, err := c.OpenStream(ctx)
 	if err != nil {
 		return nil, err
 	}
+	
+	// 包装 MuxedStream 为 Stream
+	stream := wrapMuxedStream(muxedStream, c)
+	
+	// 记录流
+	c.mu.Lock()
+	c.streams = append(c.streams, stream)
+	c.mu.Unlock()
+	
+	return stream, nil
+}
 
-	transport := NewTransport(transportif.DefaultConfig())
-	defer transport.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	conn, err := transport.DialWithOptions(ctx, tcpAddr, transportif.DialOptions{
-		Timeout: timeout,
-	})
+// AcceptStream 接受新流
+func (c *upgradedConnection) AcceptStream() (pkgif.Stream, error) {
+	// UpgradedConn 的 AcceptStream 返回 MuxedStream
+	muxedStream, err := c.UpgradedConn.AcceptStream()
 	if err != nil {
 		return nil, err
 	}
-
-	return conn.(*Conn), nil
+	
+	// 包装 MuxedStream 为 Stream
+	stream := wrapMuxedStream(muxedStream, c)
+	
+	// 记录流
+	c.mu.Lock()
+	c.streams = append(c.streams, stream)
+	c.mu.Unlock()
+	
+	return stream, nil
 }
 
+// ConnType 返回连接类型（v2.0 新增）
+//
+// 升级后的 TCP 连接始终为直连类型。
+func (c *upgradedConnection) ConnType() pkgif.ConnectionType {
+	return pkgif.ConnectionTypeDirect
+}
+
+// wrapMuxedStream 将 MuxedStream 包装为 Stream
+func wrapMuxedStream(muxed pkgif.MuxedStream, conn pkgif.Connection) pkgif.Stream {
+	return &tcpStream{
+		MuxedStream: muxed,
+		conn:        conn,
+	}
+}
+
+// tcpStream 将 MuxedStream 包装为 Stream
+type tcpStream struct {
+	pkgif.MuxedStream
+	conn     pkgif.Connection
+	protocol string
+}
+
+// 确保实现接口
+var _ pkgif.Stream = (*tcpStream)(nil)
+
+// Conn 返回所属连接
+func (s *tcpStream) Conn() pkgif.Connection {
+	return s.conn
+}
+
+// Protocol 返回协议 ID
+func (s *tcpStream) Protocol() string {
+	return s.protocol
+}
+
+// SetProtocol 设置协议 ID
+func (s *tcpStream) SetProtocol(protocol string) {
+	s.protocol = protocol
+}
+
+// Stat 返回流统计
+func (s *tcpStream) Stat() types.StreamStat {
+	connStat := s.conn.Stat()
+	direction := types.DirUnknown
+	switch connStat.Direction {
+	case pkgif.DirInbound:
+		direction = types.DirInbound
+	case pkgif.DirOutbound:
+		direction = types.DirOutbound
+	}
+	return types.StreamStat{
+		Direction:    direction,
+		Opened:       time.Now(), // TCP stream 没有记录打开时间
+		Protocol:     types.ProtocolID(s.protocol),
+		BytesRead:    0,
+		BytesWritten: 0,
+	}
+}
+
+// IsClosed 检查流是否已关闭
+func (s *tcpStream) IsClosed() bool {
+	// MuxedStream 没有 IsClosed 方法，通过检查连接状态判断
+	return s.conn.IsClosed()
+}
+
+// State 返回流当前状态
+func (s *tcpStream) State() types.StreamState {
+	if s.conn.IsClosed() {
+		return types.StreamStateClosed
+	}
+	return types.StreamStateOpen
+}

@@ -1,0 +1,26 @@
+syntax = "proto3";
+package noise.pb;
+
+option go_package = "github.com/dep2p/go-dep2p/pkg/proto/noise";
+
+// NoiseExtensions 包含 Noise 握手扩展数据
+message NoiseExtensions {
+	// WebTransport 证书哈希
+	repeated bytes webtransport_certhashes = 1;
+	// 支持的流多路复用器
+	repeated string stream_muxers = 2;
+}
+
+// NoiseHandshakePayload 是 Noise 握手的 payload 结构
+//
+// libp2p-noise 协议要求在握手消息中包含：
+// - identity_key: Ed25519 公钥（protobuf 序列化的 PublicKey）
+// - identity_sig: 对 "noise-libp2p-static-key:" + Curve25519静态公钥 的签名
+message NoiseHandshakePayload {
+	// Ed25519 身份公钥（protobuf 序列化格式）
+	bytes identity_key = 1;
+	// 签名：Sign("noise-libp2p-static-key:" + curve25519_static_pubkey)
+	bytes identity_sig = 2;
+	// 可选扩展数据
+	NoiseExtensions extensions = 4;
+}

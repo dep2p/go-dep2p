@@ -1,0 +1,39 @@
+// DeP2P Common Protocol Definitions
+// 公共消息定义
+
+syntax = "proto3";
+
+package dep2p.common;
+
+option go_package = "github.com/dep2p/dep2p/pkg/proto/common";
+
+// Timestamp 时间戳
+message Timestamp {
+  int64 seconds = 1;
+  int32 nanos = 2;
+}
+
+// Error 错误信息
+message Error {
+  int32 code = 1;
+  string message = 2;
+  map<string, string> details = 3;
+}
+
+// Result 通用结果
+message Result {
+  bool success = 1;
+  Error error = 2;
+}
+
+// Version 版本信息
+message Version {
+  int32 major = 1;
+  int32 minor = 2;
+  int32 patch = 3;
+}
+
+// Metadata 元数据
+message Metadata {
+  map<string, bytes> data = 1;
+}

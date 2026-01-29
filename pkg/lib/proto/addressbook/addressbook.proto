@@ -1,0 +1,203 @@
+// DeP2P AddressBook Protocol Definitions
+// 地址簿协议消息定义（Realm 成员地址发现）
+
+syntax = "proto3";
+
+package dep2p.addressbook;
+
+option go_package = "github.com/dep2p/dep2p/pkg/proto/addressbook";
+
+// ============================================================================
+//                              枚举定义
+// ============================================================================
+
+// NATType NAT 类型枚举
+enum NATType {
+  NAT_TYPE_UNKNOWN = 0;         // 未知
+  NAT_TYPE_NONE = 1;            // 无 NAT（公网）
+  NAT_TYPE_FULL_CONE = 2;       // 完全锥形 NAT
+  NAT_TYPE_RESTRICTED = 3;      // 受限锥形 NAT
+  NAT_TYPE_PORT_RESTRICTED = 4; // 端口受限锥形 NAT
+  NAT_TYPE_SYMMETRIC = 5;       // 对称型 NAT
+}
+
+// UpdateType 地址更新类型枚举
+enum UpdateType {
+  UPDATE_TYPE_UNKNOWN = 0;  // 未知
+  UPDATE_TYPE_ADD = 1;      // 新增地址
+  UPDATE_TYPE_REMOVE = 2;   // 移除地址
+  UPDATE_TYPE_REPLACE = 3;  // 替换全部地址
+}
+
+// ============================================================================
+//                              数据结构
+// ============================================================================
+
+// MemberEntry 成员地址条目
+//
+// 存储 Realm 成员的地址信息，用于"仅 ID 连接"时的地址发现。
+message MemberEntry {
+  // node_id 成员节点 ID
+  bytes node_id = 1;
+
+  // addrs 直连地址列表（Multiaddr 编码）
+  repeated bytes addrs = 2;
+
+  // nat_type NAT 类型
+  NATType nat_type = 3;
+
+  // capabilities 能力标签
+  repeated string capabilities = 4;
+
+  // online 是否在线
+  bool online = 5;
+
+  // last_seen 最后活跃时间（Unix 时间戳，秒）
+  int64 last_seen = 6;
+
+  // last_update 最后更新时间（Unix 时间戳，秒）
+  int64 last_update = 7;
+}
+
+// ============================================================================
+//                              地址注册协议
+// ============================================================================
+
+// AddressRegister 地址注册请求
+//
+// 成员向 Relay 注册其地址信息。
+message AddressRegister {
+  // node_id 注册节点的 ID
+  bytes node_id = 1;
+
+  // addrs 节点地址列表（Multiaddr 编码）
+  repeated bytes addrs = 2;
+
+  // nat_type 节点的 NAT 类型
+  NATType nat_type = 3;
+
+  // capabilities 节点能力标签
+  repeated string capabilities = 4;
+
+  // signature 消息签名（使用节点私钥签名）
+  bytes signature = 5;
+
+  // timestamp 消息时间戳（Unix 时间戳，秒）
+  int64 timestamp = 6;
+}
+
+// AddressRegisterResponse 地址注册响应
+message AddressRegisterResponse {
+  // success 是否成功
+  bool success = 1;
+
+  // error 错误信息（仅失败时）
+  string error = 2;
+
+  // ttl 建议的续期时间（秒）
+  int64 ttl = 3;
+}
+
+// ============================================================================
+//                              地址查询协议
+// ============================================================================
+
+// AddressQuery 地址查询请求
+//
+// 向 Relay 查询目标成员的地址。
+message AddressQuery {
+  // target_node_id 目标节点 ID
+  bytes target_node_id = 1;
+
+  // requestor_id 请求者节点 ID
+  bytes requestor_id = 2;
+}
+
+// AddressResponse 地址查询响应
+message AddressResponse {
+  // found 是否找到
+  bool found = 1;
+
+  // entry 成员条目（仅找到时）
+  MemberEntry entry = 2;
+
+  // error 错误信息（仅失败时）
+  string error = 3;
+}
+
+// BatchAddressQuery 批量地址查询请求
+message BatchAddressQuery {
+  // target_node_ids 目标节点 ID 列表
+  repeated bytes target_node_ids = 1;
+
+  // requestor_id 请求者节点 ID
+  bytes requestor_id = 2;
+}
+
+// BatchAddressResponse 批量地址查询响应
+message BatchAddressResponse {
+  // entries 查询结果列表
+  repeated AddressResponse entries = 1;
+}
+
+// ============================================================================
+//                              地址更新通知
+// ============================================================================
+
+// AddressUpdate 地址更新通知
+//
+// 当成员地址发生变化时，Relay 向其他成员广播更新。
+message AddressUpdate {
+  // node_id 更新的节点 ID
+  bytes node_id = 1;
+
+  // new_addrs 新增的地址列表
+  repeated bytes new_addrs = 2;
+
+  // old_addrs 移除的地址列表
+  repeated bytes old_addrs = 3;
+
+  // update_type 更新类型
+  UpdateType update_type = 4;
+
+  // timestamp 更新时间戳
+  int64 timestamp = 5;
+
+  // signature Relay 签名（证明更新来源可信）
+  bytes signature = 6;
+}
+
+// ============================================================================
+//                              协议封装消息
+// ============================================================================
+
+// AddressBookMessage 地址簿协议消息封装
+//
+// 用于在单一流上复用多种消息类型。
+message AddressBookMessage {
+  // MessageType 消息类型
+  enum MessageType {
+    UNKNOWN = 0;
+    REGISTER = 1;           // 注册请求
+    REGISTER_RESPONSE = 2;  // 注册响应
+    QUERY = 3;              // 查询请求
+    RESPONSE = 4;           // 查询响应
+    BATCH_QUERY = 5;        // 批量查询请求
+    BATCH_RESPONSE = 6;     // 批量查询响应
+    UPDATE = 7;             // 更新通知
+  }
+
+  // type 消息类型
+  MessageType type = 1;
+
+  // 消息体（根据 type 选择）
+  oneof payload {
+    AddressRegister register = 2;
+    AddressRegisterResponse register_response = 3;
+    AddressQuery query = 4;
+    AddressResponse response = 5;
+    BatchAddressQuery batch_query = 6;
+    BatchAddressResponse batch_response = 7;
+    AddressUpdate update = 8;
+  }
+}

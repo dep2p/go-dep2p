@@ -6,11 +6,11 @@
 
 ## 什么是 Realm？
 
-Realm 是 DeP2P 的**业务隔离租户**，类似于：
+Realm 是 DeP2P 的**业务隔离单元**，类似于：
 
+- 聊天应用中的"房间"
+- 游戏中的"服务器"
 - Kubernetes 的 Namespace
-- 云厂商的 VPC（Virtual Private Cloud）
-- 数据库的 Schema
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -19,11 +19,11 @@ Realm 是 DeP2P 的**业务隔离租户**，类似于：
 │                                                                          │
 │   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                 │
 │   │  Realm A    │    │  Realm B    │    │  Realm C    │                 │
-│   │  区块链主网  │    │  链游测试网  │    │  存储网络    │                 │
+│   │  游戏主服    │    │  聊天室 1   │    │  文件同步    │                 │
 │   │             │    │             │    │             │                 │
 │   │ ├─ 独立发现  │    │ ├─ 独立发现  │    │ ├─ 独立发现  │                 │
 │   │ ├─ 独立消息  │    │ ├─ 独立消息  │    │ ├─ 独立消息  │                 │
-│   │ └─ 独立订阅  │    │ └─ 独立订阅  │    │ └─ 独立订阅  │                 │
+│   │ └─ 成员隔离  │    │ └─ 成员隔离  │    │ └─ 成员隔离  │                 │
 │   └─────────────┘    └─────────────┘    └─────────────┘                 │
 │          │                 │                  │                          │
 │          └─────────────────┴──────────────────┘                          │
@@ -41,44 +41,24 @@ Realm 是 DeP2P 的**业务隔离租户**，类似于：
 
 ### 核心原则
 
-1. **每个节点同一时间只能加入一个 Realm**  
-   严格单 Realm 模型，避免混乱和安全问题。
+1. **业务隔离**  
+   不同 Realm 的节点无法互相通信，消息不会混淆。
 
-2. **业务 API 必须先 JoinRealm**  
-   以下 API 必须先加入 Realm 才能使用：
-   - `Node.Send` / `Node.Request`
-   - `Node.Publish` / `Node.Subscribe`
+2. **成员管理**  
+   Realm 提供成员列表和加入/离开事件通知。
 
-3. **系统 API 不受限制**  
-   以下 API 不需要 JoinRealm：
-   - `Node.Connect` / `Node.ConnectToAddr`
-   - `Node.ListenAddrs` / `Node.AdvertisedAddrs`
-   - Discovery / NAT / Relay
+3. **"连接即成员"原则**  
+   与 Realm 成员保持连接 = 成为成员，连接断开 = 失去成员身份。
 
 ### 使用场景
 
 - **隔离不同应用的数据**：应用 A 的消息不会被应用 B 收到
-- **防止跨租户攻击**：恶意节点无法伪装成其他 Realm 成员
-- **简化编程模型**：框架层面保证隔离，无需每次传递 `tenantID`
+- **多房间/多频道**：聊天应用的不同房间
+- **简化编程模型**：框架层面保证隔离
 
 ---
 
-## 加入 Realm（IMPL-1227 更新）
-
-### JoinRealmWithKey 流程
-
-```mermaid
-flowchart TD
-    A[创建节点] --> B{当前 Realm?}
-    B -->|nil| C[调用 JoinRealmWithKey]
-    B -->|非空| D[返回 ErrAlreadyJoined]
-    C --> E{PSK 验证成功?}
-    E -->|是| F[返回 Realm 对象]
-    F --> G[通过 Realm 获取服务]
-    E -->|否| H[返回 ErrPSKAuthFailed]
-    D --> I[先 realm.Leave]
-    I --> C
-```
+## 加入 Realm
 
 ### 基础用法
 
@@ -97,115 +77,130 @@ import (
 func main() {
     ctx := context.Background()
     
-    // Step 1: 创建节点
-    node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    // Step 1: 创建并启动节点
+    node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
     if err != nil {
         log.Fatal(err)
     }
     defer node.Close()
     
+    if err := node.Start(ctx); err != nil {
+        log.Fatal(err)
+    }
+    
     fmt.Printf("节点 ID: %s\n", node.ID())
-    fmt.Printf("当前 Realm: %v\n", node.CurrentRealm())  // 输出: nil
+    fmt.Printf("当前 Realm: %s\n", node.Realm().CurrentRealm())  // 输出: 空
     
-    // Step 2: 使用 realmKey 加入 Realm
-    // realmKey 是 32 字节的高熵随机数，用于 PSK 成员认证
-    realmKey := types.GenerateRealmKey() // 首次创建
-    // 或: realmKey, _ := types.RealmKeyFromHex("abcdef...") // 从配置读取
-    
-    realm, err := node.JoinRealmWithKey(ctx, "my-blockchain-mainnet", realmKey)
+    // Step 2: 加入 Realm
+    realm, err := node.Realm("my-chat-room")
     if err != nil {
+        log.Fatalf("获取 Realm 失败: %v", err)
+    }
+    if err := realm.Join(ctx); err != nil {
         log.Fatalf("加入 Realm 失败: %v", err)
     }
     
-    // realm.ID() 是从 realmKey 派生的唯一标识
-    fmt.Printf("已加入: %s (ID: %s)\n", realm.Name(), realm.ID())
+    fmt.Printf("已加入 Realm: %s\n", node.Realm().CurrentRealm())
     
-    // Step 3: 通过 Realm 对象获取 Layer 3 服务
-    messaging := realm.Messaging()
-    pubsub := realm.PubSub()
-    
-    fmt.Println("可以开始发送消息了！")
-    
-    // 发送消息（协议自动添加 Realm 前缀）
-    // messaging.SendWithProtocol(ctx, targetID, "chat/1.0.0", data)
-    
-    // PubSub
-    // topic, _ := pubsub.Join(ctx, "news")
+    // Step 3: 现在可以使用业务 API
+    fmt.Println("可以开始通信了！")
 }
 ```
 
 ---
 
-## PSK 成员认证（IMPL-1227）
+## 成员事件
 
-IMPL-1227 采用 **PSK (Pre-Shared Key)** 作为唯一的成员认证机制：
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       PSK 成员认证流程                                        │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│   1. 创建者生成 realmKey（32字节高熵随机数）                                  │
-│   2. 通过安全渠道分享 realmKey 给成员                                        │
-│   3. 成员使用 JoinRealmWithKey(ctx, name, realmKey) 加入                    │
-│   4. RealmID 从 realmKey 派生：SHA256("dep2p-realm-id-v1" || H(realmKey))   │
-│   5. 只有持有 realmKey 的节点才能加入同一个 Realm                            │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 创建 Realm
+Realm 提供成员加入和离开的实时通知：
 
 ```go
-// 生成 realmKey（首次创建 Realm）
-realmKey := types.GenerateRealmKey()
-
-// 保存 realmKey（分享给其他成员）
-fmt.Printf("RealmKey: %s\n", realmKey.String())
-
-// 加入 Realm
-realm, err := node.JoinRealmWithKey(ctx, "my-team", realmKey)
-```
-
-### 加入已有 Realm
-
-```go
-// 从配置或其他成员处获取 realmKey
-realmKey, err := types.RealmKeyFromHex("abcdef1234...")
+// 订阅成员事件
+events, err := node.Realm().SubscribeMemberEvents(ctx, realmID)
 if err != nil {
-    log.Fatal("无效的 realmKey")
+    log.Fatal(err)
 }
 
-// 加入 Realm（必须使用相同的 realmKey）
-realm, err := node.JoinRealmWithKey(ctx, "my-team", realmKey)
+go func() {
+    for event := range events {
+        switch event.Type {
+        case dep2p.MemberJoined:
+            fmt.Printf("成员加入: %s\n", event.Member.ShortString())
+        case dep2p.MemberLeft:
+            fmt.Printf("成员离开: %s\n", event.Member.ShortString())
+        }
+    }
+}()
+
+// 获取当前成员列表
+members := node.Realm().Members(realmID)
+fmt.Printf("当前成员数: %d\n", len(members))
 ```
 
-### RealmID 特性
+---
 
-- **确定性**：相同 realmKey 总是派生相同 RealmID
-- **不可逆**：无法从 RealmID 反推 realmKey
-- **不可枚举**：无法猜测其他 Realm 的 RealmID
-- **隔离性**：不同 realmKey 派生不同 RealmID，天然隔离
+## "连接即成员"原则
+
+DeP2P 采用"连接即成员"设计：
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    "连接即成员"原则                                      │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  连接建立 ────────► 成为成员 ────────► 收到 MemberJoined 事件           │
+│                                                                         │
+│  连接断开 ────────► 失去成员身份 ────► 收到 MemberLeft 事件             │
+│                                                                         │
+│  优点：                                                                 │
+│  • 无需显式"加入/退出"协议                                              │
+│  • 连接状态与成员状态自动同步                                           │
+│  • 断开即离开，自动清理                                                 │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 断开检测配置
+
+可以调整断开检测参数来控制成员状态更新的灵敏度：
+
+```json
+{
+  "disconnect_detection": {
+    "quic": {
+      "keep_alive_period": "3s",
+      "max_idle_timeout": "6s"
+    },
+    "reconnect_grace_period": "15s"
+  }
+}
+```
+
+- **keep_alive_period**: QUIC 保活探测间隔
+- **max_idle_timeout**: 最大空闲超时
+- **reconnect_grace_period**: 重连宽限期，期间不触发 MemberLeft
 
 ---
 
 ## Realm 切换
 
-**严格单 Realm**：节点同时只能在一个业务 Realm 中。
+**严格单 Realm**：节点同时只能在一个 Realm 中。
 
 ```go
-// 加入 mainnet
-err := node.Realm().JoinRealm(ctx, "chain-mainnet")
-fmt.Println(node.Realm().CurrentRealm())  // chain-mainnet
+// 加入 room-1
+realm1, _ := node.Realm("room-1")
+_ = realm1.Join(ctx)
+fmt.Println(node.Realm().CurrentRealm())  // room-1
 
-// 尝试直接切换到 testnet（会失败）
-err = node.Realm().JoinRealm(ctx, "chain-testnet")
+// 尝试直接切换到 room-2（会失败）
+realm2, _ := node.Realm("room-2")
+err = realm2.Join(ctx)
 // err == ErrAlreadyJoined
 
 // 正确做法：先 Leave 再 Join
-_ = node.Realm().LeaveRealm()
-err = node.Realm().JoinRealm(ctx, "chain-testnet")
-fmt.Println(node.Realm().CurrentRealm())  // chain-testnet
+realm1.Leave(ctx)
+realm2, _ = node.Realm("room-2")
+_ = realm2.Join(ctx)
+fmt.Println(node.Realm().CurrentRealm())  // room-2
 ```
 
 ---
@@ -217,22 +212,19 @@ fmt.Println(node.Realm().CurrentRealm())  // chain-testnet
 未加入 Realm 就调用业务 API：
 
 ```go
-// ❌ 错误示例：未加入 Realm 就调用业务 API
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
-realm := node.CurrentRealm()  // 返回 nil
-if realm != nil {
-    err := realm.Messaging().Send(ctx, peerID, "/dep2p/app/chat/1.0.0", []byte("hello"))
-    fmt.Println(err)
-} else {
-    fmt.Println("ErrNotMember")  // 未加入 Realm
-}
+// ❌ 错误：未加入 Realm
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node.Start(ctx)
+err := node.PubSub().Publish(ctx, "topic", data)
+// err == ErrNotMember
 
-// ✅ 正确示例：先加入 Realm，再使用 Messaging API
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
-realmKey := types.GenerateRealmKey()
-realm, _ := node.JoinRealmWithKey(ctx, "my-realm", realmKey)
-err := realm.Messaging().Send(ctx, peerID, "/dep2p/app/chat/1.0.0", []byte("hello"))
-fmt.Println(err)  // nil
+// ✅ 正确：先加入 Realm
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node.Start(ctx)
+realm, _ := node.Realm("my-realm")
+_ = realm.Join(ctx)
+err := node.PubSub().Publish(ctx, "topic", data)
+// err == nil
 ```
 
 ### ErrAlreadyJoined
@@ -240,16 +232,20 @@ fmt.Println(err)  // nil
 已在某个 Realm 中，又尝试 Join：
 
 ```go
-// ❌ 错误示例
-node.Realm().JoinRealm(ctx, "mainnet")
-err := node.Realm().JoinRealm(ctx, "testnet")
-fmt.Println(err)  // ErrAlreadyJoined
+// ❌ 错误
+realm1, _ := node.Realm("realm-1")
+_ = realm1.Join(ctx)
+realm2, _ := node.Realm("realm-2")
+err := realm2.Join(ctx)
+// err == ErrAlreadyJoined
 
-// ✅ 正确示例
-node.Realm().JoinRealm(ctx, "mainnet")
-_ = node.Realm().LeaveRealm()  // 先离开
-err := node.Realm().JoinRealm(ctx, "testnet")
-fmt.Println(err)  // nil
+// ✅ 正确
+realm1, _ := node.Realm("realm-1")
+_ = realm1.Join(ctx)
+realm1.Leave(ctx)  // 先离开
+realm2, _ = node.Realm("realm-2")
+err = realm2.Join(ctx)
+// err == nil
 ```
 
 ---
@@ -265,17 +261,22 @@ import (
     "log"
     
     "github.com/dep2p/go-dep2p"
+    "github.com/dep2p/go-dep2p/pkg/types"
 )
 
 func main() {
     ctx := context.Background()
     
-    // 创建节点
-    node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    // 创建并启动节点
+    node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
     if err != nil {
         log.Fatal(err)
     }
     defer node.Close()
+    
+    if err := node.Start(ctx); err != nil {
+        log.Fatal(err)
+    }
     
     rm := node.Realm()
     
@@ -286,26 +287,52 @@ func main() {
     fmt.Printf("1. 初始 Realm: '%s'\n", rm.CurrentRealm())
     
     // 2. 加入 Realm
-    if err := rm.JoinRealm(ctx, "demo-realm"); err != nil {
+    realm, err := node.Realm("demo-realm")
+    if err != nil {
+        log.Fatal(err)
+    }
+    if err := realm.Join(ctx); err != nil {
         log.Fatal(err)
     }
     fmt.Printf("2. 加入后: '%s'\n", rm.CurrentRealm())
     
-    // 3. 尝试重复加入（会失败）
-    err = rm.JoinRealm(ctx, "another-realm")
-    fmt.Printf("3. 重复加入结果: %v\n", err)
+    // 3. 订阅成员事件
+    events, _ := rm.SubscribeMemberEvents(ctx, realmID)
+    go func() {
+        for event := range events {
+            switch event.Type {
+            case dep2p.MemberJoined:
+                fmt.Printf("   [事件] 成员加入: %s\n", event.Member.ShortString())
+            case dep2p.MemberLeft:
+                fmt.Printf("   [事件] 成员离开: %s\n", event.Member.ShortString())
+            }
+        }
+    }()
     
-    // 4. 离开 Realm
-    if err := rm.LeaveRealm(); err != nil {
+    // 4. 获取成员列表
+    members := rm.Members(realmID)
+    fmt.Printf("3. 当前成员数: %d\n", len(members))
+    
+    // 5. 尝试重复加入（会失败）
+    realm2, _ := node.Realm("another-realm")
+    err = realm2.Join(ctx)
+    fmt.Printf("4. 重复加入结果: %v\n", err)
+    
+    // 6. 离开 Realm
+    if err := realm.Leave(ctx); err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("4. 离开后: '%s'\n", rm.CurrentRealm())
+    fmt.Printf("5. 离开后: '%s'\n", rm.CurrentRealm())
     
-    // 5. 加入新 Realm
-    if err := rm.JoinRealm(ctx, "new-realm"); err != nil {
+    // 7. 加入新 Realm
+    realm3, err := node.Realm("new-realm")
+    if err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("5. 新 Realm: '%s'\n", rm.CurrentRealm())
+    if err := realm3.Join(ctx); err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("6. 新 Realm: '%s'\n", rm.CurrentRealm())
 }
 ```
 
@@ -315,9 +342,10 @@ func main() {
 === Realm 生命周期演示 ===
 1. 初始 Realm: ''
 2. 加入后: 'demo-realm'
-3. 重复加入结果: ErrAlreadyJoined
-4. 离开后: ''
-5. 新 Realm: 'new-realm'
+3. 当前成员数: 1
+4. 重复加入结果: already joined a realm
+5. 离开后: ''
+6. 新 Realm: 'new-realm'
 ```
 
 ---
@@ -325,5 +353,5 @@ func main() {
 ## 下一步
 
 - [常见问题](faq.md) - 更多问题解答
+- [Realm 群聊教程](../tutorials/04-realm-chat.md) - 构建群聊应用
 - [核心概念](../concepts/core-concepts.md) - 深入理解 Realm
-- [Realm 教程](../tutorials/04-realm-application.md) - 构建 Realm 应用

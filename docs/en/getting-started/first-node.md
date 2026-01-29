@@ -38,9 +38,12 @@ func main() {
     ctx := context.Background()
     
     // Create node with Desktop preset
-    node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
     if err != nil {
         log.Fatalf("Failed to create node: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
     }
     defer node.Close()
     
@@ -67,10 +70,13 @@ func main() {
 ### Specify Listen Port
 
 ```go
-node, err := dep2p.StartNode(ctx,
+node, err := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithListenPort(4001),  // Specify port
 )
+if err := node.Start(ctx); err != nil {
+    log.Fatal(err)
+}
 ```
 
 ### Use Fixed Identity
@@ -79,10 +85,13 @@ By default, a new temporary identity is generated on each startup. For fixed ide
 
 ```go
 // Method 1: Use identity file (Recommended)
-node, err := dep2p.StartNode(ctx,
+node, err := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetServer),
     dep2p.WithIdentityFile("./node.key"),  // Auto-generated on first run
 )
+if err := node.Start(ctx); err != nil {
+    log.Fatal(err)
+}
 
 // Method 2: Programmatic key generation
 key, err := dep2p.GenerateKey()
@@ -90,19 +99,25 @@ if err != nil {
     log.Fatal(err)
 }
 
-node, err := dep2p.StartNode(ctx,
+node, err := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithIdentity(key),
 )
+if err := node.Start(ctx); err != nil {
+    log.Fatal(err)
+}
 ```
 
 ### Configure Connection Limits
 
 ```go
-node, err := dep2p.StartNode(ctx,
+node, err := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithConnectionLimits(100, 200),  // LowWater, HighWater
 )
+if err := node.Start(ctx); err != nil {
+    log.Fatal(err)
+}
 ```
 
 ### Configure Bootstrap Peers
@@ -113,10 +128,13 @@ bootstrapPeers := []string{
     "/dns4/bootstrap.example.com/udp/4001/quic-v1/p2p/5Q2STWvBFn...",
 }
 
-node, err := dep2p.StartNode(ctx,
+node, err := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithBootstrapPeers(bootstrapPeers),
 )
+if err := node.Start(ctx); err != nil {
+    log.Fatal(err)
+}
 ```
 
 > ⚠️ **Note**: Bootstrap addresses must use full format (including `/p2p/<NodeID>`).
@@ -189,12 +207,15 @@ func main() {
     }()
     
     // Create node
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithListenPort(4001),
     )
     if err != nil {
         log.Fatalf("Failed to create node: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
     }
     defer node.Close()
     
@@ -246,10 +267,11 @@ DeP2P uses Multiaddr format for addresses:
 
 ```go
 // Use random port
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithListenPort(0),  // 0 = random port
 )
+_ = node.Start(ctx)
 ```
 
 ### Q: Node ID changes on each startup
@@ -260,10 +282,11 @@ node, _ := dep2p.StartNode(ctx,
 
 ```go
 // Use identity file for persistence
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetServer),
     dep2p.WithIdentityFile("./node.key"),
 )
+_ = node.Start(ctx)
 ```
 
 ### Q: Cannot get public address

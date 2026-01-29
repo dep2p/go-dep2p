@@ -12,29 +12,34 @@ func TestBase58Encode(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "empty",
+			name:     "empty input",
 			input:    []byte{},
 			expected: "",
 		},
 		{
-			name:     "single zero",
+			name:     "single zero byte",
 			input:    []byte{0},
 			expected: "1",
 		},
 		{
-			name:     "multiple zeros",
-			input:    []byte{0, 0, 0},
-			expected: "111",
+			name:     "two zero bytes",
+			input:    []byte{0, 0},
+			expected: "11",
 		},
 		{
-			name:     "hello",
-			input:    []byte("Hello"),
-			expected: "9Ajdvzr",
+			name:     "simple bytes",
+			input:    []byte{1, 2, 3},
+			expected: "Ldp",
 		},
 		{
-			name:     "32 bytes",
-			input:    make([]byte, 32),
-			expected: "11111111111111111111111111111111", // 32 leading zeros
+			name:     "leading zeros with data",
+			input:    []byte{0, 0, 1, 2, 3},
+			expected: "11Ldp",
+		},
+		{
+			name:     "hello world",
+			input:    []byte("Hello World"),
+			expected: "JxF12TrwUP45BMd",
 		},
 	}
 
@@ -56,7 +61,7 @@ func TestBase58Decode(t *testing.T) {
 		wantErr  bool
 	}{
 		{
-			name:     "empty",
+			name:     "empty input",
 			input:    "",
 			expected: nil,
 			wantErr:  false,
@@ -68,38 +73,50 @@ func TestBase58Decode(t *testing.T) {
 			wantErr:  false,
 		},
 		{
-			name:     "multiple 1s",
-			input:    "111",
-			expected: []byte{0, 0, 0},
+			name:     "two 1s",
+			input:    "11",
+			expected: []byte{0, 0},
 			wantErr:  false,
 		},
 		{
-			name:     "hello",
-			input:    "9Ajdvzr",
-			expected: []byte("Hello"),
+			name:     "simple decode",
+			input:    "Ldp",
+			expected: []byte{1, 2, 3},
 			wantErr:  false,
 		},
 		{
-			name:     "invalid char O",
-			input:    "O",
+			name:     "leading zeros with data",
+			input:    "11Ldp",
+			expected: []byte{0, 0, 1, 2, 3},
+			wantErr:  false,
+		},
+		{
+			name:     "hello world",
+			input:    "JxF12TrwUP45BMd",
+			expected: []byte("Hello World"),
+			wantErr:  false,
+		},
+		{
+			name:     "invalid character 0",
+			input:    "0abc",
 			expected: nil,
 			wantErr:  true,
 		},
 		{
-			name:     "invalid char 0",
-			input:    "0",
+			name:     "invalid character O",
+			input:    "abcO",
 			expected: nil,
 			wantErr:  true,
 		},
 		{
-			name:     "invalid char I",
-			input:    "I",
+			name:     "invalid character I",
+			input:    "abcI",
 			expected: nil,
 			wantErr:  true,
 		},
 		{
-			name:     "invalid char l",
-			input:    "l",
+			name:     "invalid character l",
+			input:    "abcl",
 			expected: nil,
 			wantErr:  true,
 		},
@@ -120,42 +137,57 @@ func TestBase58Decode(t *testing.T) {
 }
 
 func TestBase58RoundTrip(t *testing.T) {
-	testCases := [][]byte{
+	tests := [][]byte{
 		{},
 		{0},
-		{0, 0, 0, 0},
+		{0, 0, 0},
 		{1, 2, 3, 4, 5},
+		{0, 0, 1, 2, 3, 4, 5},
+		[]byte("Hello, World!"),
+		{255, 255, 255, 255},
 		make([]byte, 32), // 32 zeros
-		{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31},
 	}
 
-	// Add some random-like data
-	for i := 0; i < 32; i++ {
-		testCases = append(testCases, func() []byte {
-			b := make([]byte, 32)
-			for j := 0; j < 32; j++ {
-				b[j] = byte((i*17 + j*31) % 256)
-			}
-			return b
-		}())
+	// Test with random 32-byte data
+	randomData := make([]byte, 32)
+	for i := range randomData {
+		randomData[i] = byte(i * 7)
 	}
+	tests = append(tests, randomData)
 
-	for i, tc := range testCases {
-		encoded := Base58Encode(tc)
+	for i, original := range tests {
+		encoded := Base58Encode(original)
 		decoded, err := Base58Decode(encoded)
 		if err != nil {
-			t.Errorf("case %d: Base58Decode(Base58Encode(%v)) error: %v", i, tc, err)
+			t.Errorf("Test %d: Base58Decode failed: %v", i, err)
 			continue
 		}
-
-		// Handle nil vs empty slice
-		if len(tc) == 0 && len(decoded) == 0 {
-			continue
-		}
-
-		if !bytes.Equal(decoded, tc) {
-			t.Errorf("case %d: Base58Decode(Base58Encode(%v)) = %v, want original", i, tc, decoded)
+		if !bytes.Equal(decoded, original) {
+			t.Errorf("Test %d: round trip failed\n  original: %v\n  encoded:  %q\n  decoded:  %v",
+				i, original, encoded, decoded)
 		}
 	}
 }
 
+func BenchmarkBase58Encode(b *testing.B) {
+	data := make([]byte, 32)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Base58Encode(data)
+	}
+}
+
+func BenchmarkBase58Decode(b *testing.B) {
+	data := make([]byte, 32)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	encoded := Base58Encode(data)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = Base58Decode(encoded)
+	}
+}

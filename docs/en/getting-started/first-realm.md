@@ -97,8 +97,11 @@ func main() {
     ctx := context.Background()
     
     // Step 1: Create node
-    node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
     if err != nil {
+        log.Fatal(err)
+    }
+    if err := node.Start(ctx); err != nil {
         log.Fatal(err)
     }
     defer node.Close()
@@ -107,12 +110,15 @@ func main() {
     fmt.Printf("Current Realm: '%s'\n", node.Realm().CurrentRealm())  // Output: ''
     
     // Step 2: Join Realm
-    err = node.Realm().JoinRealm(ctx, "my-blockchain-mainnet")
+    realm, err := node.Realm("my-blockchain-mainnet")
     if err != nil {
+        log.Fatalf("Failed to get Realm: %v", err)
+    }
+    if err := realm.Join(ctx); err != nil {
         log.Fatalf("Failed to join Realm: %v", err)
     }
     
-    fmt.Printf("Joined: %s\n", node.Realm().CurrentRealm())
+    fmt.Printf("Joined: %s\n", realm.ID())
     
     // Step 3: Now you can use business APIs
     fmt.Println("Ready to send messages!")
@@ -127,15 +133,19 @@ DeP2P supports three Realm types:
 
 | Type | Description | Join Method |
 |------|-------------|-------------|
-| **Public** | Anyone can join | `JoinRealm(ctx, realmID)` |
-| **Protected** | Requires JoinKey | `JoinRealmWithKey(ctx, realmID, key)` |
-| **Private** | Requires invitation | `JoinRealmWithInvite(ctx, realmID, invite)` |
+| **Public** | Anyone can join | `node.Realm(realmID)` + `realm.Join(ctx)` |
+| **Protected** | Requires JoinKey | `node.Realm(realmID)` + `realm.Join(ctx)` |
+| **Private** | Requires invitation | `node.Realm(realmID)` + `realm.Join(ctx)` |
 
 ### Public Realm
 
 ```go
 // Anyone can join
-err := node.Realm().JoinRealm(ctx, "public-chat-room")
+realm, err := node.Realm("public-chat-room")
+if err != nil {
+    log.Fatalf("Failed to get Realm: %v", err)
+}
+err = realm.Join(ctx)
 ```
 
 ### Protected Realm
@@ -145,7 +155,8 @@ err := node.Realm().JoinRealm(ctx, "public-chat-room")
 joinKey, err := node.Realm().CreateProtectedRealm(ctx, "vip-club")
 
 // Join protected Realm (member, needs key)
-err = node.Realm().JoinRealmWithKey(ctx, "vip-club", joinKey)
+realm, _ := node.Realm("vip-club")
+err = realm.Join(ctx)
 ```
 
 ### Private Realm
@@ -155,7 +166,11 @@ err = node.Realm().JoinRealmWithKey(ctx, "vip-club", joinKey)
 invite, err := node.Realm().CreateInvite(ctx, "team-internal", targetNodeID)
 
 // Join with invitation (invitee)
-err = node.Realm().JoinRealmWithInvite(ctx, "team-internal", invite)
+realm, err := node.Realm("team-internal")
+if err != nil {
+    log.Fatalf("Failed to get Realm: %v", err)
+}
+err = realm.JoinWithInvite(ctx, invite)
 ```
 
 ---
@@ -166,17 +181,19 @@ err = node.Realm().JoinRealmWithInvite(ctx, "team-internal", invite)
 
 ```go
 // Join mainnet
-err := node.Realm().JoinRealm(ctx, "chain-mainnet")
-fmt.Println(node.Realm().CurrentRealm())  // chain-mainnet
+realmMainnet, _ := node.Realm("chain-mainnet")
+_ = realmMainnet.Join(ctx)
+fmt.Println(realmMainnet.ID())  // chain-mainnet
 
 // Try to switch to testnet directly (will fail)
-err = node.Realm().JoinRealm(ctx, "chain-testnet")
+realmTestnet, _ := node.Realm("chain-testnet")
+err := realmTestnet.Join(ctx)
 // err == ErrAlreadyJoined
 
 // Correct approach: Leave first, then Join
-_ = node.Realm().LeaveRealm()
-err = node.Realm().JoinRealm(ctx, "chain-testnet")
-fmt.Println(node.Realm().CurrentRealm())  // chain-testnet
+realmMainnet.Leave(ctx)
+err = realmTestnet.Join(ctx)
+fmt.Println(realmTestnet.ID())  // chain-testnet
 ```
 
 ---
@@ -189,14 +206,17 @@ Calling business API without joining Realm:
 
 ```go
 // ❌ Wrong
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
 err := node.Send(ctx, peerID, "/dep2p/app/chat/1.0.0", []byte("hello"))
 fmt.Println(err)  // ErrNotMember
 
 // ✅ Correct
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
-node.Realm().JoinRealm(ctx, "my-realm")
-err := node.Send(ctx, peerID, "/dep2p/app/chat/1.0.0", []byte("hello"))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
+realm, _ := node.Realm("my-realm")
+_ = realm.Join(ctx)
+err := realm.Messaging().Send(ctx, peerID, "/dep2p/app/chat/1.0.0", []byte("hello"))
 fmt.Println(err)  // nil
 ```
 
@@ -206,14 +226,18 @@ Already in a Realm, trying to join another:
 
 ```go
 // ❌ Wrong
-node.Realm().JoinRealm(ctx, "mainnet")
-err := node.Realm().JoinRealm(ctx, "testnet")
+realmMainnet, _ := node.Realm("mainnet")
+_ = realmMainnet.Join(ctx)
+realmTestnet, _ := node.Realm("testnet")
+err := realmTestnet.Join(ctx)
 fmt.Println(err)  // ErrAlreadyJoined
 
 // ✅ Correct
-node.Realm().JoinRealm(ctx, "mainnet")
-_ = node.Realm().LeaveRealm()  // Leave first
-err := node.Realm().JoinRealm(ctx, "testnet")
+realmMainnet, _ := node.Realm("mainnet")
+_ = realmMainnet.Join(ctx)
+realmMainnet.Leave(ctx)  // Leave first
+realmTestnet, _ := node.Realm("testnet")
+err = realmTestnet.Join(ctx)
 fmt.Println(err)  // nil
 ```
 
@@ -236,41 +260,51 @@ func main() {
     ctx := context.Background()
     
     // Create node
-    node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
     if err != nil {
         log.Fatal(err)
     }
+    if err := node.Start(ctx); err != nil {
+        log.Fatal(err)
+    }
     defer node.Close()
-    
-    rm := node.Realm()
     
     // Demonstrate Realm lifecycle
     fmt.Println("=== Realm Lifecycle Demo ===")
     
     // 1. Initial state
-    fmt.Printf("1. Initial Realm: '%s'\n", rm.CurrentRealm())
+    fmt.Printf("1. Initial Realm: '%s'\n", node.Realm().CurrentRealm())
     
     // 2. Join Realm
-    if err := rm.JoinRealm(ctx, "demo-realm"); err != nil {
+    realm1, err := node.Realm("demo-realm")
+    if err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("2. After joining: '%s'\n", rm.CurrentRealm())
+    if err := realm1.Join(ctx); err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("2. After joining: '%s'\n", realm1.ID())
     
     // 3. Try to join again (will fail)
-    err = rm.JoinRealm(ctx, "another-realm")
+    realm2, _ := node.Realm("another-realm")
+    err = realm2.Join(ctx)
     fmt.Printf("3. Duplicate join result: %v\n", err)
     
     // 4. Leave Realm
-    if err := rm.LeaveRealm(); err != nil {
+    if err := realm1.Leave(ctx); err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("4. After leaving: '%s'\n", rm.CurrentRealm())
+    fmt.Printf("4. After leaving: '%s'\n", node.Realm().CurrentRealm())
     
     // 5. Join new Realm
-    if err := rm.JoinRealm(ctx, "new-realm"); err != nil {
+    realm3, err := node.Realm("new-realm")
+    if err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("5. New Realm: '%s'\n", rm.CurrentRealm())
+    if err := realm3.Join(ctx); err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("5. New Realm: '%s'\n", realm3.ID())
 }
 ```
 

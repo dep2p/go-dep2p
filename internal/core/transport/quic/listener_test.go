@@ -1,139 +1,187 @@
 package quic
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/dep2p/go-dep2p/internal/core/identity"
-	identityif "github.com/dep2p/go-dep2p/pkg/interfaces/identity"
-	transportif "github.com/dep2p/go-dep2p/pkg/interfaces/transport"
+	"github.com/dep2p/go-dep2p/pkg/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// TestListenerBasicProperties 测试监听器基本属性
-func TestListenerBasicProperties(t *testing.T) {
-	mgr := identity.NewManager(identityif.DefaultConfig())
-	id, _ := mgr.Create()
-	transport, _ := NewTransport(transportif.DefaultConfig(), id)
-	defer transport.Close()
+// TestListener_Accept 测试接受连接
+func TestListener_Accept(t *testing.T) {
+	id1, err := identity.Generate()
+	require.NoError(t, err)
+	id2, err := identity.Generate()
+	require.NoError(t, err)
 
-	listener, err := transport.Listen(NewAddress("127.0.0.1", 0))
-	if err != nil {
-		t.Fatalf("监听失败: %v", err)
-	}
-	defer func() { _ = listener.Close() }()
+	peer1 := types.PeerID(id1.PeerID())
+	peer2 := types.PeerID(id2.PeerID())
 
-	// 测试地址
-	addr := listener.Addr()
-	if addr == nil {
-		t.Error("地址不应为 nil")
-	}
-	t.Logf("监听地址: %s", addr.String())
+	transport1 := New(peer1, id1)
+	transport2 := New(peer2, id2)
+	defer transport1.Close()
+	defer transport2.Close()
 
-	// 测试多地址
-	multiaddr := listener.Multiaddr()
-	if multiaddr == "" {
-		t.Error("多地址不应为空")
-	}
-	t.Logf("多地址: %s", multiaddr)
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
 
-	// 测试 QuicListener
-	quicListener := listener.(*Listener)
-	if quicListener.QuicListener() == nil {
-		t.Error("QuicListener 不应为 nil")
-	}
+	listener, err := transport2.Listen(laddr)
+	require.NoError(t, err)
+	defer listener.Close()
 
-	// 测试关闭状态
-	if quicListener.IsClosed() {
-		t.Error("新监听器不应处于关闭状态")
+	actualAddr := listener.Addr()
+	require.NotNil(t, actualAddr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 接受连接
+	acceptCh := make(chan error, 1)
+	var acceptedConn *Connection
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			acceptCh <- err
+			return
+		}
+		acceptedConn = conn.(*Connection)
+		acceptCh <- nil
+	}()
+
+	// 拨号
+	dialedConn, err := transport1.Dial(ctx, actualAddr, peer2)
+	require.NoError(t, err)
+	defer dialedConn.Close()
+
+	// 等待接受
+	select {
+	case err := <-acceptCh:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("等待连接超时")
 	}
+	defer acceptedConn.Close()
+
+	// 验证接受的连接
+	assert.Equal(t, peer2, acceptedConn.LocalPeer())
+	assert.Equal(t, peer1, acceptedConn.RemotePeer())
+
+	t.Log("✅ Listener Accept 成功")
 }
 
-// TestListenerClose 测试监听器关闭
-func TestListenerClose(t *testing.T) {
-	mgr := identity.NewManager(identityif.DefaultConfig())
-	id, _ := mgr.Create()
-	transport, _ := NewTransport(transportif.DefaultConfig(), id)
+// TestListener_Addr 测试获取监听地址
+func TestListener_Addr(t *testing.T) {
+	id, err := identity.Generate()
+	require.NoError(t, err)
+
+	peer := types.PeerID(id.PeerID())
+	transport := New(peer, id)
 	defer transport.Close()
 
-	listener, err := transport.Listen(NewAddress("127.0.0.1", 0))
-	if err != nil {
-		t.Fatalf("监听失败: %v", err)
-	}
+	t.Run("IPv4地址", func(t *testing.T) {
+		laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+		require.NoError(t, err)
 
-	quicListener := listener.(*Listener)
+		listener, err := transport.Listen(laddr)
+		require.NoError(t, err)
+		defer listener.Close()
+
+		addr := listener.Addr()
+		require.NotNil(t, addr)
+
+		// 验证地址格式
+		addrStr := addr.String()
+		assert.Contains(t, addrStr, "/ip4/127.0.0.1/udp/")
+		assert.Contains(t, addrStr, "/quic-v1")
+
+		// 验证端口不为 0（因为 0 会被分配实际端口）
+		port, err := addr.ValueForProtocol(types.ProtocolUDP)
+		require.NoError(t, err)
+		assert.NotEqual(t, "0", port)
+	})
+
+	t.Run("Multiaddr方法", func(t *testing.T) {
+		laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+		require.NoError(t, err)
+
+		listener, err := transport.Listen(laddr)
+		require.NoError(t, err)
+		defer listener.Close()
+
+		// Multiaddr 应该和 Addr 返回相同结果
+		addr := listener.Addr()
+		multiaddr := listener.Multiaddr()
+		assert.Equal(t, addr.String(), multiaddr.String())
+	})
+
+	t.Log("✅ Listener Addr 正确返回地址")
+}
+
+// TestListener_Close 测试关闭监听器
+func TestListener_Close(t *testing.T) {
+	id, err := identity.Generate()
+	require.NoError(t, err)
+
+	peer := types.PeerID(id.PeerID())
+	transport := New(peer, id)
+	defer transport.Close()
+
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
+
+	listener, err := transport.Listen(laddr)
+	require.NoError(t, err)
 
 	// 关闭监听器
-	if err := listener.Close(); err != nil {
-		t.Errorf("关闭监听器失败: %v", err)
-	}
+	err = listener.Close()
+	assert.NoError(t, err)
 
-	// 验证已关闭
-	if !quicListener.IsClosed() {
-		t.Error("监听器应处于关闭状态")
-	}
+	// 关闭后尝试接受应该失败
+	_, err = listener.Accept()
+	assert.Error(t, err)
 
-	// 重复关闭不应报错
-	if err := listener.Close(); err != nil {
-		t.Errorf("重复关闭不应报错: %v", err)
-	}
+	t.Log("✅ Listener Close 正确关闭")
 }
 
-// TestListenerAcceptAfterClose 测试关闭后接受连接
-func TestListenerAcceptAfterClose(t *testing.T) {
-	mgr := identity.NewManager(identityif.DefaultConfig())
-	id, _ := mgr.Create()
-	transport, _ := NewTransport(transportif.DefaultConfig(), id)
+// TestListener_AcceptAfterClose 测试关闭后接受
+func TestListener_AcceptAfterClose(t *testing.T) {
+	id, err := identity.Generate()
+	require.NoError(t, err)
+
+	peer := types.PeerID(id.PeerID())
+	transport := New(peer, id)
 	defer transport.Close()
 
-	listener, err := transport.Listen(NewAddress("127.0.0.1", 0))
-	if err != nil {
-		t.Fatalf("监听失败: %v", err)
-	}
+	laddr, err := types.NewMultiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+	require.NoError(t, err)
+
+	listener, err := transport.Listen(laddr)
+	require.NoError(t, err)
+
+	// 在 goroutine 中等待 Accept
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := listener.Accept()
+		errCh <- err
+	}()
+
+	// 短暂等待确保 Accept 已经开始
+	time.Sleep(100 * time.Millisecond)
 
 	// 关闭监听器
 	listener.Close()
 
-	// 尝试接受连接
-	_, err = listener.Accept()
-	if err == nil {
-		t.Error("在关闭的监听器上接受连接应返回错误")
+	// Accept 应该返回错误
+	select {
+	case err := <-errCh:
+		assert.Error(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Accept 应该在关闭后返回")
 	}
+
+	t.Log("✅ 关闭后 Accept 正确返回错误")
 }
-
-// TestListenerMultipleAddresses 测试监听多个地址
-func TestListenerMultipleAddresses(t *testing.T) {
-	mgr := identity.NewManager(identityif.DefaultConfig())
-	id, _ := mgr.Create()
-	transport, _ := NewTransport(transportif.DefaultConfig(), id)
-	defer transport.Close()
-
-	// 监听第一个地址
-	listener1, err := transport.Listen(NewAddress("127.0.0.1", 0))
-	if err != nil {
-		t.Fatalf("监听失败: %v", err)
-	}
-	defer listener1.Close()
-
-	// 监听第二个地址
-	listener2, err := transport.Listen(NewAddress("127.0.0.1", 0))
-	if err != nil {
-		t.Fatalf("监听第二个地址失败: %v", err)
-	}
-	defer listener2.Close()
-
-	// 验证两个地址不同
-	addr1 := listener1.Addr().String()
-	addr2 := listener2.Addr().String()
-
-	if addr1 == addr2 {
-		t.Error("两个监听器的地址应该不同")
-	}
-
-	t.Logf("监听器1: %s", addr1)
-	t.Logf("监听器2: %s", addr2)
-
-	// 验证监听器数量
-	if transport.ListenersCount() != 2 {
-		t.Errorf("应有 2 个监听器，实际有 %d 个", transport.ListenersCount())
-	}
-}
-

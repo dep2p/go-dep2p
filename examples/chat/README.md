@@ -1,623 +1,409 @@
-# Chat 示例 - 局域网自动发现聊天
-
-这是一个交互式聊天示例，演示如何使用 mDNS 在局域网内自动发现其他节点并建立 P2P 连接。
+# DeP2P Chat - 统一 P2P 聊天示例
 
 ## 概述
 
-在局域网中，节点无需知道彼此的地址，只需启动程序，mDNS 会自动处理发现和连接。就像蓝牙设备自动配对一样简单！
-
-```
-局域网 (WiFi/以太网)
-┌─────────────────────────────────────────┐
-│                                         │
-│   Alice 的电脑         Bob 的电脑       │
-│   ┌─────────┐         ┌─────────┐      │
-│   │  Chat   │◄─ mDNS ─►│  Chat   │     │
-│   │  App    │    ↓    │  App    │      │
-│   └─────────┘  自动发现  └─────────┘      │
-│       ↑                    ↑            │
-│       └────────P2P 连接─────┘            │
-│                                         │
-└─────────────────────────────────────────┘
-```
-
-## 你将学到什么
-
-- ✅ 什么是 mDNS（多播 DNS）
-- ✅ 如何在局域网内自动发现节点
-- ✅ 如何管理多个对等方连接
-- ✅ 如何构建交互式命令行程序
-- ✅ 多节点广播消息
-
-## 什么是 mDNS？
-
-### 通俗解释
-
-想象你在一个房间里喊"有人在吗？"，房间里的人听到后会回应"我在这儿！"。mDNS 就是这样工作的：
-
-1. **你的节点广播**: "我是 Alice，正在寻找聊天伙伴"
-2. **其他节点回应**: "我是 Bob，我也在聊天"
-3. **自动连接**: 双方交换信息并建立连接
-
-### 技术解释
-
-**mDNS** (Multicast DNS) 是一种在局域网内进行服务发现的协议：
-
-- **多播**: 一对多通信，一个节点发送，多个节点接收
-- **无需中心服务器**: 节点之间直接通信
-- **零配置**: 无需手动配置 IP 地址
-- **端口**: 使用 UDP 5353 端口
-
-### 使用场景
-
-mDNS 适合：
-- ✅ 局域网环境（家庭、办公室、会议室）
-- ✅ 临时组网（游戏、协作、文件共享）
-- ✅ IoT 设备发现
-
-mDNS 不适合：
-- ❌ 跨互联网通信（需要使用 DHT 或 Bootstrap）
-- ❌ 高安全性要求（需要额外的身份验证）
-- ❌ 大规模网络（会产生较多广播流量）
-
-## 前置要求
-
-- **网络**: 必须在同一局域网（同一 WiFi 或以太网）
-- **防火墙**: 允许 UDP 5353 端口（mDNS）
-- **多播**: 网络需要支持多播（大多数家庭网络支持）
-
-### 检查网络
-
-```bash
-# 检查是否在同一网络
-# 方法 1: 查看 IP 地址，确保前三段相同
-# macOS/Linux
-ifconfig | grep "inet "
-# Windows
-ipconfig
-
-# 方法 2: 互相 ping 测试
-ping 192.168.1.100  # 替换为对方的 IP
-```
-
-## 快速开始
-
-### 第一步：启动第一个节点（Alice）
-
-在电脑 A 上：
-
-```bash
-cd examples/chat/
-go run main.go -nick Alice
-```
-
-输出：
-
-```
-╔════════════════════════════════════════╗
-║     DeP2P Chat - mDNS 自动发现聊天     ║
-╚════════════════════════════════════════╝
-
-🚀 节点启动成功！
-   节点 ID: 5Q2STWvBAliceNodeID...
-   昵称: Alice
-
-📡 mDNS 发现已启动，正在广播...
-
-💬 开始聊天！直接输入消息或使用命令：
-   /peers  - 查看连接的节点
-   /info   - 查看本节点信息
-   /help   - 显示帮助
-   /quit   - 退出程序
-
->
-```
-
-### 第二步：启动第二个节点（Bob）
-
-在电脑 B 上（或同一电脑的另一个终端）：
-
-```bash
-cd examples/chat/
-go run main.go -nick Bob
-```
-
-### 第三步：观察自动发现
-
-几秒钟后，Alice 的终端会显示：
-
-```
-🔍 发现新节点: Bob (5Q2STWvBBobNodeID...)
-🤝 已连接到: Bob
-```
-
-Bob 的终端也会显示：
-
-```
-🔍 发现新节点: Alice (5Q2STWvBAliceNodeID...)
-🤝 已连接到: Alice
-```
-
-✨ **太棒了！** 两个节点自动发现并连接，无需手动输入任何地址！
-
-### 第四步：开始聊天
-
-在 Alice 的终端输入：
-
-```
-> Hello Bob!
-```
-
-Bob 的终端会立即显示：
-
-```
-[Alice] Hello Bob!
-```
-
-在 Bob 的终端输入：
-
-```
-> Hi Alice! How are you?
-```
-
-Alice 的终端会显示：
-
-```
-[Bob] Hi Alice! How are you?
-```
-
-### 第五步：使用命令
-
-查看已连接的节点：
-
-```
-> /peers
-
-已连接的节点 (1):
-  [1] Bob (5Q2STWvBBobNodeID...)
-```
-
-查看本节点信息：
-
-```
-> /info
-
-节点信息:
-  ID: 5Q2STWvBAliceNodeID...
-  昵称: Alice
-  监听地址: /ip4/192.168.1.100/udp/54321/quic-v1
-```
-
-## 命令参考
-
-### 聊天命令
-
-| 命令 | 说明 | 示例 |
-|------|------|------|
-| 直接输入 | 发送消息给所有连接的节点 | `Hello everyone!` |
-| `/peers` | 列出当前连接的所有节点 | `/peers` |
-| `/info` | 显示本节点的信息 | `/info` |
-| `/connect` | 手动连接到指定节点 | `/connect <ID> <ADDR>` |
-| `/help` | 显示帮助信息 | `/help` |
-| `/quit` | 退出程序 | `/quit` |
-
-### 命令详解
-
-#### /peers - 查看连接
-
-```
-> /peers
-
-已连接的节点 (2):
-  [1] Alice (5Q2STWvBAlice...) 
-  [2] Bob (5Q2STWvBBob...)
-```
-
-显示所有活跃连接的节点及其 ID。
-
-#### /info - 节点信息
-
-```
-> /info
-
-节点信息:
-  ID: 5Q2STWvBCharlie...
-  昵称: Charlie
-  监听地址:
-    [1] /ip4/192.168.1.102/udp/56789/quic-v1
-    [2] /ip4/127.0.0.1/udp/56789/quic-v1
-  已连接: 2 个节点
-```
-
-显示本节点的详细信息。
-
-#### /connect - 手动连接
-
-如果 mDNS 无法工作，可以手动连接：
-
-```
-> /connect 5Q2STWvBBob... /ip4/192.168.1.101/udp/54321/quic-v1
-
-正在连接...
-✅ 连接成功！
-```
-
-#### /help - 帮助
-
-显示所有可用命令及其说明。
-
-#### /quit - 退出
-
-优雅地关闭所有连接并退出程序。
-
-## 命令行参数
-
-| 参数 | 说明 | 默认值 | 示例 |
-|------|------|--------|------|
-| `-nick` | 设置昵称 | 节点 ID 前 8 位 | `-nick Alice` |
-| `-port` | 监听端口 | `0` (随机) | `-port 4001` |
-| `-realm` | Realm ID（聊天室隔离） | `lan-chat` | `-realm my-room` |
-| `-log-file` | 日志文件路径（将结构化日志写入文件） | 空（输出到控制台） | `-log-file chat.log` |
-
-### 示例
-
-```bash
-# 使用自定义昵称
-go run main.go -nick "Alice"
-
-# 使用固定端口
-go run main.go -nick "Bob" -port 5000
-
-# 将日志写入文件（推荐，避免日志干扰聊天界面）
-go run main.go -nick "Alice" -log-file chat.log
-
-# 使用自定义 Realm（不同 Realm 的节点仍可能被系统发现，但业务连接/业务协议会被隔离）
-go run main.go -nick "Alice" -realm "room-1"
-go run main.go -nick "Bob" -realm "room-1"  # 同一 Realm，可以互相发现
-
-# 默认（随机端口，自动昵称）
-go run main.go
-```
-
-## mDNS 工作原理
-
-### 发现流程
-
-```mermaid
-sequenceDiagram
-    participant A as Alice
-    participant M as Multicast (224.0.0.251:5353)
-    participant B as Bob
-    
-    Note over A: 启动节点
-    A->>M: 1. 广播服务通告<br/>"_dep2p-chat._udp"
-    
-    Note over B: 启动节点  
-    B->>M: 2. 广播服务通告<br/>"_dep2p-chat._udp"
-    
-    M->>A: 3. 收到 Bob 的通告
-    M->>B: 4. 收到 Alice 的通告
-    
-    A->>B: 5. 建立 P2P 连接
-    Note over A,B: ✅ 连接建立
-    
-    A->>B: 6. 发送消息
-    B->>A: 7. 发送消息
-```
-
-### 技术细节
-
-1. **服务注册**: 节点启动时注册 mDNS 服务
-   ```
-   服务名: _dep2p-chat._udp
-   端口: 节点监听端口
-   TXT 记录: 节点 ID、昵称等
-   ```
-
-2. **定期广播**: 每隔一段时间重新广播（保持活跃）
-
-3. **监听响应**: 接收其他节点的广播并记录
-
-4. **建立连接**: 获取对方地址后建立 P2P 连接
-
-5. **连接维护**: 定期心跳，断线重连
-
-## 代码解析
-
-### 关键代码 1: mDNS（底层必备能力，无需用户启用）
-
-```go
-// v1.1+：mDNS 是底层必备能力，默认开启。
-// 用户只需要选择预设，使用 StartNode 一步启动（QUIC 传输）
-node, err := dep2p.StartNode(ctx,
-    dep2p.WithPreset(dep2p.PresetDesktop),
-)
-```
-
-**解析**:
-- mDNS 默认启用：无需 `WithMDNS(true)` 之类的开关
-- `PresetDesktop`: 仅决定资源/参数倾向，不影响“是否启用”底层能力
-
-### 关键代码 2: 注册聊天协议
-
-```go
-// 设置协议处理器
-node.SetProtocolHandler(chatProtocol, func(stream dep2p.Stream) {
-    // 每个连接会调用一次
-    handleChatStream(stream, nickname)
-})
-```
-
-**解析**:
-- 当其他节点连接时，这个函数会被调用
-- 每个对等方一个独立的 goroutine
-- 流保持打开，持续接收消息
-
-### 关键代码 3: 处理发现事件
-
-```go
-// mDNS 会自动调用此回调
-func onPeerDiscovered(peerInfo dep2p.PeerInfo) {
-    fmt.Printf("🔍 发现新节点: %s\n", peerInfo.ID)
-    
-    // 自动连接（DialByNodeID）
-    conn, err := node.Connect(ctx, peerInfo.ID)
-    if err == nil {
-        fmt.Printf("🤝 已连接到: %s\n", getNickname(peerInfo.ID))
-    }
-}
-```
-
-**解析**:
-- mDNS 发现新节点时自动调用
-- 立即尝试建立连接
-- 存储连接以便后续通信
-
-### 关键代码 4: 广播消息
-
-```go
-func broadcastMessage(msg string) {
-    peersLock.RLock()
-    defer peersLock.RUnlock()
-    
-    // 向所有对等方发送
-    for peerID, stream := range peers {
-        stream.Write([]byte(msg))
-    }
-}
-```
-
-**解析**:
-- 遍历所有活跃连接
-- 并发发送消息
-- 使用锁保证线程安全
-
-## 故障排除
-
-### 问题 1: 节点无法互相发现
-
-**症状**: 启动两个节点后，没有看到"发现新节点"的消息。
-
-**可能原因和解决方案**:
-
-#### 原因 1: 不在同一网络
-
-```bash
-# 检查 IP 地址
-# 电脑 A
-ifconfig | grep "inet "
-# 输出: inet 192.168.1.100
-
-# 电脑 B  
-ifconfig | grep "inet "
-# 输出: inet 192.168.1.101
-
-# ✅ 前三段相同 (192.168.1) = 同一网络
-# ❌ 不同 = 不在同一网络
-```
-
-**解决**: 连接到同一 WiFi 或路由器。
-
-#### 原因 2: 防火墙阻止
-
-```bash
-# macOS: 系统偏好设置 > 安全性与隐私 > 防火墙
-# 允许 Go 程序接收连接
-
-# Linux: 检查 iptables
-sudo iptables -L | grep 5353
-
-# 临时关闭防火墙测试（仅用于排查）
-# 注意：测试完记得重新开启
-```
-
-#### 原因 3: 网络不支持多播
-
-某些企业网络或公共 WiFi 禁用多播。
-
-**检测方法**:
-
-```bash
-# 测试多播是否工作
-# 在电脑 A 运行:
-python3 -m http.server 8000
-
-# 在电脑 B 访问:
-curl http://192.168.1.100:8000
-
-# 如果能访问，说明网络可达，问题在多播
-```
-
-**解决**: 
-- 使用支持多播的网络
-- 或使用 `/connect` 命令手动连接
-
-### 问题 2: 连接建立但消息不显示
-
-**症状**: 看到"已连接到..."，但发送消息没有反应。
-
-**可能原因**:
-
-1. **流被意外关闭**: 检查日志是否有错误
-2. **编码问题**: 确保使用 UTF-8
-3. **缓冲区问题**: 消息可能还在缓冲区
-
-**解决方案**:
-
-```go
-// 发送后刷新缓冲区
-stream.Write([]byte(msg))
-stream.Flush()  // 如果有此方法
-```
-
-### 问题 3: Docker/虚拟机环境
-
-**症状**: 在 Docker 容器或虚拟机中运行时，mDNS 不工作。
-
-**原因**: 虚拟网络隔离
-
-**解决方案**:
-
-#### Docker
-```bash
-# 使用 host 网络模式
-docker run --network host ...
-
-# 或暴露 5353 端口（UDP）
-docker run -p 5353:5353/udp ...
-```
-
-#### 虚拟机
-- 使用桥接模式（Bridged），不要用 NAT
-- 确保虚拟机在主机同一网段
-
-### 问题 4: 发现延迟
-
-**症状**: 节点启动后很久才发现对方。
-
-**这是正常现象**:
-- mDNS 通告间隔通常是 5-10 秒
-- 首次发现可能需要 10-30 秒
-
-**加快发现**:
-- 无需操作，耐心等待
-- 或使用 `/connect` 手动连接
-
-### 问题 5: 昵称包含特殊字符
-
-**症状**: 昵称中的中文或表情符号显示异常。
-
-**解决方案**:
-
-```bash
-# 确保终端支持 UTF-8
-# macOS/Linux 默认支持
-
-# Windows 需要设置
-chcp 65001  # 切换到 UTF-8
-```
-
-## 进阶练习
-
-### 练习 1: 添加私聊功能
-
-修改代码，支持发送消息给特定用户：
-
-```go
-// 命令格式: @Bob Hello!
-if strings.HasPrefix(msg, "@") {
-    parts := strings.SplitN(msg, " ", 2)
-    targetNick := parts[0][1:]  // 去掉 @
-    message := parts[1]
-    
-    // 查找目标节点并发送
-    sendToNick(targetNick, message)
-}
-```
-
-### 练习 2: 显示在线状态
-
-定期广播在线状态：
-
-```go
-// 每 30 秒发送心跳
-ticker := time.NewTicker(30 * time.Second)
-for range ticker.C {
-    broadcastMessage("❤️ HEARTBEAT")
-}
-```
-
-### 练习 3: 消息历史
-
-保存聊天记录：
-
-```go
-var messageHistory []string
-
-func saveMessage(msg string) {
-    messageHistory = append(messageHistory, 
-        fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05"), msg))
-}
-
-// 命令: /history 查看历史
-```
-
-### 练习 4: 文件共享
-
-实现简单的文件发送：
-
-```go
-// 命令: /send file.txt
-func sendFile(filename string) {
-    data, _ := os.ReadFile(filename)
-    // 发送文件头
-    stream.Write([]byte("FILE:" + filename + "\n"))
-    // 发送文件内容
-    stream.Write(data)
-}
-```
-
-### 练习 5: 群组功能
-
-支持创建多个聊天群组：
-
-```go
-// 命令: /join #general
-// 只向同一群组的节点发送消息
-groups := map[string][]dep2p.PeerID{
-    "#general": {...},
-    "#tech": {...},
-}
-```
-
-## 与 Echo 示例的对比
-
-| 特性 | Echo 示例 | Chat 示例 |
-|------|----------|----------|
-| **发现方式** | 手动指定地址 | mDNS 自动发现 |
-| **连接模式** | 单次请求-响应 | 持久连接 |
-| **通信方向** | 单向（有请求才有响应） | 双向（随时发送） |
-| **节点数量** | 2 个（1 listener + 1 dialer） | 多个（自动组网） |
-| **适用场景** | 学习基础、简单测试 | 实际应用、多方协作 |
-
-## 下一步
-
-完成 Chat 示例后，继续学习：
-
-1. **[Relay 示例](../relay/)** - 学习跨互联网通信
-2. **构建自己的应用** - 参考此示例构建实用程序
-
-## 相关资源
-
-- **mDNS 实现**: [internal/core/discovery/mdns/](../../internal/core/discovery/mdns/)
-- **服务发现**: [docs/01-design/protocols/network/01-discovery.md](../../docs/01-design/protocols/network/01-discovery.md)
-- **多对等方通信**: [design/architecture/components.md](../../design/architecture/components.md)
-
-## 参考项目
-
-- [go-libp2p examples/chat-with-mdns](https://github.com/libp2p/go-libp2p)
-- [mdns protocol spec](https://datatracker.ietf.org/doc/html/rfc6762)
+这是一个统一的 P2P 聊天示例，整合了局域网和跨网络场景，演示 DeP2P 的核心功能：
+
+- **mDNS 自动发现** - 同一局域网节点自动连接
+- **Bootstrap 发现** - 通过引导节点发现其他节点
+- **Relay** - NAT 后节点通过中继通信（统一 Relay v2.0）
+- **Gateway** - Realm 内部网关，运行时可配置（Realm 层）
+- **PubSub 群聊** - 基于 GossipSub 的发布订阅
+- **Streams 私聊** - 基于双向流的点对点消息
 
 ---
 
-🎉 **太棒了！** 你已经掌握了 mDNS 自动发现和多节点通信！
+## 架构说明
+
+### Node 层 vs Realm 层
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              架构分层                                         │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │                         Node 层（启动前配置）                            │ │
+│  │                                                                        │ │
+│  │  配置项：                                                               │ │
+│  │    --bootstrap <addr>     引导节点地址                                  │ │
+│  │    --relay <addr>         Relay 地址                                   │ │
+│  │                                                                        │ │
+│  │  服务能力：                                                             │ │
+│  │    --serve                启用 Bootstrap + Relay 服务                  │ │
+│  │    --public-addr <addr>   公网地址（服务模式必需）                       │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                    │                                         │
+│                                    │ JoinRealm()                             │
+│                                    ▼                                         │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │                        Realm 层（运行时配置）                            │ │
+│  │                                                                        │ │
+│  │  配置项：                                                               │ │
+│  │    /gateway set <addr>    设置 Gateway（运行时）                        │ │
+│  │    /gateway remove        移除 Gateway                                 │ │
+│  │                                                                        │ │
+│  │  服务能力：                                                             │ │
+│  │    /gateway enable        启用 Gateway 服务                            │ │
+│  │    /gateway disable       禁用 Gateway 服务                            │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+**关键区别**：
+- **Node 层配置**（Bootstrap、Relay）必须在**启动前**指定
+- **Realm 层配置**（Gateway）可以在**运行时**动态配置
+
+---
+
+## 快速开始
+
+### 场景 1：零配置启动（局域网聊天）
+
+最简单的使用方式，同一局域网内的节点自动通过 mDNS 发现并连接。
+
+```bash
+# 终端 1
+go run ./examples/chat
+
+# 终端 2（同一局域网）
+go run ./examples/chat
+
+# 终端 3（可选）
+go run ./examples/chat
+```
+
+节点会自动发现并连接，直接开始聊天。
+
+---
+
+### 场景 2：直接连接（知道对方地址）
+
+如果知道对方的完整地址，可以直接连接。
+
+```bash
+# 节点 A 启动
+go run ./examples/chat
+
+# 节点 A 会显示连接地址：
+# 🔗 连接地址（分享给其他人）:
+#    /ip4/192.168.1.100/udp/9000/quic-v1/p2p/12D3KooWxxxxxxxx
+
+# 节点 B 启动后，使用 /connect 命令连接
+go run ./examples/chat
+[me] /connect /ip4/192.168.1.100/udp/9000/quic-v1/p2p/12D3KooWxxxxxxxx
+# ✅ 已连接 12D3KooW
+```
+
+---
+
+### 场景 3：跨网络聊天（引导 + 中继）
+
+在不同网络（如家里 WiFi、公司网络、4G 移动网络）之间聊天。
+
+#### 步骤 1：在云服务器上启动基础设施节点
+
+```bash
+go run ./examples/chat \
+    --serve \
+    --port 4001 \
+    --public-addr "/ip4/YOUR_PUBLIC_IP/udp/4001/quic-v1"
+```
+
+输出示例：
+```
+╔════════════════════════════════════════════════════════════╗
+║           DeP2P Chat - Server Mode                         ║
+╚════════════════════════════════════════════════════════════╝
+
+服务模式: Bootstrap + Relay
+
+🔗 连接地址（分享给其他人）:
+   /ip4/1.2.3.4/udp/4001/quic-v1/p2p/12D3KooWxxxxxxxx
+```
+
+#### 步骤 2：在 WiFi 网络启动客户端
+
+```bash
+go run ./examples/chat \
+    --bootstrap "/ip4/1.2.3.4/udp/4001/quic-v1/p2p/12D3KooWxxxxxxxx" \
+    --relay "/ip4/1.2.3.4/udp/4001/quic-v1/p2p/12D3KooWxxxxxxxx"
+```
+
+#### 步骤 3：在 4G 网络启动客户端
+
+```bash
+go run ./examples/chat \
+    --bootstrap "/ip4/1.2.3.4/udp/4001/quic-v1/p2p/12D3KooWxxxxxxxx" \
+    --relay "/ip4/1.2.3.4/udp/4001/quic-v1/p2p/12D3KooWxxxxxxxx"
+```
+
+现在 WiFi 和 4G 上的节点可以通过引导节点发现彼此，通过中继进行通信。
+
+---
+
+## 命令参考
+
+### 启动参数
+
+```bash
+go run ./examples/chat [选项]
+
+Node 层配置（启动前）：
+  --bootstrap <addr>      引导节点地址（逗号分隔多个）
+  --relay <addr>          Relay 地址
+
+服务能力开关：
+  --serve                 服务模式：启用 Bootstrap + Relay 能力
+  --public-addr <addr>    公网地址（--serve 时必需）
+
+其他：
+  --port <port>           监听端口（0 = 随机）
+  --nick <name>           昵称
+  --realm-key <key>       Realm PSK（相同密钥的节点加入同一 Realm）
+```
+
+### 运行时命令
+
+| 命令 | 说明 |
+|------|------|
+| `<消息>` | 发送群聊到默认主题 |
+| `/msg <ID> <消息>` | 私聊（ID 可只输入前几位） |
+| `/connect <地址>` | 直接连接节点 |
+| `/peers` | 查看在线成员 |
+| `/status` | 查看网络状态 |
+| `/sub <主题>` | 订阅新主题 |
+| `/unsub <主题>` | 取消订阅主题 |
+| `/topics` | 列出已订阅主题 |
+| `/info` | 显示节点信息 |
+| `/help` | 显示帮助 |
+| `/quit` | 退出程序 |
+
+### Relay 命令（Realm 层）
+
+| 命令 | 说明 |
+|------|------|
+| `/gateway set <地址>` | 设置 Gateway |
+| `/gateway remove` | 移除 Gateway |
+| `/gateway enable` | 启用 Gateway 服务（需公网可达） |
+| `/gateway disable` | 禁用 Gateway 服务 |
+| `/relay status` | 查看 Relay 状态 |
+
+---
+
+## 详细场景说明
+
+### 场景 A：两人在同一咖啡厅（局域网）
+
+```
+Alice:  go run ./examples/chat
+Bob:    go run ./examples/chat
+
+# 5秒后自动互相发现
+# [系统背后：mDNS 在工作]
+
+Alice: 你好！
+Bob 看到: [chat/general][12D3KooW] Alice: 你好！
+```
+
+### 场景 B：朋友发来地址让我连接
+
+```
+Me:     go run ./examples/chat
+[me] /connect /ip4/1.2.3.4/udp/4001/quic-v1/p2p/12D3KooWxxxxxxxx
+# ✅ 已连接
+
+# [系统背后：直接建立 QUIC 连接]
+```
+
+### 场景 C：4G 和 WiFi（都在 NAT 后）
+
+```
+# 云服务器（公网可达）
+Server: go run ./examples/chat --serve --port 4001 --public-addr /ip4/公网IP/...
+
+# 4G 用户
+Me:     go run ./examples/chat \
+            --bootstrap /ip4/公网IP/udp/4001/quic-v1/p2p/12D3KooW... \
+            --relay /ip4/公网IP/udp/4001/quic-v1/p2p/12D3KooW...
+
+# WiFi 用户
+Friend: go run ./examples/chat \
+            --bootstrap /ip4/公网IP/udp/4001/quic-v1/p2p/12D3KooW... \
+            --relay /ip4/公网IP/udp/4001/quic-v1/p2p/12D3KooW...
+
+# [系统背后：
+#   1. 两人都连接 Server
+#   2. 通过 Bootstrap 发现对方
+#   3. 尝试直连（打洞）
+#   4. 直连失败则通过 Relay 中继
+# ]
+```
+
+### 场景 D：业务方自建 Gateway
+
+```
+# 业务方服务器启动
+BizServer: go run ./examples/chat --serve --public-addr /ip4/...
+
+# 加入 Realm 后启用 Relay 服务
+[BizServer] /relay enable
+# Relay 服务已启用
+
+# 其他成员运行时设置 Relay
+[Member] /relay set /ip4/业务服务器IP/udp/4001/quic-v1/p2p/12D3KooW...
+# Relay 已设置
+
+# [统一 Relay v2.0：
+#   - 单一 Relay 服务，同时支持节点发现和业务消息转发
+#   - 详见 design/_discussions/20260123-nat-relay-concept-clarification.md
+# ]
+```
+
+---
+
+## 网络状态说明
+
+使用 `/status` 查看详细的网络状态：
+
+```
+╭────────────────────────────────────────────────────────────────╮
+│ 📊 网络状态                                                     │
+├────────────────────────────────────────────────────────────────┤
+│ ─── Node 层 ───                                                │
+│ mDNS:           ✅ 已启用（局域网发现）                          │
+│ Bootstrap:      ✅ 已配置                                       │
+│                    /ip4/1.2.3.4/udp/4001/quic-v1/p2p/12D3K...  │
+│ Relay:          已配置                                           │
+│                                                                │
+│ ─── Realm 层 ───                                               │
+│ Realm ID:       a1b2c3d4e5f6...                                │
+│ Gateway:        未配置 (可用 /gateway set 设置)                 │
+│ Relay 服务:     ❌ 未启用                                       │
+│                                                                │
+│ ─── 连接统计 ───                                                │
+│ 已连接节点:     5                                               │
+╰────────────────────────────────────────────────────────────────╯
+```
+
+---
+
+## 架构图
+
+```
+                     ┌────────────────────────┐
+                     │   云服务器（公网）      │
+                     │   --serve 模式         │
+                     │                        │
+                     │   • Bootstrap 服务     │
+                     │   • Relay 服务         │
+                     │   • 可选参与聊天        │
+                     └───────────┬────────────┘
+                                 │
+         ┌───────────────────────┼───────────────────────┐
+         │                       │                       │
+         ▼                       ▼                       ▼
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  WiFi 节点       │     │   4G 节点       │     │  办公网节点      │
+│  (NAT 后)        │     │   (NAT 后)      │     │  (NAT 后)       │
+│                 │     │                 │     │                 │
+│ --bootstrap ... │     │ --bootstrap ... │     │ --bootstrap ... │
+│ --relay ...     │     │ --relay ...     │     │ --relay ...     │
+└────────┬────────┘     └────────┬────────┘     └────────┬────────┘
+         │                       │                       │
+         └───────────────────────┴───────────────────────┘
+                         同一 Realm (PSK)
+                         通过引导发现
+                         通过中继通信
+```
+
+---
+
+## 通信流程
+
+```
+Client A (WiFi)                    Server (公网)                    Client B (4G)
+      │                                │                                │
+      │──────── 连接 Server ──────────>│                                │
+      │                                │<─────── 连接 Server ───────────│
+      │                                │                                │
+      │<──── Bootstrap: 发现 B ────────│                                │
+      │                                │────── Bootstrap: 发现 A ──────>│
+      │                                │                                │
+      │═══════ 尝试直连 (打洞) ════════════════════════════════════════>│
+      │                          [如果失败]                             │
+      │═══════ 通过 Relay 中继 ═══════>│═══════ 转发消息 ══════════════>│
+      │                                │                                │
+```
+
+---
+
+## 常见问题
+
+### Q: 节点启动后无法自动发现其他局域网节点？
+
+检查：
+1. 确认两台机器在同一局域网
+2. 检查防火墙是否允许 UDP 5353（mDNS 端口）
+3. 检查是否使用相同的 `--realm-key`
+
+### Q: 跨网络无法连接？
+
+检查：
+1. 确认服务器有公网 IP 且端口已开放
+2. 确认 `--bootstrap` 和 `--relay` 地址正确
+3. 检查云服务商安全组/防火墙规则
+
+### Q: 什么时候需要配置 Gateway？
+
+- **Relay**（`--relay`）：统一 Relay v2.0，用于 NAT 穿透和消息转发
+- **Gateway**（`/gateway set`）：Realm 内部网关，用于 Realm 成员间通信
+
+大多数情况下，配置 `--relay` 即可。当业务方需要自建 Realm 网关时，使用 Gateway。
+
+### Q: 没有公网服务器怎么测试跨网络？
+
+方法 1：使用 ngrok/frp 等内网穿透工具
+```bash
+# 本地启动服务模式
+go run ./examples/chat --serve --port 4001
+
+# 使用 ngrok 暴露
+ngrok tcp 4001
+# 得到 tcp://0.tcp.ngrok.io:xxxxx
+
+# 其他客户端使用 ngrok 地址
+go run ./examples/chat \
+    --bootstrap "/dns4/0.tcp.ngrok.io/tcp/xxxxx/p2p/NodeID"
+```
+
+方法 2：在同一局域网测试（验证功能，非跨网络）
+
+---
+
+## 运行时文件
+
+```
+examples/chat/data/
+├── node-{pid}/         # 节点实例数据（按 PID 隔离）
+│   └── dep2p.db/       # BadgerDB 数据库
+└── logs/               # 日志文件
+    └── chat-*.log
+```
+
+清理：
+```bash
+rm -rf examples/chat/data/
+```
+
+---
+
+## 相关文档
+
+| 文档 | 说明 |
+|------|------|
+| [ADR-0009: Bootstrap 极简配置](../../design/01_context/decisions/ADR-0009-bootstrap-simplified.md) | Bootstrap 设计决策 |
+| [ADR-0010: Relay 明确配置](../../design/01_context/decisions/ADR-0010-relay-explicit-config.md) | Relay 设计决策 |
+| [pkg/interfaces/node.go](../../pkg/interfaces/node.go) | Node 接口定义 |
+| [pkg/interfaces/realm.go](../../pkg/interfaces/realm.go) | Realm 接口定义 |

@@ -11,7 +11,7 @@
 │                    DeP2P 核心约束                                    │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
-│  1. 必须先 JoinRealm() 再使用业务 API                               │
+│  1. 必须先 Join() 再使用业务 API                                    │
 │     → 否则返回 ErrNotMember                                         │
 │                                                                      │
 │  2. 一个 Node 同一时间只能加入一个 Realm                             │
@@ -35,7 +35,7 @@
 
 | 约束 | 违反时错误 | 解决方案 |
 |------|-----------|----------|
-| 必须先 JoinRealm() | `ErrNotMember` | 调用 `node.JoinRealmWithKey()` |
+| 必须先 Join() | `ErrNotMember` | 调用 `node.Realm()` + `realm.Join()` |
 | 不能重复加入 Realm | `ErrAlreadyJoined` | 检查 `CurrentRealm()` 或先 `LeaveRealm()` |
 | RealmKey 不匹配 | `ErrAuthFailed` | 确保所有成员使用相同的 realmKey |
 | 地址缺少 NodeID | 连接失败 | 使用 `ShareableAddrs()` 获取完整地址 |
@@ -49,18 +49,18 @@
 
 | API | 默认行为 | 备注 |
 |-----|----------|------|
-| `StartNode()` | 自动生成身份 | 每次启动生成新 NodeID |
-| `StartNode()` | 随机端口 | 使用 `/udp/0/quic-v1` |
-| `StartNode()` | 启用 NAT 穿透 | UPnP/STUN/打洞 |
-| `StartNode()` | 启用 Relay | 作为客户端使用中继 |
+| `New()` + `Start()` | 自动生成身份 | 每次启动生成新 NodeID |
+| `New()` + `Start()` | 随机端口 | 使用 `/udp/0/quic-v1` |
+| `New()` + `Start()` | 启用 NAT 穿透 | UPnP/STUN/打洞 |
+| `New()` + `Start()` | 启用 Relay | 作为客户端使用中继 |
 | `Close()` | 优雅关闭 | 等待 Goodbye 消息传播 |
 
 ### Realm 层
 
 | API | 默认行为 | 备注 |
 |-----|----------|------|
-| `JoinRealmWithKey()` | 自动派生 RealmID | 从 realmKey 哈希派生 |
-| `JoinRealmWithKey()` | 启用 PSK 认证 | 成员间验证 |
+| `Realm()` + `Join()` | 自动派生 RealmID | 从 realmKey 哈希派生 |
+| `Realm()` + `Join()` | 启用 PSK 认证 | 成员间验证 |
 | `CurrentRealm()` | 返回 nil | 未加入时 |
 | `LeaveRealm()` | 清理订阅 | 自动退出所有 Topic |
 
@@ -87,12 +87,12 @@
 ```mermaid
 flowchart LR
     subgraph Node
-        N1["StartNode()"] --> N2["节点就绪"]
+        N1["New() + Start()"] --> N2["节点就绪"]
         N2 --> N3["Close()"]
     end
     
     subgraph Realm
-        R1["JoinRealmWithKey()"] --> R2["Realm 就绪"]
+        R1["Realm() + Join()"] --> R2["Realm 就绪"]
         R2 --> R3["LeaveRealm()"]
     end
     
@@ -105,15 +105,23 @@ flowchart LR
 
 ```go
 // 1. 启动节点
-node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
 if err != nil {
     log.Fatal(err)
 }
 defer node.Close()
+err = node.Start(ctx)
+if err != nil {
+    log.Fatal(err)
+}
 
 // 2. 加入 Realm（必须！）
 realmKey := types.RealmKey(sharedSecret)
-realm, err := node.JoinRealmWithKey(ctx, "my-app", realmKey)
+realm, err := node.Realm("my-app")
+if err != nil {
+    log.Fatal(err)
+}
+err = realm.Join(ctx)
 if err != nil {
     log.Fatal(err)
 }
@@ -131,7 +139,8 @@ pubsub := realm.PubSub()
 
 ```go
 // ❌ 错误：未加入 Realm 就使用业务 API
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
 realm := node.CurrentRealm()  // 返回 nil
 if realm != nil {
     realm.Messaging().Send(ctx, targetID, "/myapp/1.0.0", data)  // 不会执行到这里
@@ -139,12 +148,16 @@ if realm != nil {
 // 实际会返回 ErrNotMember!
 
 // ❌ 错误：重复加入同一 Realm
-node.JoinRealmWithKey(ctx, "realm-a", key)
-node.JoinRealmWithKey(ctx, "realm-a", key)  // ErrAlreadyJoined!
+realm1, _ := node.Realm("realm-a")
+_ = realm1.Join(ctx)
+realm2, _ := node.Realm("realm-a")
+_ = realm2.Join(ctx)  // ErrAlreadyJoined!
 
 // ❌ 错误：不同 realmKey
-nodeA.JoinRealmWithKey(ctx, "test", keyA)
-nodeB.JoinRealmWithKey(ctx, "test", keyB)  // 无法互相验证！
+realmA, _ := nodeA.Realm("test")
+_ = realmA.Join(ctx)
+realmB, _ := nodeB.Realm("test")
+_ = realmB.Join(ctx)  // 无法互相验证！
 ```
 
 ---
@@ -246,7 +259,7 @@ messaging.SendWithProtocol(ctx, targetID, "chat/1.0.0", data)
 使用此清单检查你的代码是否符合约束：
 
 ```
-□ 启动节点后调用了 JoinRealmWithKey()?
+□ 启动节点后调用了 Realm() + Join()?
 □ 所有成员使用相同的 realmKey?
 □ 业务 API 在 JoinRealm 之后调用?
 □ 协议 ID 包含版本号（如 /1.0.0）?

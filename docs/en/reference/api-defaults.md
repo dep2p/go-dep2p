@@ -11,7 +11,7 @@ This document lists DeP2P's core constraints, API default behaviors, and how to 
 │                    DeP2P Core Constraints                           │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
-│  1. Must call JoinRealm() before using business APIs               │
+│  1. Must call Realm().Join() before using business APIs            │
 │     → Otherwise returns ErrNotMember                                │
 │                                                                      │
 │  2. A Node can only join one Realm at a time                       │
@@ -35,7 +35,7 @@ This document lists DeP2P's core constraints, API default behaviors, and how to 
 
 | Constraint | Error When Violated | Solution |
 |------------|---------------------|----------|
-| Must call JoinRealm() first | `ErrNotMember` | Call `node.JoinRealmWithKey()` |
+| Must call Realm().Join() first | `ErrNotMember` | Call `node.Realm()` + `realm.Join()` |
 | Cannot join Realm twice | `ErrAlreadyJoined` | Check `CurrentRealm()` or call `LeaveRealm()` first |
 | RealmKey mismatch | `ErrAuthFailed` | Ensure all members use the same realmKey |
 | Address missing NodeID | Connection fails | Use `ShareableAddrs()` to get full address |
@@ -49,18 +49,18 @@ This document lists DeP2P's core constraints, API default behaviors, and how to 
 
 | API | Default Behavior | Notes |
 |-----|------------------|-------|
-| `StartNode()` | Auto-generate identity | New NodeID on each start |
-| `StartNode()` | Random port | Uses `/udp/0/quic-v1` |
-| `StartNode()` | Enable NAT traversal | UPnP/STUN/hole punching |
-| `StartNode()` | Enable Relay | As client using relay |
+| `New()` | Auto-generate identity | New NodeID on each start |
+| `New()` | Random port | Uses `/udp/0/quic-v1` |
+| `Start()` | Enable NAT traversal | UPnP/STUN/hole punching |
+| `Start()` | Enable Relay | As client using relay |
 | `Close()` | Graceful shutdown | Waits for Goodbye message propagation |
 
 ### Realm Layer
 
 | API | Default Behavior | Notes |
 |-----|------------------|-------|
-| `JoinRealmWithKey()` | Auto-derive RealmID | Derived from realmKey hash |
-| `JoinRealmWithKey()` | Enable PSK auth | Member verification |
+| `Realm().Join()` | Auto-derive RealmID | Derived from realmKey hash |
+| `Realm().Join()` | Enable PSK auth | Member verification |
 | `CurrentRealm()` | Returns nil | When not joined |
 | `LeaveRealm()` | Clean up subscriptions | Automatically leaves all Topics |
 
@@ -87,34 +87,42 @@ This document lists DeP2P's core constraints, API default behaviors, and how to 
 ```mermaid
 flowchart LR
     subgraph Node
-        N1["StartNode()"] --> N2["Node Ready"]
-        N2 --> N3["Close()"]
+        N1["New()"] --> N2["Start()"]
+        N2 --> N3["Node Ready"]
+        N3 --> N4["Close()"]
     end
     
     subgraph Realm
-        R1["JoinRealmWithKey()"] --> R2["Realm Ready"]
-        R2 --> R3["LeaveRealm()"]
+        R1["Realm()"] --> R2["Join()"]
+        R2 --> R3["Realm Ready"]
+        R3 --> R4["LeaveRealm()"]
     end
     
-    N2 --> R1
-    R3 --> N2
-    R2 --> BizAPI["Business APIs Available"]
+    N3 --> R1
+    R4 --> N3
+    R3 --> BizAPI["Business APIs Available"]
 ```
 
 ### Correct Lifecycle
 
 ```go
 // 1. Start node
-node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
 if err != nil {
+    log.Fatal(err)
+}
+if err := node.Start(ctx); err != nil {
     log.Fatal(err)
 }
 defer node.Close()
 
 // 2. Join Realm (required!)
 realmKey := types.RealmKey(sharedSecret)
-realm, err := node.JoinRealmWithKey(ctx, "my-app", realmKey)
+realm, err := node.Realm("my-app")
 if err != nil {
+    log.Fatal(err)
+}
+if err := realm.Join(ctx); err != nil {
     log.Fatal(err)
 }
 
@@ -131,16 +139,20 @@ pubsub := realm.PubSub()
 
 ```go
 // ❌ Wrong: Using business API without joining Realm
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
 node.Send(ctx, targetID, "/myapp/1.0.0", data)  // ErrNotMember!
 
 // ❌ Wrong: Joining same Realm twice
-node.JoinRealmWithKey(ctx, "realm-a", key)
-node.JoinRealmWithKey(ctx, "realm-a", key)  // ErrAlreadyJoined!
+realm, _ := node.Realm("realm-a")
+_ = realm.Join(ctx)
+_ = realm.Join(ctx)  // ErrAlreadyJoined!
 
 // ❌ Wrong: Different realmKey
-nodeA.JoinRealmWithKey(ctx, "test", keyA)
-nodeB.JoinRealmWithKey(ctx, "test", keyB)  // Cannot verify each other!
+realmA, _ := nodeA.Realm("test")
+_ = realmA.Join(ctx)
+realmB, _ := nodeB.Realm("test")
+_ = realmB.Join(ctx)  // Cannot verify each other!
 ```
 
 ---
@@ -242,9 +254,9 @@ messaging.SendWithProtocol(ctx, targetID, "chat/1.0.0", data)
 Use this checklist to verify your code follows constraints:
 
 ```
-□ Called JoinRealmWithKey() after starting node?
+□ Called Realm().Join() after starting node?
 □ All members use the same realmKey?
-□ Business APIs called after JoinRealm?
+□ Business APIs called after Realm().Join()?
 □ Protocol ID includes version (e.g., /1.0.0)?
 □ Shared addresses include /p2p/<NodeID>?
 □ Using context to control timeout?

@@ -110,7 +110,6 @@ import (
     "time"
 
     "github.com/dep2p/go-dep2p"
-    "github.com/dep2p/go-dep2p/pkg/interfaces/endpoint"
     "github.com/dep2p/go-dep2p/pkg/types"
 )
 
@@ -127,10 +126,13 @@ func main() {
     // Step 1: Create node
     // ========================================
     fmt.Println("━━━ Step 1: Create Node ━━━")
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
     )
     if err != nil {
+        log.Fatalf("Failed to create node: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
         log.Fatalf("Failed to start node: %v", err)
     }
     defer node.Close()
@@ -147,7 +149,8 @@ func main() {
     fmt.Println()
 
     // Create a target node for testing
-    targetNode, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    targetNode, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    _ = targetNode.Start(ctx)
     defer targetNode.Close()
     targetID := targetNode.ID()
 
@@ -178,10 +181,14 @@ func main() {
     // Step 3: Join Realm
     // ========================================
     fmt.Println("━━━ Step 3: Join Realm ━━━")
-    realmID := types.RealmID("demo-realm")
+    realmID := "demo-realm"
     
     fmt.Printf("Joining Realm: %s\n", realmID)
-    if err := node.Realm().JoinRealm(ctx, realmID); err != nil {
+    realm, err := node.Realm(realmID)
+    if err != nil {
+        log.Fatalf("Failed to get Realm: %v", err)
+    }
+    if err := realm.Join(ctx); err != nil {
         log.Fatalf("Failed to join Realm: %v", err)
     }
     fmt.Printf("✅ Joined Realm: %s\n", node.Realm().CurrentRealm())
@@ -193,7 +200,8 @@ func main() {
     fmt.Println("━━━ Step 4: Verify Behavior After Joining ━━━")
     
     // Target node also needs to join same Realm
-    targetNode.Realm().JoinRealm(ctx, realmID)
+    targetRealm, _ := targetNode.Realm(realmID)
+    _ = targetRealm.Join(ctx)
     
     fmt.Print("Trying Send... ")
     err = node.Send(ctx, targetID, "/test/1.0.0", []byte("hello"))
@@ -212,7 +220,8 @@ func main() {
     fmt.Println("━━━ Step 5: Verify Strict Single-Realm ━━━")
     fmt.Println("Trying to join a second Realm (should fail)...")
     
-    err = node.Realm().JoinRealm(ctx, types.RealmID("another-realm"))
+    anotherRealm, _ := node.Realm("another-realm")
+    err = anotherRealm.Join(ctx)
     if err != nil {
         fmt.Printf("✅ Correctly rejected: %v\n", err)
     } else {
@@ -233,9 +242,12 @@ func main() {
         fmt.Println("✅ Left Realm")
     }
     
-    newRealmID := types.RealmID("new-realm")
+    newRealmID := "new-realm"
     fmt.Printf("Joining new Realm: %s\n", newRealmID)
-    if err := node.Realm().JoinRealm(ctx, newRealmID); err != nil {
+    newRealm, err := node.Realm(newRealmID)
+    if err != nil {
+        fmt.Printf("Failed to get Realm: %v\n", err)
+    } else if err := newRealm.Join(ctx); err != nil {
         fmt.Printf("Join failed: %v\n", err)
     } else {
         fmt.Printf("✅ Joined new Realm: %s\n", node.Realm().CurrentRealm())
@@ -292,9 +304,12 @@ func main() {
     // ========================================
     fmt.Println("Creating three nodes...")
     
-    nodeA, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
-    nodeB, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
-    nodeC, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    nodeA, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    _ = nodeA.Start(ctx)
+    nodeB, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    _ = nodeB.Start(ctx)
+    nodeC, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    _ = nodeC.Start(ctx)
     defer nodeA.Close()
     defer nodeB.Close()
     defer nodeC.Close()
@@ -309,12 +324,15 @@ func main() {
     // ========================================
     fmt.Println("Assigning nodes to different Realms:")
     
-    realmAlpha := types.RealmID("realm-alpha")
-    realmBeta := types.RealmID("realm-beta")
+    realmAlpha := "realm-alpha"
+    realmBeta := "realm-beta"
     
-    nodeA.Realm().JoinRealm(ctx, realmAlpha)
-    nodeB.Realm().JoinRealm(ctx, realmAlpha)
-    nodeC.Realm().JoinRealm(ctx, realmBeta)
+    realmA, _ := nodeA.Realm(realmAlpha)
+    _ = realmA.Join(ctx)
+    realmB, _ := nodeB.Realm(realmAlpha)
+    _ = realmB.Join(ctx)
+    realmC, _ := nodeC.Realm(realmBeta)
+    _ = realmC.Join(ctx)
     
     fmt.Printf("  Node A → %s\n", realmAlpha)
     fmt.Printf("  Node B → %s\n", realmAlpha)
@@ -446,9 +464,12 @@ func main() {
     }()
 
     // Create node
-    node, err := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create node: %v", err)
+    }
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start node: %v", err)
     }
     defer node.Close()
 
@@ -495,8 +516,11 @@ func main() {
                 node.Realm().LeaveRealm(ctx)
             }
             
-            realmID := types.RealmID(roomName)
-            if err := node.Realm().JoinRealm(ctx, realmID); err != nil {
+            realmID := roomName
+            realm, err := node.Realm(realmID)
+            if err != nil {
+                fmt.Printf("Failed to get Realm: %v\n", err)
+            } else if err := realm.Join(ctx); err != nil {
                 fmt.Printf("Failed to join: %v\n", err)
             } else {
                 fmt.Printf("✅ Joined room: %s\n", roomName)
@@ -653,7 +677,8 @@ Key Points:
 ```go
 // Check and join Realm
 if node.Realm().CurrentRealm() == "" {
-    node.Realm().JoinRealm(ctx, realmID)
+    realm, _ := node.Realm(realmID)
+    _ = realm.Join(ctx)
 }
 ```
 
@@ -667,7 +692,8 @@ if node.Realm().CurrentRealm() == "" {
 ```go
 // Leave first then join
 node.Realm().LeaveRealm(ctx)
-node.Realm().JoinRealm(ctx, newRealmID)
+realm, _ := node.Realm(newRealmID)
+_ = realm.Join(ctx)
 ```
 
 ### Problem 3: Cross-Realm Communication Failure

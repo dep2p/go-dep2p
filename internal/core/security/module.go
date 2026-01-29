@@ -1,177 +1,349 @@
-// Package security 提供安全层模块的实现
-//
-// 安全模块负责：
-// - 连接加密
-// - 身份验证
-// - TLS/Noise 配置
-// - 访问控制
+// Package security 实现安全传输
 package security
 
 import (
 	"context"
 	"fmt"
+	"net"
+	"time"
 
+	"github.com/dep2p/go-dep2p/config"
+	"github.com/dep2p/go-dep2p/internal/core/security/noise"
+	"github.com/dep2p/go-dep2p/internal/core/security/tls"
+	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
+	"github.com/dep2p/go-dep2p/pkg/lib/log"
+	"github.com/dep2p/go-dep2p/pkg/types"
+	mss "github.com/multiformats/go-multistream"
 	"go.uber.org/fx"
-
-	"github.com/dep2p/go-dep2p/internal/util/logger"
-	identityif "github.com/dep2p/go-dep2p/pkg/interfaces/identity"
-	securityif "github.com/dep2p/go-dep2p/pkg/interfaces/security"
-
-	noiseimpl "github.com/dep2p/go-dep2p/internal/core/security/noise"
-	tlsimpl "github.com/dep2p/go-dep2p/internal/core/security/tls"
 )
 
-var log = logger.Logger("security")
+var logger = log.Logger("core/security")
 
-// ============================================================================
-//                              模块输入依赖
-// ============================================================================
+const (
+	// defaultNegotiateTimeout 默认协商超时
+	defaultNegotiateTimeout = 60 * time.Second
+)
 
-// ModuleInput 定义模块输入依赖
-type ModuleInput struct {
-	fx.In
-
-	// Identity 身份服务
-	Identity identityif.Identity `name:"identity"`
-
-	// KeyFactory 密钥工厂（用于验证远程 identity，仅 Noise 协议需要）
-	KeyFactory identityif.KeyFactory `name:"key_factory" optional:"true"`
-
-	// Config 配置（可选）
-	Config *securityif.Config `optional:"true"`
+// Config 安全传输配置
+type Config struct {
+	// Transports 启用的安全传输协议
+	Transports []string // ["tls", "noise"]
+	// Preferred 首选协议
+	Preferred string // "tls" or "noise"
+	// NegotiateTimeout 协商超时
+	NegotiateTimeout time.Duration
 }
 
-// ============================================================================
-//                              模块输出服务
-// ============================================================================
+// ConfigFromUnified 从统一配置创建安全配置
+func ConfigFromUnified(cfg *config.Config) Config {
+	if cfg == nil {
+		return NewConfig()
+	}
 
-// ModuleOutput 定义模块输出服务
-type ModuleOutput struct {
-	fx.Out
+	transports := make([]string, 0, 2)
+	if cfg.Security.EnableTLS {
+		transports = append(transports, "tls")
+	}
+	if cfg.Security.EnableNoise {
+		transports = append(transports, "noise")
+	}
 
-	// SecureTransport 安全传输
-	SecureTransport securityif.SecureTransport `name:"secure_transport"`
+	// 如果都没启用，至少启用 TLS
+	if len(transports) == 0 {
+		transports = append(transports, "tls")
+	}
 
-	// CertificateManager 证书管理器
-	CertificateManager securityif.CertificateManager `name:"certificate_manager"`
-
-	// AccessController 访问控制器
-	AccessController securityif.AccessController `name:"access_controller"`
+	return Config{
+		Transports:       transports,
+		Preferred:        cfg.Security.PreferredProtocol,
+		NegotiateTimeout: cfg.Security.NegotiateTimeout.Duration(),
+	}
 }
 
-// ============================================================================
-//                              服务提供
-// ============================================================================
-
-// ProvideServices 提供模块服务
-func ProvideServices(input ModuleInput) (ModuleOutput, error) {
-	// 验证必需依赖
-	if input.Identity == nil {
-		return ModuleOutput{}, fmt.Errorf("identity is required")
+// NewConfig 创建默认配置
+func NewConfig() Config {
+	return Config{
+		Transports:       []string{"tls", "noise"}, // 默认启用 TLS 和 Noise
+		Preferred:        "tls",                    // 默认首选 TLS
+		NegotiateTimeout: defaultNegotiateTimeout,
 	}
-
-	// 使用默认配置或输入配置
-	config := securityif.DefaultConfig()
-	if input.Config != nil {
-		config = *input.Config
-	}
-
-	// 创建证书管理器（TLS 使用）
-	certManager := tlsimpl.NewCertificateManager(input.Identity)
-
-	// 创建访问控制器
-	accessController := tlsimpl.NewAccessController()
-
-	// 根据配置选择安全协议
-	var transport securityif.SecureTransport
-	var err error
-
-	switch config.Protocol {
-	case "noise":
-		// Noise 协议需要 KeyFactory 来验证远程 identity
-		if input.KeyFactory == nil {
-			return ModuleOutput{}, fmt.Errorf("Noise 协议需要 KeyFactory 依赖")
-		}
-
-		// 确保 NoiseConfig 不为 nil
-		noiseConfig := config.NoiseConfig
-		if noiseConfig == nil {
-			noiseConfig = securityif.DefaultNoiseConfig()
-		}
-
-		// 创建 Noise 传输（传入 KeyFactory 用于验证远程 identity）
-		transport, err = noiseimpl.NewTransport(input.Identity, noiseConfig, input.KeyFactory)
-		if err != nil {
-			return ModuleOutput{}, fmt.Errorf("创建 Noise 传输失败: %w", err)
-		}
-		log.Info("使用 Noise 安全协议",
-			"pattern", noiseConfig.HandshakePattern,
-			"cipher", noiseConfig.CipherSuite)
-
-	case "tls", "":
-		// 创建 TLS 传输（默认）
-		tlsTransport, err := tlsimpl.NewTransport(input.Identity, config)
-		if err != nil {
-			return ModuleOutput{}, fmt.Errorf("创建 TLS 传输失败: %w", err)
-		}
-
-		// 设置访问控制器
-		tlsTransport.SetAccessController(accessController)
-		transport = tlsTransport
-		log.Info("使用 TLS 安全协议")
-
-	default:
-		return ModuleOutput{}, fmt.Errorf("不支持的安全协议: %s", config.Protocol)
-	}
-
-	return ModuleOutput{
-		SecureTransport:    transport,
-		CertificateManager: certManager,
-		AccessController:   accessController,
-	}, nil
 }
 
-// ============================================================================
-//                              模块定义
-// ============================================================================
-
-// Module 返回 fx 模块配置
+// Module 返回 Fx 模块
 func Module() fx.Option {
 	return fx.Module("security",
-		fx.Provide(ProvideServices),
-		fx.Invoke(registerLifecycle),
+		fx.Provide(
+			ProvideConfig,
+			NewSecurityMux,
+			// 将 *SecurityMux 作为 pkgif.SecureTransport 提供
+			func(mux *SecurityMux) pkgif.SecureTransport {
+				return mux
+			},
+			// P4 新增：提供身份绑定验证器
+			ProvideIdentityBinding,
+			// P4 新增：提供 TLS 访问控制
+			ProvideAccessControl,
+		),
 	)
 }
 
-// lifecycleInput 生命周期输入参数
-type lifecycleInput struct {
+// ProvideIdentityBinding 提供身份绑定验证器（P4 新增）
+func ProvideIdentityBinding(id pkgif.Identity) (*noise.IdentityBinding, error) {
+	return noise.NewIdentityBindingFromIdentity(id)
+}
+
+// AccessControlConfig 访问控制配置
+type AccessControlConfig struct {
+	Mode      tls.AccessMode
+	Whitelist []types.PeerID
+	Blacklist []types.PeerID
+}
+
+// ProvideAccessControl 提供 TLS 访问控制（P4 新增）
+func ProvideAccessControl(_ *config.Config) *tls.AccessControl {
+	// 从配置中读取访问控制设置（如果有）
+	acConfig := tls.DefaultAccessControlConfig()
+	// 可根据 cfg 调整 acConfig
+	return tls.NewAccessControl(acConfig)
+}
+
+// ProvideConfig 从统一配置提供安全配置
+func ProvideConfig(cfg *config.Config) Config {
+	return ConfigFromUnified(cfg)
+}
+
+// ProvideTLSTransport 提供 TLS 传输
+func ProvideTLSTransport(id pkgif.Identity) (pkgif.SecureTransport, error) {
+	return tls.New(id)
+}
+
+// ProvideNoiseTransport 提供 Noise 传输
+func ProvideNoiseTransport(id pkgif.Identity) (pkgif.SecureTransport, error) {
+	return noise.New(id)
+}
+
+// ============================================================================
+// SecurityMux - 多协议安全选择器
+// ============================================================================
+
+// SecurityMux 多协议安全选择器
+//
+// SecurityMux 实现了 multistream-select 协议协商，
+// 支持多个安全传输协议（TLS, Noise）并动态选择。
+type SecurityMux struct {
+	transports       map[string]pkgif.SecureTransport
+	preferred        string
+	identity         pkgif.Identity
+	negotiateTimeout time.Duration
+}
+
+// 确保实现接口
+var _ pkgif.SecureTransport = (*SecurityMux)(nil)
+
+// SecurityMuxParams NewSecurityMux 的 Fx 参数
+type SecurityMuxParams struct {
 	fx.In
-	LC              fx.Lifecycle
-	SecureTransport securityif.SecureTransport `name:"secure_transport"`
+
+	Identity        pkgif.Identity
+	Config          Config
+	IdentityBinding *noise.IdentityBinding `optional:"true"` // 可选的身份绑定
+	AccessControl   *tls.AccessControl     `optional:"true"` // 可选的访问控制
 }
 
-// registerLifecycle 注册生命周期
-func registerLifecycle(input lifecycleInput) {
-	input.LC.Append(fx.Hook{
-		OnStart: func(_ context.Context) error {
-			log.Info("安全模块启动",
-				"protocol", input.SecureTransport.Protocol())
-			return nil
-		},
-		OnStop: func(_ context.Context) error {
-			log.Info("安全模块停止")
-			return nil
-		},
-	})
+// NewSecurityMux 创建多协议安全选择器
+func NewSecurityMux(params SecurityMuxParams) (*SecurityMux, error) {
+	id := params.Identity
+	cfg := params.Config
+
+	if id == nil {
+		return nil, fmt.Errorf("identity is nil")
+	}
+
+	timeout := cfg.NegotiateTimeout
+	if timeout <= 0 {
+		timeout = defaultNegotiateTimeout
+	}
+
+	mux := &SecurityMux{
+		transports:       make(map[string]pkgif.SecureTransport),
+		preferred:        cfg.Preferred,
+		identity:         id,
+		negotiateTimeout: timeout,
+	}
+
+	// 注册启用的传输协议
+	for _, proto := range cfg.Transports {
+		switch proto {
+		case "tls":
+			t, err := tls.New(id)
+			if err != nil {
+				return nil, fmt.Errorf("create tls transport: %w", err)
+			}
+			// 集成 AccessControl（如果存在）
+			if params.AccessControl != nil {
+				t.SetAccessControl(params.AccessControl)
+				logger.Debug("TLS Transport 已集成 AccessControl")
+			}
+			mux.transports[proto] = t
+
+		case "noise":
+			t, err := noise.New(id)
+			if err != nil {
+				return nil, fmt.Errorf("create noise transport: %w", err)
+			}
+			// 集成 IdentityBinding（如果存在）
+			if params.IdentityBinding != nil {
+				t.SetIdentityBinding(params.IdentityBinding)
+				logger.Debug("Noise Transport 已集成 IdentityBinding")
+			}
+			mux.transports[proto] = t
+
+		default:
+			return nil, fmt.Errorf("unknown transport protocol: %s", proto)
+		}
+	}
+
+	// 确保至少有一个传输协议
+	if len(mux.transports) == 0 {
+		return nil, fmt.Errorf("no transport protocols enabled")
+	}
+
+	// 确保首选协议存在
+	if mux.preferred != "" {
+		if _, ok := mux.transports[mux.preferred]; !ok {
+			return nil, fmt.Errorf("preferred protocol %s not enabled", mux.preferred)
+		}
+	} else {
+		// 如果没有指定首选，使用第一个
+		for proto := range mux.transports {
+			mux.preferred = proto
+			break
+		}
+	}
+
+	return mux, nil
 }
 
-// ============================================================================
-//                              模块元信息
-// ============================================================================
+// ID 返回协议标识
+func (m *SecurityMux) ID() types.ProtocolID {
+	return types.ProtocolID("/security/multistream/1.0.0")
+}
 
-// 模块元信息常量
-const (
-	Version     = "1.1.0"
-	Name        = "security"
-	Description = "安全层模块，提供 TLS/Noise 加密和身份验证"
-)
+// SecureInbound 保护入站连接（服务器端）
+func (m *SecurityMux) SecureInbound(ctx context.Context, conn net.Conn, remotePeer types.PeerID) (pkgif.SecureConn, error) {
+	logger.Debug("安全协商入站连接", "remotePeer", string(remotePeer)[:8])
+	
+	// 设置协商超时
+	deadline := time.Now().Add(m.negotiateTimeout)
+	if d, ok := ctx.Deadline(); ok {
+		deadline = d
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		return nil, fmt.Errorf("set deadline: %w", err)
+	}
+	defer conn.SetDeadline(time.Time{}) // 清除超时
+
+	// 创建 multistream muxer 并注册所有支持的协议
+	muxer := mss.NewMultistreamMuxer[string]()
+	for proto := range m.transports {
+		muxer.AddHandler(proto, nil)
+	}
+
+	// 服务端协商：从客户端提议中选择
+	selectedProto, _, err := muxer.Negotiate(conn)
+	if err != nil {
+		logger.Warn("安全协议协商失败", "error", err)
+		return nil, fmt.Errorf("multistream negotiation failed: %w", err)
+	}
+
+	logger.Debug("安全协议协商成功", "protocol", selectedProto)
+
+	// 查找对应的传输协议
+	transport, ok := m.transports[selectedProto]
+	if !ok {
+		logger.Error("协商的协议未找到", "protocol", selectedProto)
+		return nil, fmt.Errorf("negotiated protocol %s not found", selectedProto)
+	}
+
+	// 使用选定的传输协议进行握手
+	secConn, err := transport.SecureInbound(ctx, conn, remotePeer)
+	if err != nil {
+		logger.Warn("安全握手失败", "protocol", selectedProto, "error", err)
+	} else {
+		logger.Debug("安全握手成功", "protocol", selectedProto)
+	}
+	return secConn, err
+}
+
+// SecureOutbound 保护出站连接（客户端端）
+func (m *SecurityMux) SecureOutbound(ctx context.Context, conn net.Conn, remotePeer types.PeerID) (pkgif.SecureConn, error) {
+	logger.Debug("安全协商出站连接", "remotePeer", string(remotePeer)[:8], "preferred", m.preferred)
+	
+	// 设置协商超时
+	deadline := time.Now().Add(m.negotiateTimeout)
+	if d, ok := ctx.Deadline(); ok {
+		deadline = d
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		return nil, fmt.Errorf("set deadline: %w", err)
+	}
+	defer conn.SetDeadline(time.Time{}) // 清除超时
+
+	// 构建协议列表（首选协议在前）
+	protocols := make([]string, 0, len(m.transports))
+
+	// 首选协议放在第一位
+	if m.preferred != "" {
+		protocols = append(protocols, m.preferred)
+	}
+
+	// 添加其他协议
+	for proto := range m.transports {
+		if proto != m.preferred {
+			protocols = append(protocols, proto)
+		}
+	}
+
+	// 客户端协商：提议协议列表，服务端选择
+	selectedProto, err := mss.SelectOneOf(protocols, conn)
+	if err != nil {
+		logger.Warn("安全协议选择失败", "error", err)
+		return nil, fmt.Errorf("multistream selection failed: %w", err)
+	}
+
+	logger.Debug("安全协议选择成功", "protocol", selectedProto)
+
+	// 查找对应的传输协议
+	transport, ok := m.transports[selectedProto]
+	if !ok {
+		logger.Error("选择的协议未找到", "protocol", selectedProto)
+		return nil, fmt.Errorf("selected protocol %s not found", selectedProto)
+	}
+
+	// 使用选定的传输协议进行握手
+	secConn, err := transport.SecureOutbound(ctx, conn, remotePeer)
+	if err != nil {
+		logger.Warn("安全握手失败", "protocol", selectedProto, "error", err)
+	} else {
+		logger.Debug("安全握手成功", "protocol", selectedProto)
+	}
+	return secConn, err
+}
+
+// ListProtocols 列出所有支持的协议
+func (m *SecurityMux) ListProtocols() []string {
+	protocols := make([]string, 0, len(m.transports))
+	for proto := range m.transports {
+		protocols = append(protocols, proto)
+	}
+	return protocols
+}
+
+// SetPreferred 设置首选协议
+func (m *SecurityMux) SetPreferred(proto string) error {
+	if _, ok := m.transports[proto]; !ok {
+		return fmt.Errorf("protocol %s not enabled", proto)
+	}
+	m.preferred = proto
+	return nil
+}

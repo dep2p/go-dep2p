@@ -8,54 +8,30 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                                                                      │
-│     让 P2P 连接像调用函数一样简单：给一个 NodeID，发个消息             │
-│                                                                      │
+│                                                                     │
+│         让 P2P 成为世界级基础设施：给一个 NodeID，就能跨越网络边界           │
+│                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-> **NodeID** = 公钥身份的 Base58 编码表示。用户只需分享 NodeID，无需关心 IP 地址。
+> **NodeID** = 公钥身份（Base58 编码）。目标是"按身份连接"，而不是"按 IP/域名连接"。  
+> **Realm** = 业务边界（多租户/多应用隔离）。不同 Realm 的节点互不可见，避免网络污染。
 
-DeP2P 的目标是成为一个**简洁、可靠、安全**的 P2P 网络库，让开发者能够专注于业务逻辑，而不必关心复杂的网络细节。
+DeP2P 的愿景不是"再造一个 P2P 协议集合"，而是把生产可用的连接能力收敛成**人人可用、随处可用、可靠可控**的工程基座。
 
 ---
 
 ## 为什么选择 DeP2P？
 
-传统 P2P 库存在诸多痛点，DeP2P 针对这些问题提供了解决方案：
+### 传统 P2P 库的 5 大痛点
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    DeP2P 解决的 5 大问题                              │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  问题 1：API 太复杂                                                  │
-│  ────────────────────                                                │
-│  传统 P2P: 需要配置 Host, Transport, Muxer, Security, Discovery... │
-│  DeP2P:   realm.Messaging().Send(ctx, nodeID, data)  // 三步走：启动→加入→发送 │
-│                                                                      │
-│  问题 2：网络污染                                                    │
-│  ────────────────────                                                │
-│  公共网络: 连接引导节点 → 路由表充满不相关节点                        │
-│  DeP2P:   Realm 隔离 → 只发现同业务的节点                           │
-│                                                                      │
-│  问题 3：冷启动困难                                                  │
-│  ────────────────────                                                │
-│  私有网络: 需要自建所有基础设施                                       │
-│  DeP2P:   共享 DHT/中继，按 Realm 隔离                              │
-│                                                                      │
-│  问题 4：节点状态不明                                                │
-│  ────────────────────                                                │
-│  传统 P2P: 不知道节点是离线/崩溃/不稳定                              │
-│  DeP2P:   三态模型 + 优雅下线 + 心跳检测                             │
-│                                                                      │
-│  问题 5：资源失控                                                    │
-│  ────────────────────                                                │
-│  无限连接: 连接数暴涨，资源耗尽                                      │
-│  DeP2P:   连接管理 + 水位线裁剪 + 重要连接保护                       │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
-```
+| 痛点 | 传统方案 | DeP2P 方案 |
+|------|----------|-----------|
+| **上手难** | 拼装一堆底层组件，自己接线 | 三步直达：启动 → 加入网络 → 发消息 |
+| **网络乱** | 路由表充满不相关节点 | 业务隔离：只看见"自己人" |
+| **启动慢** | 需自建所有基础设施 | 开箱即用：权威目录 + 直连入口 |
+| **状态盲** | 不知道谁在线、谁掉线、谁不稳定 | 实时感知：秒级检测 + 智能判定 |
+| **资源爆** | 连接数暴涨，资源耗尽 | 智能管控：自动裁剪 + 重要保护 |
 
 ---
 
@@ -67,7 +43,8 @@ DeP2P 的目标是成为一个**简洁、可靠、安全**的 P2P 网络库，�
 | **身份优先** | 连接目标是 NodeID（公钥），而非 IP 地址 |
 | **Realm 隔离** | 业务网络独立，避免节点污染 |
 | **智能连接** | 自动 NAT 穿透、地址发现、透明中继回退 |
-| **节点状态感知** | 三态模型 + 心跳检测，网络状态透明 |
+| **多层断开检测** | QUIC 心跳 + 重连宽限 + 见证人机制 + 震荡抑制 |
+| **权威目录发现** | 权威目录保证"找得到"，缓存加速让"更快" |
 | **连接管理** | 水位线控制 + 重要连接保护 + 自动裁剪 |
 | **QUIC 优先** | 现代传输协议，内置加密和多路复用 |
 | **零配置启动** | 合理默认值，开箱即用 |
@@ -131,14 +108,19 @@ graph TD
 - 渐进式配置，简单场景简单用
 
 ```go
-// 最简启动：一行代码
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+// 最简启动：两行代码
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node.Start(ctx)
 
 // 需要时才添加更多配置
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
-    dep2p.WithIdentity(myKey),           // 可选
-    dep2p.WithListenPort(8000),          // 可选
+    dep2p.WithIdentityFile("./node.key"),   // 可选：持久化身份
+    dep2p.WithListenPort(8000),              // 可选：固定端口
+    dep2p.WithKnownPeers(config.KnownPeer{   // 可选：已知节点直连
+        PeerID: "12D3KooW...",
+        Addrs:  []string{"/ip4/1.2.3.4/udp/4001/quic-v1"},
+    }),
 )
 ```
 
@@ -150,12 +132,17 @@ node, _ := dep2p.StartNode(ctx,
 
 ```go
 // 显式加入 Realm，不自动加入
-if err := node.Realm().JoinRealm(ctx, "my-realm"); err != nil {
+realm, err := node.Realm("my-realm")
+if err != nil {
+    return err
+}
+if err := realm.Join(ctx); err != nil {
     return err // 错误明确返回
 }
 
 // 未加入 Realm 调用业务 API 会返回明确错误
-realm, _ := node.JoinRealmWithKey(ctx, "my-realm", realmKey)
+realm, _ := node.Realm("my-realm")
+_ = realm.Join(ctx)
 err := realm.Messaging().Send(ctx, peerID, "/my/protocol", data)
 // 如果未加入 Realm，err == ErrNotMember（明确告知原因）
 ```
@@ -262,21 +249,24 @@ import (
     "context"
     "fmt"
     "github.com/dep2p/go-dep2p"
+    "github.com/dep2p/go-dep2p/pkg/types"
 )
 
 func main() {
     ctx := context.Background()
     
-    // 1. 启动节点（系统层自动就绪）
-    node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    // 1. 创建并启动节点
+    node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    node.Start(ctx)
     defer node.Close()
     
     // 2. 加入业务网络（必须）
-    node.Realm().JoinRealm(ctx, "my-app")
+    realmID := types.RealmID("my-app")
+    realm, _ := node.Realm("my-app")
+    _ = realm.Join(ctx)
     
     // 3. 发送消息（只需 NodeID）
-    realm, _ := node.JoinRealmWithKey(ctx, "my-realm", realmKey)
-    realm.Messaging().Send(ctx, remoteNodeID, "/my/protocol/1.0", []byte("Hello!"))
+    node.PubSub().Publish(ctx, "chat/general", []byte("Hello, DeP2P!"))
     
     fmt.Println("就是这么简单！")
 }

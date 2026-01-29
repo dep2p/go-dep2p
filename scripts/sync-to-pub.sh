@@ -64,8 +64,11 @@ for item in "${CLEANUP_ITEMS[@]}"; do
         # 通配符模式，使用 find 删除
         find "$PUB_DIR" -maxdepth 1 -name "$item" -type f -delete 2>/dev/null || true
     else
-        # 普通路径，直接删除
-        rm -rf "$PUB_DIR/$item" 2>/dev/null || true
+        # 普通路径，先尝试修改权限再删除（处理权限问题）
+        if [[ -e "$PUB_DIR/$item" ]]; then
+            chmod -R u+w "$PUB_DIR/$item" 2>/dev/null || true
+            rm -rf "$PUB_DIR/$item" 2>/dev/null || true
+        fi
     fi
 done
 

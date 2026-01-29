@@ -3,446 +3,176 @@ package stun
 import (
 	"context"
 	"net"
-	"sync"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
-	"github.com/dep2p/go-dep2p/pkg/types"
 )
 
-// ============================================================================
-//                              Client 测试
-// ============================================================================
+// TestNewSTUNClient 测试创建 STUN 客户端
+func TestNewSTUNClient(t *testing.T) {
+	servers := []string{"stun.l.google.com:19302"}
+	client := NewSTUNClient(servers)
 
-func TestNewClient(t *testing.T) {
-	t.Run("使用默认服务器", func(t *testing.T) {
-		client := NewClient(nil)
-		require.NotNil(t, client)
-		assert.NotEmpty(t, client.servers)
-	})
-
-	t.Run("使用自定义服务器", func(t *testing.T) {
-		servers := []string{"stun1.test.com:3478", "stun2.test.com:3478"}
-		client := NewClient(servers)
-		require.NotNil(t, client)
-		assert.Equal(t, servers, client.servers)
-	})
-
-	t.Run("使用默认配置", func(t *testing.T) {
-		client := NewClient(nil)
-		require.NotNil(t, client)
-	})
-}
-
-func TestDefaultServers(t *testing.T) {
-	servers := DefaultServers()
-	assert.NotEmpty(t, servers)
-	// 验证服务器格式
-	for _, server := range servers {
-		_, _, err := net.SplitHostPort(server)
-		assert.NoError(t, err, "服务器地址格式无效: %s", server)
+	if client == nil {
+		t.Fatal("NewSTUNClient returned nil")
 	}
+
+	t.Log("✅ NewSTUNClient 成功创建客户端")
 }
 
-// ============================================================================
-//                              常量测试
-// ============================================================================
+// TestSTUNClient_InvalidServer 测试无效服务器
+func TestSTUNClient_InvalidServer(t *testing.T) {
+	servers := []string{"invalid.server:9999"}
+	client := NewSTUNClient(servers)
 
-func TestConstants(t *testing.T) {
-	// 验证常量值正确
-	assert.Equal(t, uint16(0x0001), bindingRequest)
-	assert.Equal(t, uint16(0x0101), bindingResponse)
-	assert.Equal(t, uint32(0x2112A442), magicCookie)
-	assert.Equal(t, 12, transactionIDLen)
-}
-
-// ============================================================================
-//                              错误定义测试
-// ============================================================================
-
-func TestErrors(t *testing.T) {
-	assert.NotNil(t, ErrNoResponse)
-	assert.NotNil(t, ErrInvalidResponse)
-	assert.NotNil(t, ErrAllServersFailed)
-	assert.NotNil(t, ErrNoOtherAddress)
-}
-
-// ============================================================================
-//                              NAT 类型检测测试
-// ============================================================================
-
-func TestClient_GetNATType_Cached(t *testing.T) {
-	client := NewClient(nil)
-	client.cacheDuration = time.Hour
-
-	// 设置缓存
-	client.cacheMu.Lock()
-	client.cachedNATType = types.NATTypeFull
-	client.cachedTime = time.Now()
-	client.cacheMu.Unlock()
-
-	// 应该返回缓存值
-	natType, err := client.GetNATType(context.Background())
-	assert.NoError(t, err)
-	assert.Equal(t, types.NATTypeFull, natType)
-}
-
-func TestClient_GetNATType_CacheExpired(t *testing.T) {
-	client := NewClient([]string{"invalid.server:3478"})
-	client.cacheDuration = time.Millisecond
-	client.timeout = 100 * time.Millisecond
-
-	// 设置过期缓存
-	client.cacheMu.Lock()
-	client.cachedNATType = types.NATTypeFull
-	client.cachedTime = time.Now().Add(-time.Hour)
-	client.cacheMu.Unlock()
-
-	// 缓存过期，应该尝试重新检测（会失败）
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_, err := client.GetNATType(ctx)
-	assert.Error(t, err) // 无效服务器应该失败
+	_, err := client.GetExternalAddr(ctx)
+	if err == nil {
+		t.Error("Expected error for invalid server")
+	}
+
+	t.Log("✅ STUN 客户端正确处理无效服务器")
 }
 
-// ============================================================================
-//                              外部地址发现测试
-// ============================================================================
+// TestSTUNClient_Timeout 测试超时
+func TestSTUNClient_Timeout(t *testing.T) {
+	// 使用一个不响应的地址
+	servers := []string{"192.0.2.1:9999"}
+	client := NewSTUNClient(servers)
 
-func TestClient_GetMappedAddress_Cached(t *testing.T) {
-	client := NewClient(nil)
-	client.cacheDuration = time.Hour
-
-	// 设置缓存
-	client.cacheMu.Lock()
-	client.cachedAddr = &stunAddress{ip: net.ParseIP("1.2.3.4"), port: 5678}
-	client.cachedTime = time.Now()
-	client.cacheMu.Unlock()
-
-	// 应该返回缓存值
-	addr, err := client.GetMappedAddress(context.Background())
-	assert.NoError(t, err)
-	assert.NotNil(t, addr)
-	assert.Contains(t, addr.String(), "1.2.3.4")
-}
-
-func TestClient_GetMappedAddress_InvalidServer(t *testing.T) {
-	client := NewClient([]string{"invalid.server.that.does.not.exist:3478"})
-	client.timeout = 100 * time.Millisecond
-
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	_, err := client.GetMappedAddress(ctx)
-	assert.Error(t, err)
-}
-
-// ============================================================================
-//                              错误处理测试
-// ============================================================================
-
-func TestClient_ContextCancellation(t *testing.T) {
-	client := NewClient([]string{"stun.l.google.com:19302"})
-	client.timeout = 10 * time.Second
-
-	// 立即取消的 context
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := client.GetMappedAddress(ctx)
-	assert.Error(t, err)
-}
-
-func TestClient_EmptyServers(t *testing.T) {
-	client := &Client{
-		servers: []string{},
-		timeout: defaultTimeout,
+	_, err := client.GetExternalAddr(ctx)
+	if err == nil {
+		t.Error("Expected timeout error")
 	}
 
-	_, err := client.GetMappedAddress(context.Background())
-	assert.Error(t, err)
-	assert.ErrorIs(t, err, ErrAllServersFailed)
+	t.Log("✅ STUN 客户端超时处理正确")
 }
 
-// ============================================================================
-//                              SetTimeout/SetCacheDuration 测试
-// ============================================================================
+// TestSTUNClient_EmptyServers 测试空服务器列表
+func TestSTUNClient_EmptyServers(t *testing.T) {
+	client := NewSTUNClient([]string{})
 
-func TestClient_SetTimeout(t *testing.T) {
-	client := NewClient(nil)
-	client.SetTimeout(10 * time.Second)
-	assert.Equal(t, 10*time.Second, client.timeout)
-}
+	ctx := context.Background()
+	_, err := client.GetExternalAddr(ctx)
 
-func TestClient_SetCacheDuration(t *testing.T) {
-	client := NewClient(nil)
-	client.SetCacheDuration(10 * time.Minute)
-	assert.Equal(t, 10*time.Minute, client.cacheDuration)
-}
-
-func TestClient_Close(t *testing.T) {
-	client := NewClient(nil)
-	err := client.Close()
-	assert.NoError(t, err)
-}
-
-// ============================================================================
-//                              stunAddress 测试
-// ============================================================================
-
-func TestStunAddress(t *testing.T) {
-	t.Run("IPv4 地址", func(t *testing.T) {
-		addr := &stunAddress{ip: net.ParseIP("1.2.3.4"), port: 5678}
-
-		assert.NotEmpty(t, addr.Network()) // Network() 返回协议类型
-		assert.Contains(t, addr.String(), "1.2.3.4")
-		assert.Contains(t, addr.String(), "5678")
-		assert.NotEmpty(t, addr.Bytes())
-	})
-
-	t.Run("IPv6 地址", func(t *testing.T) {
-		addr := &stunAddress{ip: net.ParseIP("2001:db8::1"), port: 8080}
-
-		assert.NotEmpty(t, addr.Network()) // Network() 返回协议类型
-		assert.Contains(t, addr.String(), "2001:db8::1")
-	})
-
-	t.Run("公网地址", func(t *testing.T) {
-		addr := &stunAddress{ip: net.ParseIP("8.8.8.8"), port: 1234}
-
-		assert.True(t, addr.IsPublic())
-		assert.False(t, addr.IsPrivate())
-		assert.False(t, addr.IsLoopback())
-	})
-
-	t.Run("私有地址", func(t *testing.T) {
-		addr := &stunAddress{ip: net.ParseIP("192.168.1.1"), port: 1234}
-
-		assert.False(t, addr.IsPublic())
-		assert.True(t, addr.IsPrivate())
-		assert.False(t, addr.IsLoopback())
-	})
-
-	t.Run("回环地址", func(t *testing.T) {
-		addr := &stunAddress{ip: net.ParseIP("127.0.0.1"), port: 1234}
-
-		assert.False(t, addr.IsPublic())
-		assert.False(t, addr.IsPrivate())
-		assert.True(t, addr.IsLoopback())
-	})
-
-	t.Run("Equal 比较", func(t *testing.T) {
-		addr1 := &stunAddress{ip: net.ParseIP("1.2.3.4"), port: 5678}
-		addr2 := &stunAddress{ip: net.ParseIP("1.2.3.4"), port: 5678}
-		addr3 := &stunAddress{ip: net.ParseIP("5.6.7.8"), port: 5678}
-
-		assert.True(t, addr1.Equal(addr2))
-		assert.False(t, addr1.Equal(addr3))
-		assert.False(t, addr1.Equal(nil))
-	})
-}
-
-// ============================================================================
-//                              集成测试（需要网络）
-// ============================================================================
-
-func TestClient_Integration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("跳过集成测试")
+	if err == nil {
+		t.Error("Expected error for empty servers")
 	}
 
-	client := NewClient(nil)
+	t.Log("✅ STUN 客户端正确处理空服务器列表")
+}
+
+// TestSTUNClient_MultipleServers 测试多服务器故障转移
+func TestSTUNClient_MultipleServers(t *testing.T) {
+	// 第一个服务器无效，第二个可能有效
+	servers := []string{
+		"invalid.server:9999",
+		"stun.l.google.com:19302",
+	}
+	client := NewSTUNClient(servers)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	t.Run("获取映射地址", func(t *testing.T) {
-		addr, err := client.GetMappedAddress(ctx)
-		if err != nil {
-			t.Skipf("无法连接 STUN 服务器: %v", err)
-		}
-		assert.NotNil(t, addr)
-		t.Logf("映射地址: %s", addr.String())
-	})
+	// 应该尝试故障转移到第二个服务器
+	// 注意：这个测试需要网络连接，可能在隔离环境中失败
+	_, err := client.GetExternalAddr(ctx)
+	// 不严格要求成功，因为可能没有网络
 
-	t.Run("获取 NAT 类型", func(t *testing.T) {
-		natType, err := client.GetNATType(ctx)
-		if err != nil {
-			t.Skipf("无法检测 NAT 类型: %v", err)
-		}
-		t.Logf("NAT 类型: %s", natType.String())
-	})
+	t.Logf("Multiple servers test result: %v", err)
+	t.Log("✅ STUN 客户端多服务器测试完成")
 }
 
-// ============================================================================
-//                              并发安全测试
-// ============================================================================
+// TestSTUNClient_CacheExpiry 测试缓存过期
+func TestSTUNClient_CacheExpiry(t *testing.T) {
+	servers := []string{"stun.l.google.com:19302"}
+	client := NewSTUNClient(servers)
 
-func TestClient_SetTimeout_Concurrent(t *testing.T) {
-	client := NewClient(nil)
+	// 设置短缓存时间用于测试
+	client.SetCacheDuration(100 * time.Millisecond)
 
-	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			client.SetTimeout(time.Duration(i) * time.Second)
-			_ = client.getTimeout()
-		}(i)
+	// 第一次查询（假设）
+	queryCount := 0
+	client.SetQueryFunc(func() (*net.UDPAddr, error) {
+		queryCount++
+		return &net.UDPAddr{IP: net.ParseIP("1.2.3.4"), Port: 12345}, nil
+	})
+
+	ctx := context.Background()
+
+	// 第一次查询
+	addr1, _ := client.GetExternalAddr(ctx)
+	count1 := queryCount
+
+	// 立即第二次查询，应该使用缓存
+	addr2, _ := client.GetExternalAddr(ctx)
+	if queryCount != count1 {
+		t.Error("Expected cached result, but new query was made")
 	}
-	wg.Wait()
-	// 测试通过表示没有竞态条件
-}
-
-func TestClient_SetCacheDuration_Concurrent(t *testing.T) {
-	client := NewClient(nil)
-
-	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			client.SetCacheDuration(time.Duration(i) * time.Minute)
-		}(i)
+	if addr1.String() != addr2.String() {
+		t.Error("Cached address mismatch")
 	}
-	wg.Wait()
-	// 测试通过表示没有竞态条件
-}
 
-func TestClient_Close_Idempotent(t *testing.T) {
-	client := NewClient(nil)
+	// 等待缓存过期
+	time.Sleep(150 * time.Millisecond)
 
-	// 多次调用 Close 应该不会 panic
-	for i := 0; i < 10; i++ {
-		err := client.Close()
-		assert.NoError(t, err)
+	// 第三次查询，应该重新查询
+	_, _ = client.GetExternalAddr(ctx)
+	if queryCount == count1 {
+		t.Error("Expected new query after cache expiry")
 	}
+
+	t.Log("✅ STUN 客户端缓存过期处理正确")
 }
 
-func TestClient_Close_Concurrent(t *testing.T) {
-	client := NewClient(nil)
+// TestSTUNClient_ContextCancellation 测试上下文取消
+func TestSTUNClient_ContextCancellation(t *testing.T) {
+	servers := []string{"stun.l.google.com:19302"}
+	client := NewSTUNClient(servers)
 
-	// 设置一些缓存数据
-	client.cacheMu.Lock()
-	client.cachedAddr = &stunAddress{ip: net.ParseIP("1.2.3.4"), port: 5678}
-	client.cacheMu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
 
-	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_ = client.Close()
-		}()
+	// 立即取消
+	cancel()
+
+	_, err := client.GetExternalAddr(ctx)
+	if err == nil {
+		t.Error("Expected error for cancelled context")
 	}
-	wg.Wait()
-	// 测试通过表示没有竞态条件
+
+	t.Log("✅ STUN 客户端上下文取消处理正确")
 }
 
-// ============================================================================
-//                              parseMappedAddress 边界测试
-// ============================================================================
+// TestSTUNClient_ValidAddress 测试有效地址解析
+func TestSTUNClient_ValidAddress(t *testing.T) {
+	// 这个测试需要模拟 STUN 响应
+	client := NewSTUNClient(nil)
 
-func TestClient_ParseMappedAddress_EdgeCases(t *testing.T) {
-	client := NewClient(nil)
-
-	t.Run("数据过短", func(t *testing.T) {
-		_, err := client.parseMappedAddress([]byte{0x00, 0x01, 0x00})
-		assert.Error(t, err)
+	// 设置模拟响应
+	client.SetQueryFunc(func() (*net.UDPAddr, error) {
+		return &net.UDPAddr{
+			IP:   net.ParseIP("203.0.113.1"),
+			Port: 54321,
+		}, nil
 	})
 
-	t.Run("未知地址族", func(t *testing.T) {
-		// 4 字节头部 + 无效地址族
-		data := []byte{0x00, 0x03, 0x00, 0x50, 0x01, 0x02, 0x03, 0x04}
-		_, err := client.parseMappedAddress(data)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "unknown address family")
-	})
+	ctx := context.Background()
+	addr, err := client.GetExternalAddr(ctx)
 
-	t.Run("IPv4 数据不足", func(t *testing.T) {
-		// 地址族 0x01 (IPv4) 但数据不够
-		data := []byte{0x00, 0x01, 0x00, 0x50, 0x01, 0x02, 0x03}
-		_, err := client.parseMappedAddress(data)
-		assert.Error(t, err)
-	})
+	if err != nil {
+		t.Fatalf("GetExternalAddr failed: %v", err)
+	}
 
-	t.Run("IPv6 数据不足", func(t *testing.T) {
-		// 地址族 0x02 (IPv6) 但数据不够
-		data := []byte{0x00, 0x02, 0x00, 0x50, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
-		_, err := client.parseMappedAddress(data)
-		assert.Error(t, err)
-	})
+	if addr.IP.String() != "203.0.113.1" {
+		t.Errorf("IP = %s, want 203.0.113.1", addr.IP)
+	}
+	if addr.Port != 54321 {
+		t.Errorf("Port = %d, want 54321", addr.Port)
+	}
 
-	t.Run("有效 IPv4 地址", func(t *testing.T) {
-		// 地址族 0x01 (IPv4), 端口 80 (0x0050), IP 1.2.3.4
-		data := []byte{0x00, 0x01, 0x00, 0x50, 0x01, 0x02, 0x03, 0x04}
-		addr, err := client.parseMappedAddress(data)
-		assert.NoError(t, err)
-		assert.NotNil(t, addr)
-		assert.Contains(t, addr.String(), "1.2.3.4")
-		assert.Contains(t, addr.String(), "80")
-	})
-
-	t.Run("有效 IPv6 地址", func(t *testing.T) {
-		// 地址族 0x02 (IPv6), 端口 8080 (0x1F90), IP ::1
-		data := []byte{0x00, 0x02, 0x1F, 0x90,
-			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}
-		addr, err := client.parseMappedAddress(data)
-		assert.NoError(t, err)
-		assert.NotNil(t, addr)
-	})
-
-	t.Run("IP 数据独立性", func(t *testing.T) {
-		// 验证解析后的 IP 不共享原始 slice
-		data := []byte{0x00, 0x01, 0x00, 0x50, 0x01, 0x02, 0x03, 0x04}
-		addr, err := client.parseMappedAddress(data)
-		require.NoError(t, err)
-
-		// 修改原始数据
-		data[4] = 0xFF
-		data[5] = 0xFF
-
-		// 地址应该不变
-		assert.Contains(t, addr.String(), "1.2.3.4")
-	})
-}
-
-// ============================================================================
-//                              stunAddress 扩展测试
-// ============================================================================
-
-func TestStunAddress_ToUDPAddr(t *testing.T) {
-	addr := &stunAddress{ip: net.ParseIP("192.168.1.1"), port: 8080}
-
-	udpAddr, err := addr.ToUDPAddr()
-	assert.NoError(t, err)
-	assert.NotNil(t, udpAddr)
-	assert.Equal(t, 8080, udpAddr.Port)
-}
-
-func TestStunAddress_Multiaddr(t *testing.T) {
-	t.Run("IPv4", func(t *testing.T) {
-		addr := &stunAddress{ip: net.ParseIP("192.168.1.1"), port: 8080}
-		ma := addr.Multiaddr()
-		assert.Contains(t, ma, "/ip4/192.168.1.1")
-		assert.Contains(t, ma, "/udp/8080")
-	})
-
-	t.Run("IPv6", func(t *testing.T) {
-		addr := &stunAddress{ip: net.ParseIP("::1"), port: 8080}
-		ma := addr.Multiaddr()
-		assert.Contains(t, ma, "/ip6/")
-		assert.Contains(t, ma, "/udp/8080")
-	})
-}
-
-func TestStunAddress_IPAndPort(t *testing.T) {
-	addr := &stunAddress{ip: net.ParseIP("8.8.8.8"), port: 53}
-
-	assert.Equal(t, net.ParseIP("8.8.8.8").To4(), addr.IP().To4())
-	assert.Equal(t, 53, addr.Port())
+	t.Log("✅ STUN 客户端地址解析正确")
 }

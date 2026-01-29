@@ -1,0 +1,15 @@
+// DeP2P Relay Voucher Definitions
+// 中继凭证消息定义
+
+syntax = "proto3";
+
+package dep2p.relay;
+
+option go_package = "github.com/dep2p/dep2p/pkg/proto/relay";
+
+// ReservationVoucher 预留凭证
+message ReservationVoucher {
+  bytes relay = 1;         // 中继节点 ID
+  bytes peer = 2;          // 预留者节点 ID
+  uint64 expiration = 3;   // 过期时间（Unix 时间戳）
+}

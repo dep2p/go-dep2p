@@ -40,20 +40,23 @@ flowchart TD
 | 项目 | 内容 |
 |------|------|
 | **错误类型** | `realm.ErrNotMember` |
-| **触发条件** | 调用 `Send()`, `Request()`, `Publish()` 等业务 API 前未调用 `JoinRealm()` |
+| **触发条件** | 调用 `Send()`, `Request()`, `Publish()` 等业务 API 前未调用 `Join()` |
 | **根因** | DeP2P 要求显式加入 Realm 后才能使用业务功能 |
 
 **解决方案**：
 
 ```go
 // ❌ 错误
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
 err := node.Send(ctx, targetID, "/myapp/1.0.0", data)
 // err = ErrNotMember
 
 // ✓ 正确
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
-realm, _ := node.JoinRealmWithKey(ctx, "my-realm", realmKey)  // 先加入
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
+realm, _ := node.Realm("my-realm")  // 先获取 Realm
+_ = realm.Join(ctx)                 // 再加入
 messaging := realm.Messaging()
 err := messaging.Send(ctx, targetID, "/myapp/1.0.0", data)    // 再使用
 ```
@@ -67,24 +70,28 @@ err := messaging.Send(ctx, targetID, "/myapp/1.0.0", data)    // 再使用
 | 项目 | 内容 |
 |------|------|
 | **错误类型** | `realm.ErrAlreadyJoined` |
-| **触发条件** | 对已加入的 Realm 重复调用 `JoinRealm()` |
+| **触发条件** | 对已加入的 Realm 重复调用 `Join()` |
 | **根因** | 单 Realm 模式下，节点同时只能加入一个 Realm |
 
 **解决方案**：
 
 ```go
 // ❌ 错误
-node.JoinRealmWithKey(ctx, "realm-a", key)
-node.JoinRealmWithKey(ctx, "realm-a", key)  // ErrAlreadyJoined
+realm1, _ := node.Realm("realm-a")
+_ = realm1.Join(ctx)
+realm2, _ := node.Realm("realm-a")
+_ = realm2.Join(ctx)  // ErrAlreadyJoined
 
 // ✓ 正确：检查当前状态
 if node.CurrentRealm() == nil {
-    node.JoinRealmWithKey(ctx, "realm-a", key)
+    realm, _ := node.Realm("realm-a")
+    _ = realm.Join(ctx)
 }
 
 // ✓ 或者：先离开再加入
 node.LeaveRealm(ctx)
-node.JoinRealmWithKey(ctx, "realm-b", keyB)
+realm, _ := node.Realm("realm-b")
+_ = realm.Join(ctx)
 ```
 
 ---
@@ -171,10 +178,11 @@ conn, err := node.Connect(ctx, targetID)
 
 ```go
 // 1. 启用 Relay
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithRelay(true),
 )
+_ = node.Start(ctx)
 
 // 2. 检查 NAT 配置
 // - 确认 UPnP 启用
@@ -187,6 +195,33 @@ node.AddAddresses(targetID, additionalAddrs)
 ---
 
 ## 认证错误
+
+### ErrIdentityMismatch
+
+**描述**：远端节点身份与预期不符。
+
+| 项目 | 内容 |
+|------|------|
+| **错误类型** | `ErrIdentityMismatch` |
+| **触发条件** | TLS 握手后，验证 `RemoteIdentity != ExpectedNodeID` |
+| **根因** | 地址指向错误节点、中间人攻击、NodeID 配置错误 |
+
+**解决方案**：
+
+```go
+// 1. 检查目标 NodeID 是否正确
+fmt.Printf("目标 NodeID: %s\n", targetNodeID)
+
+// 2. 使用完整地址（Full Address）确保一致性
+fullAddr := "/ip4/1.2.3.4/udp/4001/quic-v1/p2p/12D3KooWxxxxx..."
+node.ConnectToAddr(ctx, fullAddr)
+
+// 3. 如果使用 known_peers，确保 peer_id 与 addrs 匹配
+```
+
+> **注意**：这是 **身份第一性原则（INV-001）** 的强制保障。DeP2P 不允许"纯 IP 连接"，所有连接必须验证身份。
+
+---
 
 ### ErrAuthFailed
 
@@ -210,7 +245,8 @@ fmt.Printf("分享此 Key: %s\n", realmKey.String())
 
 // 其他成员使用相同的 key
 key, _ := types.ParseRealmKey(sharedKeyString)
-realm, _ := node.JoinRealmWithKey(ctx, "my-realm", key)
+realm, _ := node.Realm("my-realm")
+_ = realm.Join(ctx)
 ```
 
 ---
@@ -344,7 +380,8 @@ node.AddAddresses(targetID, addrs)
 switch {
 case errors.Is(err, realm.ErrNotMember):
     // 需要先加入 Realm
-    realm, _ := node.JoinRealmWithKey(ctx, "my-realm", key)
+    realm, _ := node.Realm("my-realm")
+    _ = realm.Join(ctx)
     // 重试操作
 
 case errors.Is(err, realm.ErrAuthFailed):

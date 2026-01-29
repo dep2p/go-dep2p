@@ -34,8 +34,8 @@ flowchart LR
 
 **Examples**:
 - `/myapp/chat/1.0.0`
-- `/dep2p/ping/1.0`
-- `/ipfs/kad/1.0.0`
+- `/dep2p/sys/ping/1.0.0`
+- `/dep2p/sys/dht/1.0.0`
 
 ---
 
@@ -94,10 +94,11 @@ DeP2P system protocols use the `/dep2p/` namespace:
 **System Protocol Examples**:
 | Protocol ID | Description |
 |-------------|-------------|
-| `/dep2p/ping/1.0` | Ping-Pong heartbeat |
-| `/dep2p/id/1.0.0` | Identity exchange |
-| `/dep2p/relay/1.0.0` | Relay protocol |
-| `/dep2p/realm/1.0.0` | Realm authentication |
+| `/dep2p/sys/ping/1.0.0` | Ping-Pong heartbeat |
+| `/dep2p/sys/identify/1.0.0` | Identity exchange |
+| `/dep2p/relay/1.0.0/hop` | Relay protocol (HOP) |
+| `/dep2p/relay/1.0.0/stop` | Relay protocol (STOP) |
+| `/dep2p/realm/<realmID>/auth/1.0.0` | Realm authentication |
 
 ---
 

@@ -1,10 +1,4 @@
-// Package connmgr 提供连接管理模块的实现
-//
-// 连接管理模块负责：
-// - 连接数量控制
-// - 重要连接保护
-// - 智能裁剪
-// - 黑名单/连接门控
+// Package connmgr 实现连接管理器
 package connmgr
 
 import (
@@ -12,111 +6,135 @@ import (
 
 	"go.uber.org/fx"
 
-	"github.com/dep2p/go-dep2p/pkg/interfaces/connmgr"
+	"github.com/dep2p/go-dep2p/config"
+	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
 )
 
-// ============================================================================
-//                              模块输入依赖
-// ============================================================================
-
-// ModuleInput 定义模块输入依赖
-type ModuleInput struct {
-	fx.In
-
-	// Config 配置（可选）
-	Config *connmgr.Config `optional:"true"`
-
-	// GaterConfig 门控配置（可选）
-	GaterConfig *connmgr.GaterConfig `optional:"true"`
-}
-
-// ============================================================================
-//                              模块输出服务
-// ============================================================================
-
-// ModuleOutput 定义模块输出服务
-type ModuleOutput struct {
-	fx.Out
-
-	// ConnectionManager 连接管理器
-	ConnectionManager connmgr.ConnectionManager `name:"conn_manager"`
-
-	// ConnectionGater 连接门控
-	ConnectionGater connmgr.ConnectionGater `name:"conn_gater"`
-}
-
-// ============================================================================
-//                              服务提供
-// ============================================================================
-
-// ProvideServices 提供模块服务
-func ProvideServices(input ModuleInput) (ModuleOutput, error) {
-	config := connmgr.DefaultConfig()
-	if input.Config != nil {
-		config = *input.Config
-	}
-
-	gaterConfig := connmgr.DefaultGaterConfig()
-	if input.GaterConfig != nil {
-		gaterConfig = *input.GaterConfig
-	}
-
-	manager := NewConnectionManager(config)
-
-	gater, err := NewConnectionGater(gaterConfig)
-	if err != nil {
-		return ModuleOutput{}, err
-	}
-
-	// 集成 Gater 到 Manager
-	manager.SetConnectionGater(gater)
-
-	return ModuleOutput{
-		ConnectionManager: manager,
-		ConnectionGater:   gater,
-	}, nil
-}
-
-// ============================================================================
-//                              模块定义
-// ============================================================================
-
-// Module 返回 fx 模块配置
+// Module 返回 Fx 模块
 func Module() fx.Option {
 	return fx.Module("connmgr",
-		fx.Provide(ProvideServices),
+		fx.Provide(
+			ConfigFromUnified,
+			ProvideManager,
+			ProvideGater,
+			ProvideScheduler,      // P2 修复完成：拨号调度器
+			ProvideSubnetLimiter,  // P4 新增：子网限制器
+		),
 		fx.Invoke(registerLifecycle),
+		fx.Invoke(registerSchedulerLifecycle),  // P2 修复完成
+		fx.Invoke(registerSubnetLimiterLifecycle), // P4 新增
 	)
+}
+
+// ProvideSubnetLimiter 提供子网限制器（P4 新增）
+func ProvideSubnetLimiter() *SubnetLimiter {
+	return NewSubnetLimiter(DefaultSubnetLimiterConfig())
+}
+
+// subnetLimiterLifecycleInput 子网限制器生命周期输入（P4 新增）
+type subnetLimiterLifecycleInput struct {
+	fx.In
+	LC      fx.Lifecycle
+	Limiter *SubnetLimiter `optional:"true"`
+}
+
+// registerSubnetLimiterLifecycle 注册子网限制器生命周期（P4 新增）
+func registerSubnetLimiterLifecycle(input subnetLimiterLifecycleInput) {
+	if input.Limiter == nil {
+		return
+	}
+
+	input.LC.Append(fx.Hook{
+		OnStop: func(_ context.Context) error {
+			input.Limiter.Close()
+			return nil
+		},
+	})
 }
 
 // lifecycleInput 生命周期输入参数
 type lifecycleInput struct {
 	fx.In
-	LC                fx.Lifecycle
-	ConnectionManager connmgr.ConnectionManager `name:"conn_manager"`
+	LC      fx.Lifecycle
+	Manager pkgif.ConnManager
+	Config  Config
 }
 
 // registerLifecycle 注册生命周期
 func registerLifecycle(input lifecycleInput) {
+	// 类型断言获取Manager实现
+	mgr, ok := input.Manager.(*Manager)
+	if !ok {
+		return
+	}
+
 	input.LC.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
-			log.Info("连接管理器启动")
-			return input.ConnectionManager.Start(ctx)
+			// 启动后台裁剪循环
+			mgr.startTrimLoop(ctx)
+			return nil
 		},
 		OnStop: func(_ context.Context) error {
-			log.Info("连接管理器停止")
-			return input.ConnectionManager.Close()
+			// Manager.Close() 会由Fx自动调用
+			return nil
 		},
 	})
 }
 
-// ============================================================================
-//                              模块元信息
-// ============================================================================
+// schedulerLifecycleInput 调度器生命周期输入（P2 修复完成）
+type schedulerLifecycleInput struct {
+	fx.In
+	LC        fx.Lifecycle
+	Scheduler *Scheduler `optional:"true"`
+}
 
-// 模块元信息常量
-const (
-	Version     = "1.0.0"
-	Name        = "connmgr"
-	Description = "连接管理模块，提供连接数量控制和保护机制"
-)
+// registerSchedulerLifecycle 注册调度器生命周期（P2 修复完成）
+func registerSchedulerLifecycle(input schedulerLifecycleInput) {
+	if input.Scheduler == nil {
+		return
+	}
+
+	input.LC.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			return input.Scheduler.Start(ctx)
+		},
+		OnStop: func(_ context.Context) error {
+			return input.Scheduler.Stop()
+		},
+	})
+}
+
+// ConfigFromUnified 从统一配置创建连接管理配置
+func ConfigFromUnified(cfg *config.Config) Config {
+	if cfg == nil {
+		return DefaultConfig()
+	}
+	return Config{
+		LowWater:      cfg.ConnMgr.LowWater,
+		HighWater:     cfg.ConnMgr.HighWater,
+		GracePeriod:   cfg.ConnMgr.GracePeriod.Duration(),
+		DecayInterval: cfg.ConnMgr.DecayInterval.Duration(),
+	}
+}
+
+// ProvideManager 提供连接管理器
+func ProvideManager(cfg Config) (pkgif.ConnManager, error) {
+	return New(cfg)
+}
+
+// ProvideGater 提供连接门控器
+func ProvideGater() pkgif.ConnGater {
+	return NewGater()
+}
+
+// ProvideScheduler 提供拨号调度器（P2 修复完成）
+func ProvideScheduler(host pkgif.Host, _ Config) *Scheduler {
+	if host == nil {
+		return nil
+	}
+
+	schedulerCfg := DefaultSchedulerConfig()
+	// 可从 cfg 中读取调度器相关配置
+
+	return NewScheduler(host, schedulerCfg)
+}

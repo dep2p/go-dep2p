@@ -2,232 +2,194 @@
 
 本目录包含 DeP2P 所有公共接口的定义。
 
-## 目录结构
+## 实际目录结构（扁平结构）
 
 ```
 pkg/
 ├── types/                     # Tier -1: 零依赖纯类型
-│   ├── ids.go                 # NodeID, StreamID, ProtocolID, RealmID
+│   ├── ids.go                 # NodeID, PeerID, StreamID, ProtocolID, RealmID
 │   ├── enums.go               # Direction, NATType, Priority, KeyType, Connectedness
 │   ├── stats.go               # ConnectionStats, StreamStats, NetworkStats
 │   └── address.go             # AddressInfo, AddressRecord, AddressState
 │
-├── proto/                     # 网络协议 protobuf
-│   ├── key/
-│   │   ├── key.proto          # 密钥序列化格式
-│   │   └── key.pb.go          # 生成的 Go 代码
-│   └── peer/
-│       ├── peer.proto         # 节点记录
-│       └── peer.pb.go         # 生成的 Go 代码
+├── proto/                     # 网络协议 protobuf（已在 Phase 0 删除）
 │
-└── interfaces/                # 接口定义
-    ├── identity/              # Tier 0-1: 身份和密钥接口
-    │   ├── key.go             # PublicKey, PrivateKey, KeyGenerator
-    │   └── identity.go        # Identity, IdentityManager
-    │
-    ├── endpoint/              # Tier 1: API 层接口 (原 core 包)
-    │   ├── types.go           # 类型别名（向后兼容）
-    │   ├── endpoint.go        # Endpoint 接口
-    │   ├── connection.go      # Connection 接口
-    │   ├── stream.go          # Stream 接口
-    │   └── errors.go          # 错误定义
-    │
-    ├── address/               # Tier 1: 地址接口
-    │   └── address.go         # AddressManager, AddressBook, AddressParser
-    │
-    ├── transport/             # Tier 2: 传输接口
-    │   └── transport.go       # Transport, Listener, Conn, Upgrader
-    │
-    ├── security/              # Tier 2: 安全接口
-    │   └── security.go        # SecureTransport, SecureConn
-    │
-    ├── muxer/                 # Tier 2: 多路复用接口
-    │   └── muxer.go           # Muxer, Stream, MuxerFactory
-    │
-    ├── discovery/             # Tier 3: 发现接口
-    │   └── discovery.go       # DiscoveryService, Discoverer, DHT
-    │
-    ├── nat/                   # Tier 3: NAT 接口
-    │   └── nat.go             # NATService, HolePuncher, PortMapper
-    │
-    ├── relay/                 # Tier 3: 中继接口
-    │   └── relay.go           # RelayClient, RelayServer, Reservation
-    │
-    ├── protocol/              # Tier 3: 协议接口
-    │   └── protocol.go        # Protocol, Router, Negotiator
-    │
-    ├── connmgr/               # Tier 3: 连接管理接口
-    │   └── connmgr.go         # ConnectionManager, ConnectionFilter
-    │
-    ├── messaging/             # Tier 3: 消息接口
-    │   └── messaging.go       # MessagingService (Request/Response, Pub/Sub, Query)
-    │
-    ├── bandwidth/             # Tier 3: 带宽统计接口
-    │   └── bandwidth.go       # Counter, Stats
-    │
-    ├── netreport/             # Tier 3: 网络诊断接口
-    │   └── netreport.go       # NetReporter, Report
-    │
-    ├── liveness/              # Tier 3: 活性检测接口
-    │   └── liveness.go        # LivenessService
-    │
-    └── realm/                 # Tier 4: 领域隔离接口
-        └── realm.go           # RealmManager
+└── interfaces/                # 接口定义（扁平结构）
+    ├── doc.go                 # 包文档
+    ├── host.go                # Host 接口（网络主机门面）
+    ├── node.go                # Node 接口（顶层 API）
+    ├── identity.go            # Identity 接口
+    ├── transport.go           # Transport 接口
+    ├── security.go            # Security 接口
+    ├── muxer.go               # Muxer 接口
+    ├── discovery.go           # Discovery/DHT 接口
+    ├── peerstore.go           # Peerstore 接口
+    ├── connmgr.go             # ConnMgr 接口
+    ├── swarm.go               # Swarm 接口
+    ├── realm.go               # Realm 接口
+    ├── messaging.go           # Messaging 接口
+    ├── pubsub.go              # PubSub 接口
+    ├── streams.go             # Streams 接口
+    ├── liveness.go            # Liveness 接口
+    ├── eventbus.go            # EventBus 接口
+    ├── metrics.go             # Metrics 接口
+    ├── resource.go            # ResourceManager 接口
+    ├── protocol.go            # Protocol 接口
+    ├── upgrader.go            # Upgrader 接口
+    └── health.go              # 健康检查接口
 ```
+
+## 架构说明
+
+### 为什么是扁平结构？
+
+DeP2P 采用**扁平接口结构**，所有接口文件直接放在 `pkg/interfaces/` 目录下，而不是分散到子目录中。
+
+**原因**：
+
+1. **简化导入**：`import "github.com/dep2p/go-dep2p/pkg/interfaces"` 一次性导入所有接口
+2. **避免循环依赖**：接口间的依赖关系清晰，不会因为子目录结构导致循环引用
+3. **go-libp2p 风格**：与 go-libp2p 的接口组织方式一致
+4. **减少包层级**：降低代码复杂度，提高可维护性
+
+### 接口命名约定
+
+接口文件不使用架构层前缀（如 `core_*`, `protocol_*`），采用直接的功能名称：
+
+| 接口文件 | 主要接口 | 架构层 |
+|----------|----------|--------|
+| `host.go` | `Host` | Core Layer |
+| `node.go` | `Node` | API Layer |
+| `identity.go` | `Identity` | Core Layer |
+| `transport.go` | `Transport` | Core Layer |
+| `discovery.go` | `Discovery`, `DHT` | Discovery Layer |
+| `realm.go` | `Realm`, `RealmManager` | Realm Layer |
+| `messaging.go` | `MessagingService` | Protocol Layer |
+| `pubsub.go` | `PubSubService`, `Topic` | Protocol Layer |
 
 ## 依赖层次
 
 ```mermaid
 graph TD
-    subgraph TierMinus1["Tier -1: 零依赖"]
-        types[pkg/types]
-    end
-    
-    subgraph Tier0["Tier 0-1: 基础接口"]
-        identity[interfaces/identity]
-    end
-    
-    subgraph Tier1["Tier 1: 核心接口"]
-        endpoint[interfaces/endpoint]
-        address[interfaces/address]
-    end
-    
-    subgraph Tier2["Tier 2: 传输层"]
-        transport[interfaces/transport]
-        security[interfaces/security]
-        muxer[interfaces/muxer]
-    end
-    
-    subgraph Tier3["Tier 3: 网络服务"]
-        discovery[interfaces/discovery]
-        nat[interfaces/nat]
-        relay[interfaces/relay]
-        protocol[interfaces/protocol]
-        connmgr[interfaces/connmgr]
-        messaging[interfaces/messaging]
-        bandwidth[interfaces/bandwidth]
-        netreport[interfaces/netreport]
-        liveness[interfaces/liveness]
-    end
-    
-    subgraph Tier4["Tier 4: 领域层"]
-        realm[interfaces/realm]
-    end
+    types[pkg/types<br/>零依赖类型]
+    identity[identity.go<br/>Identity]
+    host[host.go<br/>Host]
+    transport[transport.go<br/>Transport]
+    security[security.go<br/>Security]
+    muxer[muxer.go<br/>Muxer]
+    discovery[discovery.go<br/>Discovery/DHT]
+    realm[realm.go<br/>Realm]
+    messaging[messaging.go<br/>Messaging]
     
     identity --> types
-    endpoint --> types
-    endpoint --> identity
-    address --> types
-    address --> endpoint
+    host --> types
     transport --> types
-    transport --> endpoint
-    transport --> identity
-    security --> types
     security --> identity
     security --> transport
     muxer --> types
-    discovery --> types
-    discovery --> endpoint
-    nat --> types
-    nat --> endpoint
-    relay --> types
-    relay --> endpoint
-    relay --> transport
-    protocol --> types
-    protocol --> endpoint
-    protocol --> transport
-    connmgr --> types
-    connmgr --> endpoint
-    messaging --> types
-    bandwidth --> types
-    bandwidth --> endpoint
-    netreport --> types
-    liveness --> types
-    liveness --> endpoint
-    realm --> types
-    realm --> endpoint
+    discovery --> host
+    realm --> host
+    messaging --> host
 ```
 
 ## 使用方式
 
-### 导入基础类型
+### 导入接口
 
 ```go
-import "github.com/dep2p/go-dep2p/pkg/types"
+import (
+    "github.com/dep2p/go-dep2p/pkg/interfaces"
+    "github.com/dep2p/go-dep2p/pkg/types"
+)
+
+// 使用接口
+func processHost(h interfaces.Host) {
+    peerID := h.ID()
+    addrs := h.Addrs()
+}
 
 // 使用基础类型
 var nodeID types.NodeID
 var direction types.Direction = types.DirInbound
 ```
 
-### 导入密钥接口
+### Host 接口（核心门面）
+
+`Host` 是 DeP2P 的核心接口，采用 **go-libp2p 风格** 的门面模式：
 
 ```go
-import "github.com/dep2p/go-dep2p/pkg/interfaces/identity"
-
-// 使用密钥接口（原 crypto 包已合并）
-func sign(key identity.PrivateKey, data []byte) ([]byte, error) {
-    return key.Sign(data)
+type Host interface {
+    // 身份
+    ID() string
+    Addrs() []string
+    
+    // 连接
+    Connect(ctx context.Context, peerID string, addrs []string) error
+    
+    // 流
+    NewStream(ctx context.Context, peerID string, protocolIDs ...string) (Stream, error)
+    
+    // 协议
+    SetStreamHandler(protocolID string, handler StreamHandler)
+    RemoveStreamHandler(protocolID string)
+    
+    // 子系统访问
+    Peerstore() Peerstore
+    EventBus() EventBus
+    
+    // 生命周期
+    Close() error
 }
-```
-
-### 导入 Endpoint 接口
-
-```go
-import (
-    "github.com/dep2p/go-dep2p/pkg/interfaces/endpoint"
-    "github.com/dep2p/go-dep2p/pkg/types"
-)
-
-// endpoint 包提供向后兼容的类型别名
-var _ endpoint.NodeID = types.NodeID{} // 类型相同
-```
-
-## 重构说明 (2025-12-20)
-
-### core → endpoint
-
-原 `pkg/interfaces/core` 已重命名为 `pkg/interfaces/endpoint`：
-- 原因：`core` 与 `internal/core` 命名冲突，且设计文档中 Core 指基础类型而非 Endpoint
-- 影响：`core.Endpoint` → `endpoint.Endpoint`，`core.Connection` → `endpoint.Connection` 等
-
-### crypto → identity
-
-原 `pkg/interfaces/crypto` 已合并到 `pkg/interfaces/identity`：
-- 原因：设计文档中 Identity 包含密钥管理职责，分离导致接口/实现不一一对应
-- 影响：`crypto.PublicKey` → `identity.PublicKey`，`crypto.PrivateKey` → `identity.PrivateKey` 等
-
-### 删除 event 和 preset
-
-原 `pkg/interfaces/event` 和 `pkg/interfaces/preset` 已删除：
-
-**event 删除原因**：
-- 从未实现，`Endpoint.EventBus()` 始终返回 `nil`
-- 当前系统使用回调函数模式（如 `OnUpgraded`、`OnConnected` callback）
-- 如需事件系统，建议使用回调注册或 channel 机制
-
-**preset 删除原因**：
-- `pkg/dep2p/presets.go` 直接定义了 `Preset struct`，未使用接口
-- 接口从未被任何代码导入或使用
-- 对于预设配置，直接使用 struct 已足够灵活
-
-## Protobuf 消息
-
-`pkg/proto/` 目录包含网络传输使用的 protobuf 定义：
-
-- `key/key.proto` - 密钥序列化格式
-- `peer/peer.proto` - 节点记录和地址信息
-
-生成 Go 代码：
-
-```bash
-protoc --go_out=. --go_opt=paths=source_relative pkg/proto/key/key.proto
-protoc --go_out=. --go_opt=paths=source_relative pkg/proto/peer/peer.proto
 ```
 
 ## 设计原则
 
-1. **零循环依赖** - 严格的分层依赖，下层不依赖上层
-2. **接口与实现分离** - 公共接口在 `pkg/interfaces/`，内部实现在 `internal/core/`
-3. **一一对应** - 每个 `pkg/interfaces/X` 对应 `internal/core/X`
-4. **高内聚低耦合** - 每个包职责单一，依赖清晰
+1. **接口优先**：先定义契约，再实现
+2. **依赖倒置**：高层依赖抽象，不依赖实现
+3. **零循环依赖**：严格的依赖方向
+4. **接口与实现分离**：公共接口在 `pkg/interfaces/`，内部实现在 `internal/`
+
+## 与实现的映射
+
+| 接口文件 | 实现位置 | 说明 |
+|----------|----------|------|
+| `host.go` | `internal/core/host/` | P2P 主机 |
+| `identity.go` | `internal/core/identity/` | 身份管理 |
+| `transport.go` | `internal/core/transport/` | 传输层 |
+| `security.go` | `internal/core/security/` | 安全握手 |
+| `muxer.go` | `internal/core/muxer/` | 流复用 |
+| `discovery.go` | `internal/discovery/` | 节点发现 |
+| `messaging.go` | `internal/protocol/messaging/` | 消息服务 |
+| `pubsub.go` | `internal/protocol/pubsub/` | 发布订阅 |
+| `realm.go` | `internal/realm/` | Realm 管理 |
+| `peerstore.go` | `internal/core/peerstore/` | 节点存储 |
+| `connmgr.go` | `internal/core/connmgr/` | 连接管理 |
+| `swarm.go` | `internal/core/swarm/` | 连接池 |
+
+## 历史说明
+
+### 架构决策变更（2026-01）
+
+在早期设计阶段，曾考虑过使用 **子目录分层结构**（参考 Iroh 的 `endpoint/` 概念），但在实施阶段决定采用 **go-libp2p 风格的扁平结构 + Host 门面模式**。
+
+**已废弃的设计**（仅存在于早期文档中）：
+- `pkg/interfaces/endpoint/` - 已废弃，使用 `host.go` 中的 `Host` 接口
+- `pkg/interfaces/identity/` - 已废弃，使用 `identity.go`
+- `pkg/interfaces/address/` - 已废弃，地址使用字符串形式的 multiaddr
+
+**当前架构**：
+- ✅ 扁平接口结构
+- ✅ Host 作为核心门面
+- ✅ 字符串形式的 PeerID 和地址
+
+## 相关文档
+
+| 文档 | 说明 |
+|------|------|
+| `design/03_architecture/L4_interfaces/` | 接口设计规范 |
+| `design/03_architecture/L6_domains/pkg_interfaces/` | 接口模块文档 |
+| `internal/core/host/` | Host 实现 |
+
+---
+
+**最后更新**：2026-01-14

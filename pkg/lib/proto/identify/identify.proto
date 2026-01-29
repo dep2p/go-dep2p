@@ -1,0 +1,43 @@
+// DeP2P Identify Protocol Definitions
+// 身份识别协议消息定义
+
+syntax = "proto3";
+
+package dep2p.identify;
+
+option go_package = "github.com/dep2p/dep2p/pkg/proto/identify";
+
+// Identify 身份识别消息
+// 用于节点间交换基本信息
+message Identify {
+  // protocol_version 协议版本（如 "dep2p/1.0.0"）
+  bytes protocol_version = 1;
+  
+  // agent_version 代理版本（如 "go-dep2p/1.0.0"）
+  bytes agent_version = 2;
+  
+  // public_key 节点公钥
+  bytes public_key = 3;
+  
+  // listen_addrs 监听地址列表（multiaddr 格式）
+  repeated bytes listen_addrs = 4;
+  
+  // observed_addr 对端观察到的本节点地址
+  bytes observed_addr = 5;
+  
+  // protocols 支持的协议列表
+  repeated string protocols = 6;
+  
+  // signed_peer_record 签名的节点记录
+  bytes signed_peer_record = 8;
+}
+
+// Push 身份推送消息
+// 用于通知对端地址变更
+message Push {
+  // protocols 新增的协议列表
+  repeated string protocols = 1;
+  
+  // signed_peer_record 更新的签名节点记录
+  bytes signed_peer_record = 2;
+}

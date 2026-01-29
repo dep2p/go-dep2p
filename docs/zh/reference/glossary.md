@@ -44,7 +44,8 @@ DeP2P 网络中的一个参与者实例。每个 Node 拥有唯一的 NodeID，�
 
 **使用场景**：
 ```go
-node, _ := dep2p.StartNode(ctx)
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+node.Start(ctx)
 defer node.Close()
 ```
 
@@ -83,7 +84,8 @@ DeP2P 的多租户隔离机制。不同 Realm 的节点共享底层基础设施�
 
 **使用场景**：
 ```go
-node.Realm().JoinRealm(ctx, types.RealmID("my-realm"))
+realm, _ := node.Realm("my-realm")
+_ = realm.Join(ctx)
 ```
 
 ---
@@ -136,12 +138,37 @@ DeP2P 的核心连接接口，提供底层连接管理和协议处理功能。No
 
 新节点加入网络的过程。通过连接已知的 Bootstrap 节点来发现更多节点并融入网络。
 
-**相关概念**：BootstrapPeer, DHT, Discovery
+**相关概念**：BootstrapPeer, DHT, Discovery, KnownPeers
 
 **使用场景**：
 ```go
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithBootstrapPeers(bootstrapAddrs...),
+)
+```
+
+---
+
+### Known Peers
+
+**已知节点**
+
+预配置的节点列表，启动时直接连接这些节点，无需通过 Bootstrap 或 DHT 发现。
+
+**适用场景**：
+- 私有网络
+- 云服务器部署
+- 无公共 Bootstrap 的环境
+
+**相关概念**：Bootstrap, Discovery
+
+**使用场景**：
+```go
+node, _ := dep2p.New(ctx,
+    dep2p.WithKnownPeers(config.KnownPeer{
+        PeerID: "12D3KooW...",
+        Addrs:  []string{"/ip4/1.2.3.4/udp/4001/quic-v1"},
+    }),
 )
 ```
 
@@ -153,11 +180,32 @@ node, _ := dep2p.StartNode(ctx,
 
 去中心化的键值存储系统，用于节点发现和地址存储。DeP2P 使用 Kademlia DHT。
 
+**v2.0 权威模型**：
+- DHT 是权威目录，存储签名 PeerRecord
+- Relay 地址簿是缓存加速层
+- 地址查询优先级：Peerstore → MemberList → DHT → Relay 地址簿
+
 **模式**：
 - **Client**：仅查询 DHT
 - **Server**：存储和服务 DHT 请求
 
-**相关概念**：Bootstrap, Discovery, Kademlia
+**相关概念**：Bootstrap, Discovery, Kademlia, PeerRecord
+
+---
+
+### PeerRecord
+
+**节点记录**
+
+DHT 中存储的节点地址信息，必须经过签名防止投毒攻击。
+
+**结构**：
+- NodeID：节点标识
+- Addrs：地址列表
+- Timestamp：时间戳
+- Signature：Ed25519 签名
+
+**相关概念**：DHT, NodeID, Signature
 
 ---
 
@@ -207,7 +255,29 @@ node, _ := dep2p.StartNode(ctx,
 
 帮助节点发现自己的公网 IP 和端口的协议。
 
-**相关概念**：NAT, NAT Traversal
+**相关概念**：NAT, NAT Traversal, TrustSTUNAddresses
+
+---
+
+### Trust STUN Addresses
+
+**信任 STUN 地址**
+
+云服务器场景下的优化选项。启用后，STUN 探测发现的公网地址将被立即信任和通告，跳过入站连接验证步骤。
+
+**适用场景**：
+- 有真实公网 IP 的云服务器
+- 网络配置确保入站流量可达
+
+**使用场景**：
+```go
+node, _ := dep2p.New(ctx,
+    dep2p.WithPreset(dep2p.PresetServer),
+    dep2p.WithTrustSTUNAddresses(true),
+)
+```
+
+**相关概念**：STUN, Reachability
 
 ---
 
@@ -415,7 +485,45 @@ node, _ := dep2p.StartNode(ctx,
 
 存储已知节点地址的本地缓存。加速后续连接。
 
-**相关概念**：NodeID, Address, Discovery
+**v2.0 定位**：Relay 地址簿是 DHT 的本地缓存，不是权威目录。
+
+**相关概念**：NodeID, Address, Discovery, DHT
+
+---
+
+### ReadyLevel
+
+**就绪级别**
+
+节点启动过程中的状态阶段。
+
+**阶段**：
+- **Created**：节点已创建
+- **Network**：传输层就绪
+- **Discovered**：DHT 已加入
+- **Reachable**：地址已验证，可接收入站连接
+- **RealmReady**：Realm 已加入，业务 API 可用
+
+**相关概念**：Node, Lifecycle
+
+---
+
+### Lazy Relay Strategy
+
+**惰性中继策略**
+
+DeP2P 的连接策略：直连优先，中继兜底。
+
+**连接尝试顺序**：
+1. 直接连接（最快）
+2. NAT 打洞（需要信令通道）
+3. Relay 转发（兜底保障）
+
+**特点**：
+- 打洞成功后保留 Relay 连接作为备用
+- 约 99% 的连接成功率保障
+
+**相关概念**：Relay, NAT Traversal, Hole Punching
 
 ---
 
@@ -435,7 +543,91 @@ node, _ := dep2p.StartNode(ctx,
 
 检测连接是否仍然活跃的机制。使用 Ping-Pong 心跳协议。
 
-**相关概念**：Connection, Ping
+**相关概念**：Connection, Ping, DisconnectDetection
+
+---
+
+### Disconnect Detection
+
+**断开检测**
+
+DeP2P 的多层断开检测机制，确保快速准确地感知节点离线。
+
+**层次**：
+- **QUIC Keep-Alive**：传输层检测，3秒周期
+- **重连宽限期**：网络抖动容忍，15秒窗口
+- **见证人机制**：分布式验证，3个见证人
+- **震荡检测**：稳定性保护，60秒窗口
+
+**相关概念**：Connection, Liveness, MemberEvent
+
+---
+
+### Reconnect Grace Period
+
+**重连宽限期**
+
+连接断开后等待重连的时间窗口。在此期间不触发 MemberLeft 事件，避免网络抖动造成的误判。
+
+**默认值**：15 秒
+
+**相关概念**：DisconnectDetection, MemberEvent
+
+---
+
+### Witness Mechanism
+
+**见证人机制**
+
+分布式验证节点离线的机制。询问多个见证人确认某节点是否真正离线，防止单点误判。
+
+**参数**：
+- **见证人数量**：默认 3 个
+- **仲裁数量**：默认 2 个确认
+
+**相关概念**：DisconnectDetection, MemberEvent
+
+---
+
+### Flapping Detection
+
+**震荡检测**
+
+检测节点频繁上下线（震荡）的机制。触发后进入冷却期，暂停重连尝试。
+
+**参数**：
+- **窗口**：60 秒
+- **阈值**：3 次断线
+- **冷却**：120 秒
+
+**相关概念**：DisconnectDetection, Connection
+
+---
+
+### Member Event
+
+**成员事件**
+
+Realm 成员状态变化的事件通知。
+
+**类型**：
+- **MemberJoined**：新成员加入
+- **MemberLeft**：成员离开
+
+**相关概念**：Realm, DisconnectDetection
+
+**使用场景**：
+```go
+events, _ := node.Realm().SubscribeMemberEvents(ctx, realmID)
+for event := range events {
+    switch event.Type {
+    case dep2p.MemberJoined:
+        fmt.Printf("成员加入: %s\n", event.Member)
+    case dep2p.MemberLeft:
+        fmt.Printf("成员离开: %s\n", event.Member)
+    }
+}
+```
 
 ---
 
@@ -460,22 +652,34 @@ flowchart TD
         DHT["DHT"]
         mDNS["mDNS"]
         Boot["Bootstrap"]
+        KP["KnownPeers"]
     end
     
     subgraph NAT [NAT 层]
         STUN["STUN"]
+        TrustSTUN["TrustSTUNAddresses"]
         HP["Hole Punching"]
         Relay["Relay"]
+    end
+    
+    subgraph Disconnect [断开检测层]
+        QKA["QUIC Keep-Alive"]
+        Grace["Grace Period"]
+        Witness["Witness"]
+        Flap["Flapping"]
     end
     
     PrivKey --> PubKey --> NID
     NID --> Node
     Node --> EP --> Conn --> Stream
     Boot --> DHT
+    KP --> Node
     mDNS --> Discovery
     DHT --> Discovery
     STUN --> HP
+    STUN --> TrustSTUN
     HP --> Relay
+    Conn --> QKA --> Grace --> Witness --> Flap
 ```
 
 ---

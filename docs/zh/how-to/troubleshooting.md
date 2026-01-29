@@ -1,533 +1,280 @@
-# 故障排查
+# API 默认行为与约束
 
-本指南解答：**遇到问题时如何排查和解决？**
-
----
-
-## 最常见的 5 个错误
-
-快速定位你的问题：
-
-| 错误 | 原因 | 解决方案 |
-|------|------|----------|
-| `ErrNotMember` | 未加入 Realm 就使用业务 API | 先调用 `JoinRealmWithKey()` |
-| `ErrAlreadyJoined` | 重复加入同一 Realm | 检查 `CurrentRealm()` 或先 `LeaveRealm()` |
-| `connection timeout` | 网络不通或防火墙阻止 | 检查网络、启用 Relay |
-| `peer id mismatch` | 地址中 NodeID 错误 | 使用 `ShareableAddrs()` 获取正确地址 |
-| `ErrAuthFailed` | RealmKey 不一致 | 确保所有成员使用相同的 realmKey |
-
-> **完整错误参考**：查看 [错误码参考](../reference/error-codes.md) 获取所有错误的详细说明。
-> 
-> **API 约束说明**：查看 [API 默认行为与约束](../reference/api-defaults.md) 了解核心约束。
+本文档列出 DeP2P 的核心约束、API 默认行为，以及违反约束时的错误和修复方法。
 
 ---
 
-## 问题分类
+## 核心约束（必须遵守）
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    DeP2P 核心约束                                    │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  1. 必须先 JoinRealm() 再使用业务 API                               │
+│     → 否则返回 ErrNotMember                                         │
+│                                                                      │
+│  2. 一个 Node 同一时间只能加入一个 Realm                             │
+│     → 切换 Realm 需要先 LeaveRealm()                                │
+│                                                                      │
+│  3. RealmKey 必须在成员间安全共享                                   │
+│     → 只有持有相同 realmKey 的节点才能互相验证                      │
+│                                                                      │
+│  4. 协议 ID 必须包含版本号                                          │
+│     → 格式：/namespace/name/version                                 │
+│                                                                      │
+│  5. 地址必须使用 Full Address 格式                                  │
+│     → 必须包含 /p2p/<NodeID> 后缀                                   │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 约束速查表
+
+| 约束 | 违反时错误 | 解决方案 |
+|------|-----------|----------|
+| 必须先 JoinRealm() | `ErrNotMember` | 调用 `node.Realm()` + `realm.Join()` |
+| 不能重复加入 Realm | `ErrAlreadyJoined` | 检查 `CurrentRealm()` 或先 `LeaveRealm()` |
+| RealmKey 不匹配 | `ErrAuthFailed` | 确保所有成员使用相同的 realmKey |
+| 地址缺少 NodeID | 连接失败 | 使用 `ShareableAddrs()` 获取完整地址 |
+| 协议 ID 格式错误 | 协议协商失败 | 使用 `/namespace/name/version` 格式 |
+
+---
+
+## API 默认行为
+
+### Node 层
+
+| API | 默认行为 | 备注 |
+|-----|----------|------|
+| `New()` + `Start()` | 自动生成身份 | 每次启动生成新 NodeID |
+| `New()` + `Start()` | 随机端口 | 使用 `/udp/0/quic-v1` |
+| `New()` + `Start()` | 启用 NAT 穿透 | UPnP/STUN/打洞 |
+| `New()` + `Start()` | 启用 Relay | 作为客户端使用中继 |
+| `Close()` | 优雅关闭 | 等待 Goodbye 消息传播 |
+
+### Realm 层
+
+| API | 默认行为 | 备注 |
+|-----|----------|------|
+| `Realm()` + `Join()` | 自动派生 RealmID | 从 realmKey 哈希派生 |
+| `Realm()` + `Join()` | 启用 PSK 认证 | 成员间验证 |
+| `CurrentRealm()` | 返回 nil | 未加入时 |
+| `LeaveRealm()` | 清理订阅 | 自动退出所有 Topic |
+
+### Messaging 层
+
+| API | 默认行为 | 备注 |
+|-----|----------|------|
+| `Send()` | 无重试 | 需要应用层处理 |
+| `Request()` | 30s 超时 | 可通过 context 覆盖 |
+| `OnMessage()` | 替换处理器 | 同协议只保留最后一个 |
+
+### PubSub 层
+
+| API | 默认行为 | 备注 |
+|-----|----------|------|
+| `Join()` | 自动添加 Realm 前缀 | 实际 topic: `/dep2p/app/<realmID>/user-topic` |
+| `Publish()` | 异步发送 | 不等待确认 |
+| `Subscribe()` | 返回 channel | 消息通过 channel 接收 |
+
+---
+
+## 生命周期约束
 
 ```mermaid
-flowchart TD
-    Problem["遇到问题"] --> Q1{"问题类型?"}
+flowchart LR
+    subgraph Node
+        N1["New() + Start()"] --> N2["节点就绪"]
+        N2 --> N3["Close()"]
+    end
     
-    Q1 -->|连接| Conn["连接问题"]
-    Q1 -->|Realm| Realm["Realm 问题"]
-    Q1 -->|NAT| NAT["NAT 问题"]
-    Q1 -->|地址| Addr["地址问题"]
-    Q1 -->|协议| Proto["协议问题"]
+    subgraph Realm
+        R1["Realm() + Join()"] --> R2["Realm 就绪"]
+        R2 --> R3["LeaveRealm()"]
+    end
     
-    Conn --> ConnDiag["连接诊断"]
-    Realm --> RealmDiag["Realm 诊断"]
-    NAT --> NATDiag["NAT 诊断"]
-    Addr --> AddrDiag["地址诊断"]
-    Proto --> ProtoDiag["协议诊断"]
+    N2 --> R1
+    R3 --> N2
+    R2 --> BizAPI["业务 API 可用"]
 ```
 
----
-
-## 快速诊断清单
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         快速诊断清单                                 │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  □ 节点是否成功启动？                                               │
-│    - 检查启动错误                                                    │
-│    - 确认 node.ID() 可用                                            │
-│                                                                      │
-│  □ 是否加入了 Realm？                                               │
-│    - 调用 JoinRealm() 后再使用业务 API                              │
-│    - 检查 CurrentRealm()                                            │
-│                                                                      │
-│  □ 网络是否连通？                                                   │
-│    - 检查 ConnectionCount()                                         │
-│    - 检查 Bootstrap 配置                                            │
-│                                                                      │
-│  □ 地址是否正确？                                                   │
-│    - 使用 Full Address 格式                                         │
-│    - 检查 /p2p/<NodeID> 后缀                                        │
-│                                                                      │
-│  □ NAT/防火墙是否阻止？                                             │
-│    - 检查 UDP 端口                                                   │
-│    - 启用 Relay                                                     │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 连接问题
-
-### 问题：无法连接到其他节点
-
-**诊断步骤**：
+### 正确的生命周期
 
 ```go
-func diagnoseConnectionIssue(ctx context.Context, node dep2p.Node, targetAddr string) {
-    fmt.Println("═══════════════════════════════════════")
-    fmt.Println("连接问题诊断")
-    fmt.Println("═══════════════════════════════════════")
-    
-    // 1. 检查本节点状态
-    fmt.Printf("本节点 ID: %s\n", node.ID())
-    fmt.Printf("当前连接数: %d\n", node.ConnectionCount())
-    
-    // 2. 检查目标地址格式
-    if !strings.Contains(targetAddr, "/p2p/") {
-        fmt.Println("❌ 地址格式错误：缺少 /p2p/<NodeID> 后缀")
-        return
-    }
-    fmt.Println("✓ 地址格式正确")
-    
-    // 3. 尝试连接
-    start := time.Now()
-    conn, err := node.ConnectToAddr(ctx, targetAddr)
-    elapsed := time.Since(start)
-    
-    if err != nil {
-        fmt.Printf("❌ 连接失败 (%v): %v\n", elapsed, err)
-        analyzeConnectionError(err)
-        return
-    }
-    
-    fmt.Printf("✓ 连接成功 (%v)\n", elapsed)
-    fmt.Printf("  远程节点: %s\n", conn.RemoteID())
+// 1. 启动节点
+node, err := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+if err != nil {
+    log.Fatal(err)
+}
+defer node.Close()
+
+err = node.Start(ctx)
+if err != nil {
+    log.Fatal(err)
 }
 
-func analyzeConnectionError(err error) {
-    errStr := err.Error()
-    
-    switch {
-    case strings.Contains(errStr, "timeout"):
-        fmt.Println("诊断: 连接超时")
-        fmt.Println("建议:")
-        fmt.Println("  - 检查网络连通性")
-        fmt.Println("  - 增加超时时间")
-        fmt.Println("  - 检查防火墙设置")
-        
-    case strings.Contains(errStr, "refused"):
-        fmt.Println("诊断: 连接被拒绝")
-        fmt.Println("建议:")
-        fmt.Println("  - 确认目标节点正在运行")
-        fmt.Println("  - 检查端口是否正确")
-        
-    case strings.Contains(errStr, "no route"):
-        fmt.Println("诊断: 无法路由")
-        fmt.Println("建议:")
-        fmt.Println("  - 检查 NAT 配置")
-        fmt.Println("  - 启用 Relay")
-        
-    case strings.Contains(errStr, "peer id mismatch"):
-        fmt.Println("诊断: NodeID 不匹配")
-        fmt.Println("建议:")
-        fmt.Println("  - 确认地址中的 NodeID 正确")
-        
-    default:
-        fmt.Printf("诊断: 未知错误\n")
-        fmt.Println("建议: 启用 Debug 日志查看详情")
-    }
+// 2. 加入 Realm（必须！）
+realmKey := types.RealmKey(sharedSecret)
+realm, err := node.Realm("my-app")
+if err != nil {
+    log.Fatal(err)
 }
+err = realm.Join(ctx, realmKey)
+if err != nil {
+    log.Fatal(err)
+}
+
+// 3. 使用业务 API
+messaging := realm.Messaging()
+pubsub := realm.PubSub()
+// ... 业务逻辑 ...
+
+// 4. 离开 Realm（可选，Close() 会自动处理）
+// realm.Leave(ctx)
 ```
 
-### 常见连接错误及解决方案
-
-| 错误 | 原因 | 解决方案 |
-|------|------|----------|
-| `context deadline exceeded` | 超时 | 增加超时、检查网络 |
-| `connection refused` | 目标不可达 | 确认目标节点运行 |
-| `no route to host` | 路由问题 | 检查 NAT、使用 Relay |
-| `peer id mismatch` | ID 不匹配 | 使用正确的完整地址 |
-
----
-
-## Realm 问题
-
-### 问题：ErrNotMember 错误
-
-**原因**：未加入 Realm 就调用业务 API
+### 常见错误用法
 
 ```go
-// ❌ 错误用法：未加入 Realm 就调用业务 API
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+// ❌ 错误：未加入 Realm 就使用业务 API
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
 realm := node.CurrentRealm()  // 返回 nil
 if realm != nil {
-    realm.Messaging().Send(ctx, targetID, "/myapp/1.0.0", data)  // 不会执行
+    realm.Messaging().Send(ctx, targetID, "/myapp/1.0.0", data)  // 不会执行到这里
 }
-// 实际会报错：ErrNotMember
+// 实际会返回 ErrNotMember!
 
-// ✓ 正确用法：先加入 Realm，再使用 Messaging API
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
-realmKey := types.GenerateRealmKey()
-realm, _ := node.JoinRealmWithKey(ctx, "my-realm", realmKey)  // 先加入 Realm
-realm.Messaging().Send(ctx, targetID, "/myapp/1.0.0", data)  // 正常
-```
+// ❌ 错误：重复加入同一 Realm
+realm1, _ := node.Realm("realm-a")
+_ = realm1.Join(ctx, key)
+realm2, _ := node.Realm("realm-a")
+_ = realm2.Join(ctx, key)  // ErrAlreadyJoined!
 
-### 问题：ErrAlreadyJoined 错误
-
-**原因**：重复加入同一个 Realm
-
-```go
-// ❌ 错误
-node.Realm().JoinRealm(ctx, types.RealmID("realm-a"))
-node.Realm().JoinRealm(ctx, types.RealmID("realm-a"))  // 报错
-
-// ✓ 正确：检查当前 Realm
-if node.Realm().CurrentRealm() != types.RealmID("realm-a") {
-    node.Realm().JoinRealm(ctx, types.RealmID("realm-a"))
-}
-```
-
-### 诊断 Realm 状态
-
-```go
-func diagnoseRealmIssue(node dep2p.Node) {
-    fmt.Println("═══════════════════════════════════════")
-    fmt.Println("Realm 诊断")
-    fmt.Println("═══════════════════════════════════════")
-    
-    currentRealm := node.Realm().CurrentRealm()
-    
-    if currentRealm.IsEmpty() {
-        fmt.Println("❌ 未加入任何 Realm")
-        fmt.Println("建议: 调用 node.Realm().JoinRealm(ctx, realmID)")
-    } else {
-        fmt.Printf("✓ 当前 Realm: %s\n", currentRealm)
-    }
-}
+// ❌ 错误：不同 realmKey
+realmA, _ := nodeA.Realm("test")
+_ = realmA.Join(ctx, keyA)
+realmB, _ := nodeB.Realm("test")
+_ = realmB.Join(ctx, keyB)  // 无法互相验证！
 ```
 
 ---
 
-## NAT 问题
+## 预设默认值
 
-### 问题：无法获取公网地址
-
-**诊断**：
+### PresetDesktop
 
 ```go
-func diagnoseNATIssue(ctx context.Context, node dep2p.Node) {
-    fmt.Println("═══════════════════════════════════════")
-    fmt.Println("NAT 诊断")
-    fmt.Println("═══════════════════════════════════════")
-    
-    // 1. 检查监听地址
-    fmt.Println("\n监听地址:")
-    for _, addr := range node.ListenAddrs() {
-        fmt.Printf("  %s\n", addr)
-    }
-    
-    // 2. 检查通告地址
-    fmt.Println("\n通告地址:")
-    advAddrs := node.AdvertisedAddrs()
-    if len(advAddrs) == 0 {
-        fmt.Println("  (无)")
-    } else {
-        for _, addr := range advAddrs {
-            fmt.Printf("  %s\n", addr)
-        }
-    }
-    
-    // 3. 等待可分享地址
-    fmt.Println("\n等待公网地址验证...")
-    waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-    defer cancel()
-    
-    addrs, err := node.WaitShareableAddrs(waitCtx)
-    if err != nil {
-        fmt.Println("❌ 无法获取公网地址")
-        fmt.Println("可能原因:")
-        fmt.Println("  - 在多层 NAT 后")
-        fmt.Println("  - UPnP 不可用")
-        fmt.Println("  - 无 helper 节点进行验证")
-        fmt.Println("建议: 启用 Relay")
-    } else {
-        fmt.Println("✓ 公网地址:")
-        for _, addr := range addrs {
-            fmt.Printf("  %s\n", addr)
-        }
-    }
-    
-    // 4. 检查 Relay 候选
-    fmt.Println("\n候选地址:")
-    for _, c := range node.BootstrapCandidates() {
-        fmt.Printf("  [%s] %s\n", c.Type, c.Addr)
-    }
-}
+// 连接限制
+LowWater:  50
+HighWater: 100
+
+// 功能开关
+NAT:        true   // 启用 NAT 穿透
+Relay:      true   // 启用 Relay 客户端
+RelayServer: false // 不作为 Relay 服务器
+
+// 发现
+mDNS:       true   // 局域网发现
+DHT:        true   // 分布式哈希表
+
+// Liveness
+Heartbeat:  15s    // 心跳间隔
+Timeout:    45s    // 心跳超时
 ```
 
-### NAT 穿透检查清单
+### PresetServer
+
+```go
+// 连接限制
+LowWater:  100
+HighWater: 200
+
+// 功能开关
+NAT:         true
+Relay:       true
+RelayServer: true   // 作为 Relay 服务器
+
+// 发现
+mDNS:        false  // 服务器通常不需要
+DHT:         true
+```
+
+### PresetMobile
+
+```go
+// 连接限制
+LowWater:  10
+HighWater: 30
+
+// 功能开关
+NAT:        true
+Relay:      true   // 移动端经常需要中继
+RelayServer: false
+
+// 电量优化
+HeartbeatInterval: 30s  // 降低频率
+```
+
+---
+
+## 协议命名空间
+
+DeP2P 使用三级协议命名空间：
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                      NAT 穿透检查清单                                │
+│                      协议命名空间                                    │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
-│  □ 路由器支持 UPnP？                                                │
-│    - 登录路由器检查 UPnP 设置                                       │
-│    - 某些路由器默认禁用 UPnP                                        │
+│  /dep2p/sys/*                                                       │
+│    系统协议（DHT/Relay/NAT），用户不可直接使用                       │
 │                                                                      │
-│  □ 防火墙允许 UDP？                                                 │
-│    - 检查本机防火墙                                                  │
-│    - 检查路由器防火墙                                                │
-│    - 端口 4001/UDP 需要开放                                         │
+│  /dep2p/realm/<realmID>/*                                           │
+│    Realm 控制协议（成员验证/同步），自动管理                         │
 │                                                                      │
-│  □ 使用的是什么 NAT 类型？                                          │
-│    - Full Cone: 最容易穿透                                          │
-│    - Symmetric: 最难穿透，建议用 Relay                              │
-│                                                                      │
-│  □ Relay 是否启用？                                                 │
-│    - PresetDesktop 默认启用                                         │
-│    - 确保有可用的 Relay 节点                                        │
+│  /dep2p/app/<realmID>/*                                             │
+│    应用协议，用户通过 realm.Messaging() 使用                        │
+│    框架自动添加前缀                                                  │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
----
-
-## 地址问题
-
-### 问题：地址格式错误
-
-**正确格式对比**：
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          地址格式对比                                        │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ✓ Full Address（正确，用于 Bootstrap/分享）：                              │
-│    /ip4/1.2.3.4/udp/4001/quic-v1/p2p/5Q2STWvBFn...                          │
-│                                                                              │
-│  ✗ Dial Address（错误，缺少 NodeID）：                                      │
-│    /ip4/1.2.3.4/udp/4001/quic-v1                                            │
-│                                                                              │
-│  ✗ 简化格式（错误）：                                                       │
-│    1.2.3.4:4001                                                              │
-│                                                                              │
-│  ✓ DNS 格式（正确）：                                                       │
-│    /dns4/node.example.com/udp/4001/quic-v1/p2p/5Q2STWvBFn...                │
-│                                                                              │
-│  ✓ Relay 格式（正确）：                                                     │
-│    /ip4/.../p2p/.../p2p-circuit/p2p/...                                     │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 地址验证函数
+### 协议自动前缀
 
 ```go
-func validateAddress(addr string) error {
-    // 检查基本格式
-    if !strings.HasPrefix(addr, "/") {
-        return fmt.Errorf("地址必须以 / 开头")
-    }
-    
-    // 检查是否包含 NodeID
-    if !strings.Contains(addr, "/p2p/") {
-        return fmt.Errorf("地址必须包含 /p2p/<NodeID>")
-    }
-    
-    // 检查协议
-    if !strings.Contains(addr, "/quic") {
-        return fmt.Errorf("建议使用 QUIC 协议")
-    }
-    
-    return nil
-}
+// 用户代码
+messaging.SendWithProtocol(ctx, targetID, "chat/1.0.0", data)
+
+// 实际协议 ID（框架自动添加）
+// /dep2p/app/<realmID>/chat/1.0.0
 ```
 
 ---
 
-## 协议问题
+## 自检清单
 
-### 问题：协议不支持
-
-**诊断**：
-
-```go
-func diagnoseProtocolIssue(ctx context.Context, node dep2p.Node, 
-    targetID types.NodeID, protocol string) {
-    
-    fmt.Println("═══════════════════════════════════════")
-    fmt.Println("协议诊断")
-    fmt.Println("═══════════════════════════════════════")
-    
-    // 1. 检查协议格式
-    if !strings.HasPrefix(protocol, "/") {
-        fmt.Println("❌ 协议 ID 格式错误：必须以 / 开头")
-        return
-    }
-    
-    parts := strings.Split(protocol, "/")
-    if len(parts) < 4 {
-        fmt.Println("❌ 协议 ID 格式错误：应为 /<namespace>/<name>/<version>")
-        return
-    }
-    fmt.Printf("✓ 协议格式正确: %s\n", protocol)
-    
-    // 2. 尝试连接并打开流
-    conn, err := node.Connect(ctx, targetID)
-    if err != nil {
-        fmt.Printf("❌ 无法连接到目标节点: %v\n", err)
-        return
-    }
-    
-    stream, err := conn.OpenStream(ctx, protocol)
-    if err != nil {
-        fmt.Printf("❌ 协议不支持: %v\n", err)
-        fmt.Println("建议:")
-        fmt.Println("  - 确认对方已注册该协议")
-        fmt.Println("  - 检查协议 ID 是否完全匹配")
-        fmt.Println("  - 尝试降级到旧版本")
-        return
-    }
-    defer stream.Close()
-    
-    fmt.Println("✓ 协议支持")
-}
-```
-
----
-
-## 诊断工具
-
-### 完整诊断脚本
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "time"
-
-    "github.com/dep2p/go-dep2p"
-    "github.com/dep2p/go-dep2p/pkg/types"
-)
-
-func runDiagnostics(node dep2p.Node) {
-    ctx := context.Background()
-    
-    fmt.Println("╔════════════════════════════════════════╗")
-    fmt.Println("║          DeP2P 节点诊断                ║")
-    fmt.Println("╚════════════════════════════════════════╝")
-    fmt.Println()
-    
-    // 基本信息
-    fmt.Println("【基本信息】")
-    fmt.Printf("节点 ID:     %s\n", node.ID())
-    fmt.Printf("连接数:      %d\n", node.ConnectionCount())
-    fmt.Println()
-    
-    // Realm 状态
-    fmt.Println("【Realm 状态】")
-    realm := node.Realm().CurrentRealm()
-    if realm.IsEmpty() {
-        fmt.Println("状态:       ❌ 未加入 Realm")
-    } else {
-        fmt.Printf("状态:       ✓ 已加入 %s\n", realm)
-    }
-    fmt.Println()
-    
-    // 地址信息
-    fmt.Println("【地址信息】")
-    fmt.Println("监听地址:")
-    for _, addr := range node.ListenAddrs() {
-        fmt.Printf("  • %s\n", addr)
-    }
-    
-    fmt.Println("可分享地址:")
-    waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-    addrs, err := node.WaitShareableAddrs(waitCtx)
-    cancel()
-    
-    if err != nil || len(addrs) == 0 {
-        fmt.Println("  (暂无，正在验证中...)")
-    } else {
-        for _, addr := range addrs {
-            fmt.Printf("  • %s\n", addr)
-        }
-    }
-    fmt.Println()
-    
-    // 网络状态
-    fmt.Println("【网络状态】")
-    if node.ConnectionCount() > 0 {
-        fmt.Println("Bootstrap:  ✓ 已连接")
-    } else {
-        fmt.Println("Bootstrap:  ❌ 未连接，检查 Bootstrap 配置")
-    }
-    
-    fmt.Println()
-    fmt.Println("═══════════════════════════════════════")
-}
-```
-
----
-
-## 问题报告模板
-
-当需要报告问题时，请提供以下信息：
+使用此清单检查你的代码是否符合约束：
 
 ```
-## 问题描述
-[简述问题]
-
-## 环境信息
-- DeP2P 版本: 
-- Go 版本: 
-- 操作系统: 
-- 网络环境: [家庭网络/公司网络/云服务器]
-
-## 重现步骤
-1. 
-2. 
-3. 
-
-## 预期行为
-[描述预期行为]
-
-## 实际行为
-[描述实际行为]
-
-## 诊断信息
-节点 ID: 
-连接数: 
-Realm: 
-监听地址: 
-通告地址: 
-
-## 日志
-[相关日志输出]
-
-## 代码示例
-[最小可重现的代码]
+□ 启动节点后调用了 Realm() + Join()?
+□ 所有成员使用相同的 realmKey?
+□ 业务 API 在 JoinRealm 之后调用?
+□ 协议 ID 包含版本号（如 /1.0.0）?
+□ 分享的地址包含 /p2p/<NodeID>?
+□ 使用 context 控制超时?
+□ 正确处理 Close() 清理?
 ```
 
 ---
 
 ## 相关文档
 
-- [可观测性](observability.md)
-- [NAT 穿透配置](nat-traversal.md)
-- [如何使用中继](use-relay.md)
-- [常见问题 FAQ](../getting-started/faq.md)
+- [错误码参考](error-codes.md) - 完整错误码列表
+- [配置项参考](configuration.md) - 所有配置选项
+- [故障排查](../how-to/troubleshooting.md) - 问题诊断指南
+- [5 分钟上手](../getting-started/quickstart.md) - 快速开始
+

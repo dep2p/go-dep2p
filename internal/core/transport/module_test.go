@@ -7,163 +7,171 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/fx"
-	"go.uber.org/fx/fxtest"
 
-	"github.com/dep2p/go-dep2p/internal/core/identity"
-	identityif "github.com/dep2p/go-dep2p/pkg/interfaces/identity"
-	transportif "github.com/dep2p/go-dep2p/pkg/interfaces/transport"
+	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
+	"github.com/dep2p/go-dep2p/pkg/types"
 )
 
-// identityProvider 提供命名的身份依赖
-type identityProvider struct {
-	fx.Out
+func TestNewConfig(t *testing.T) {
+	cfg := NewConfig()
 
-	Identity identityif.Identity `name:"identity"`
+	// 验证默认值
+	assert.True(t, cfg.EnableQUIC, "QUIC 应该默认启用")
+	assert.True(t, cfg.EnableTCP, "TCP 应该默认启用")
+	assert.False(t, cfg.EnableWebSocket, "WebSocket 应该默认禁用")
+
+	assert.Equal(t, 2*time.Minute, cfg.QUICMaxIdleTimeout)
+	assert.Equal(t, 1024, cfg.QUICMaxStreams)
+	assert.Equal(t, 10*time.Second, cfg.TCPTimeout)
+	assert.Equal(t, 30*time.Second, cfg.DialTimeout)
+
+	t.Log("✅ NewConfig 返回正确的默认值")
 }
 
-func provideIdentity(t *testing.T) identityProvider {
-	mgr := identity.NewManager(identityif.DefaultConfig())
-	id, err := mgr.Create()
-	require.NoError(t, err)
-	return identityProvider{Identity: id}
-}
-
-// transportConsumer 消费命名的传输层依赖
-type transportConsumer struct {
-	fx.In
-
-	Transport transportif.Transport `name:"transport"`
-}
-
-// TestModule 测试模块加载
 func TestModule(t *testing.T) {
-	var consumer transportConsumer
+	// Module 返回 fx.Option，验证不为 nil
+	module := Module()
+	require.NotNil(t, module)
 
-	app := fxtest.New(t,
-		fx.Provide(func() identityProvider { return provideIdentity(t) }),
-		Module(),
-		fx.Populate(&consumer),
-	)
-	defer app.RequireStart().RequireStop()
-
-	assert.NotNil(t, consumer.Transport, "传输层不应为 nil")
+	t.Log("✅ Module 返回 fx.Option")
 }
 
-// TestModuleWithConfig 测试带配置的模块加载
-func TestModuleWithConfig(t *testing.T) {
-	config := transportif.Config{
-		MaxConnections:    500,
-		MaxStreamsPerConn: 50,
-		IdleTimeout:       60 * time.Second,
-		HandshakeTimeout:  15 * time.Second,
-	}
+func TestConfigFromUnified_Nil(t *testing.T) {
+	// 传入 nil 应该返回默认配置
+	cfg := ConfigFromUnified(nil)
 
-	var consumer transportConsumer
+	assert.True(t, cfg.EnableQUIC)
+	assert.True(t, cfg.EnableTCP)
 
-	app := fxtest.New(t,
-		fx.Provide(func() identityProvider { return provideIdentity(t) }),
-		fx.Provide(func() *transportif.Config {
-			return &config
-		}),
-		Module(),
-		fx.Populate(&consumer),
-	)
-	defer app.RequireStart().RequireStop()
-
-	assert.NotNil(t, consumer.Transport, "传输层不应为 nil")
+	t.Log("✅ ConfigFromUnified(nil) 返回默认配置")
 }
 
-// TestModuleLifecycle 测试模块生命周期
-func TestModuleLifecycle(t *testing.T) {
-	var consumer transportConsumer
+func TestTransportManager_WithNilDependencies(t *testing.T) {
+	cfg := NewConfig()
 
-	app := fxtest.New(t,
-		fx.Provide(func() identityProvider { return provideIdentity(t) }),
-		Module(),
-		fx.Populate(&consumer),
-	)
+	// 不传 identity 和 upgrader
+	tm := NewTransportManager(cfg, nil, nil)
+	require.NotNil(t, tm)
 
-	// 启动
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	assert.Equal(t, cfg, tm.config)
 
-	err := app.Start(ctx)
-	require.NoError(t, err, "启动失败")
-
-	// 验证传输层可用
-	assert.NotNil(t, consumer.Transport, "传输层不应为 nil")
-
-	// 停止
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer stopCancel()
-
-	err = app.Stop(stopCtx)
-	require.NoError(t, err, "停止失败")
-}
-
-// TestModuleMetadata 测试模块元信息
-func TestModuleMetadata(t *testing.T) {
-	assert.NotEmpty(t, Version, "版本号不应为空")
-	assert.NotEmpty(t, Name, "模块名不应为空")
-	assert.NotEmpty(t, Description, "描述不应为空")
-
-	t.Logf("模块: %s v%s - %s", Name, Version, Description)
+	t.Log("✅ TransportManager 可以在没有依赖时创建")
 }
 
 // ============================================================================
-//                              错误场景测试
+//                       Rebind 测试（网络切换关键功能）
 // ============================================================================
 
-// TestProvideServices_NilIdentity 测试 nil Identity 返回错误
-func TestProvideServices_NilIdentity(t *testing.T) {
-	input := ModuleInput{
-		Identity: nil,
-	}
-
-	_, err := ProvideServices(input)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "identity is required")
+// mockRebindableTransport 模拟支持 Rebind 的 Transport
+type mockRebindableTransport struct {
+	rebindCalled bool
+	rebindError  error
 }
 
-// TestProvideServices_Directly 测试直接调用 ProvideServices
-func TestProvideServices_Directly(t *testing.T) {
-	provider := provideIdentity(t)
-
-	input := ModuleInput{
-		Identity: provider.Identity,
-	}
-
-	output, err := ProvideServices(input)
-	require.NoError(t, err)
-	assert.NotNil(t, output.Transport)
-	assert.NotNil(t, output.QUICTransport)
-
-	// 清理
-	err = output.Transport.Close()
-	assert.NoError(t, err)
+func (m *mockRebindableTransport) Rebind(ctx context.Context) error {
+	m.rebindCalled = true
+	return m.rebindError
 }
 
-// TestProvideServices_WithConfig 测试带配置直接调用
-func TestProvideServices_WithConfig(t *testing.T) {
-	provider := provideIdentity(t)
-	config := transportif.Config{
-		MaxConnections:    100,
-		MaxStreamsPerConn: 10,
-		IdleTimeout:       30 * time.Second,
-		HandshakeTimeout:  5 * time.Second,
-	}
+// 实现 pkgif.Transport 接口
+func (m *mockRebindableTransport) Dial(ctx context.Context, raddr types.Multiaddr, peerID types.PeerID) (pkgif.Connection, error) { return nil, nil }
+func (m *mockRebindableTransport) CanDial(addr types.Multiaddr) bool { return true }
+func (m *mockRebindableTransport) Listen(laddr types.Multiaddr) (pkgif.Listener, error) { return nil, nil }
+func (m *mockRebindableTransport) Protocols() []int { return []int{0} }
+func (m *mockRebindableTransport) Close() error { return nil }
 
-	input := ModuleInput{
-		Identity: provider.Identity,
-		Config:   &config,
-	}
+// mockNonRebindableTransport 模拟不支持 Rebind 的 Transport
+type mockNonRebindableTransport struct{}
 
-	output, err := ProvideServices(input)
+func (m *mockNonRebindableTransport) Dial(ctx context.Context, raddr types.Multiaddr, peerID types.PeerID) (pkgif.Connection, error) { return nil, nil }
+func (m *mockNonRebindableTransport) CanDial(addr types.Multiaddr) bool { return true }
+func (m *mockNonRebindableTransport) Listen(laddr types.Multiaddr) (pkgif.Listener, error) { return nil, nil }
+func (m *mockNonRebindableTransport) Protocols() []int { return []int{0} }
+func (m *mockNonRebindableTransport) Close() error { return nil }
+
+// TestTransportManager_Rebind_WithRebindableTransport 测试有可重绑定传输时
+func TestTransportManager_Rebind_WithRebindableTransport(t *testing.T) {
+	cfg := NewConfig()
+	tm := NewTransportManager(cfg, nil, nil)
+	require.NotNil(t, tm)
+
+	// 添加可重绑定的传输
+	rebindable := &mockRebindableTransport{}
+	tm.transports = append(tm.transports, rebindable)
+
+	// 执行重绑定
+	ctx := context.Background()
+	err := tm.Rebind(ctx)
+	require.NoError(t, err, "Rebind 应该成功")
+
+	// 验证 Rebind 被调用
+	assert.True(t, rebindable.rebindCalled, "Rebind 应该被调用")
+	t.Log("✅ TransportManager.Rebind 成功调用可重绑定传输")
+}
+
+// TestTransportManager_Rebind_WithNonRebindableTransport 测试无可重绑定传输时
+func TestTransportManager_Rebind_WithNonRebindableTransport(t *testing.T) {
+	cfg := NewConfig()
+	tm := NewTransportManager(cfg, nil, nil)
+	require.NotNil(t, tm)
+
+	// 添加不支持重绑定的传输
+	nonRebindable := &mockNonRebindableTransport{}
+	tm.transports = append(tm.transports, nonRebindable)
+
+	// 执行重绑定 - 应该返回 nil（没有传输失败，但也没有传输成功 rebind）
+	ctx := context.Background()
+	err := tm.Rebind(ctx)
+	// 当没有传输支持 Rebind 时，rebindCount=0，返回 lastErr（nil）
+	assert.Nil(t, err, "无可重绑定传输时应返回 nil")
+	t.Log("✅ TransportManager.Rebind 正确处理不支持重绑定的传输")
+}
+
+// TestTransportManager_Rebind_MixedTransports 测试混合传输
+func TestTransportManager_Rebind_MixedTransports(t *testing.T) {
+	cfg := NewConfig()
+	tm := NewTransportManager(cfg, nil, nil)
+	require.NotNil(t, tm)
+
+	// 添加混合传输
+	rebindable := &mockRebindableTransport{}
+	nonRebindable := &mockNonRebindableTransport{}
+	tm.transports = append(tm.transports, rebindable, nonRebindable)
+
+	// 执行重绑定
+	ctx := context.Background()
+	err := tm.Rebind(ctx)
 	require.NoError(t, err)
-	assert.NotNil(t, output.Transport)
 
-	// 清理
-	err = output.Transport.Close()
-	assert.NoError(t, err)
+	// 验证可重绑定的传输被调用
+	assert.True(t, rebindable.rebindCalled)
+	t.Log("✅ TransportManager.Rebind 正确处理混合传输")
+}
+
+// TestTransportManager_Rebind_AllFailed 测试所有传输重绑定都失败
+func TestTransportManager_Rebind_AllFailed(t *testing.T) {
+	cfg := NewConfig()
+	cfg.EnableQUIC = false  // 禁用内置传输
+	cfg.EnableTCP = false
+	
+	// 直接创建空的 TransportManager
+	tm := &TransportManager{
+		config:     cfg,
+		transports: []pkgif.Transport{},
+	}
+
+	// 只添加会失败的可重绑定传输
+	rebindable := &mockRebindableTransport{
+		rebindError: assert.AnError,
+	}
+	tm.transports = append(tm.transports, rebindable)
+
+	// 执行重绑定
+	ctx := context.Background()
+	err := tm.Rebind(ctx)
+	
+	// 验证 Rebind 被调用，且返回错误（因为唯一的传输失败了）
+	assert.True(t, rebindable.rebindCalled)
+	assert.Error(t, err, "所有 Rebind 都失败时应返回错误")
+	t.Log("✅ TransportManager.Rebind 正确处理所有传输重绑定失败")
 }

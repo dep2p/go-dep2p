@@ -1,3 +1,62 @@
 {
-  "version": "v0.1.0"
+  "version": "v0.2.0-beta.1",
+  "build_date": "2026-01-29",
+  "release_channel": "beta",
+  "codename": "v2.0 架构重构",
+  
+  "summary": "完成 v2.0 核心架构重构：DHT 权威目录 + Relay 三大职责 + 仅 ID 连接，首个 Beta 测试版本",
+  
+  "highlights": {
+    "v2.0_core_architecture": {
+      "title": "v2.0 核心架构",
+      "items": [
+        "五层软件架构：API → Protocol → Realm → Core ↔ Discovery",
+        "DHT 权威目录模型：DHT 是地址解析的权威来源，Relay 地址簿是缓存加速层",
+        "Relay 三大职责：缓存加速层 + 打洞协调信令 + 数据通信保底",
+        "仅 ID 连接：Realm 内支持纯 NodeID 连接，自动地址发现"
+      ]
+    },
+    "nat_traversal": {
+      "title": "NAT 穿透能力完善",
+      "items": [
+        "NAT 三层能力：外部地址发现 → 打洞 → 中继（三者目的不同）",
+        "智能连接策略：直连 → 打洞 → Relay 自动回退",
+        "打洞后保留 Relay：作为信令通道和连接备份"
+      ]
+    },
+    "relay_circuit": {
+      "title": "RelayCircuit 多路复用",
+      "items": [
+        "电路状态机：Active → Stale → Closed 完整生命周期",
+        "心跳保活机制：防止空闲电路被错误关闭",
+        "双向流支持：出站电路可接收入站流（PSK 认证）"
+      ]
+    },
+    "infrastructure": {
+      "title": "基础设施融合",
+      "items": [
+        "Bootstrap + Relay 融合部署：简化运维，推荐模式",
+        "基础设施节点边界：跳过 Realm 认证，不参与 PubSub Mesh"
+      ]
+    }
+  },
+  
+  "core_design_principles": [
+    "身份优先：NodeID = 公钥哈希，连接必须验证身份",
+    "Realm 隔离：PSK 认证的业务隔离域，协议路径嵌入 RealmID",
+    "Connect 成功 = 可通信：用户语义保证，底层握手/验证/协商已完成",
+    "中继透明：用户完全无感，系统自动处理连接优化"
+  ],
+  
+  "architecture_reference": "design/03_architecture/",
+  
+  "compatibility": {
+    "go_version": "1.21+",
+    "breaking_changes": false,
+    "migration_required": false
+  },
+  
+  "contributors": [
+    "DeP2P Team"
+  ]
 }

@@ -2,6 +2,8 @@
 
 This guide answers: **How to use relay to connect to other nodes behind NAT?**
 
+> **Version Note**: This documentation is based on dep2p v2.0 relay architecture. v2.0 introduces mandatory `RelayMap` configuration and deprecates the old `WithStaticRelays` and `WithAutoRelay` APIs.
+
 ---
 
 ## Problem
@@ -13,7 +15,7 @@ This guide answers: **How to use relay to connect to other nodes behind NAT?**
 │                                                                      │
 │  "I'm behind NAT, other nodes can't connect to me directly"         │
 │  "How to configure a relay server?"                                  │
-│  "How to use AutoRelay for automatic relay discovery?"              │
+│  "How to configure RelayMap in v2.0?"                                │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -45,14 +47,16 @@ flowchart LR
 
 | Role | Description | Configuration |
 |------|-------------|---------------|
-| **Relay Client** | Use relay to connect to other nodes | `WithRelay(true)` |
+| **Relay Client** | Use relay to connect to other nodes | `WithRelayMap(...)` (v2.0) |
 | **Relay Server** | Provide relay service for other nodes | `WithRelayServer(true)` |
 
 ---
 
-## Enable Relay Client
+## Enable Relay Client (v2.0)
 
 ### Basic Configuration
+
+v2.0 requires explicit `RelayMap` configuration with at least 2 relay servers for redundancy.
 
 ```go
 package main
@@ -63,23 +67,40 @@ import (
     "log"
 
     "github.com/dep2p/go-dep2p"
+    relayif "github.com/dep2p/go-dep2p/pkg/interfaces/relay"
     "github.com/dep2p/go-dep2p/pkg/types"
 )
 
 func main() {
     ctx := context.Background()
 
-    // Enable Relay client (enabled by default)
-    node, err := dep2p.StartNode(ctx,
-        dep2p.WithPreset(dep2p.PresetDesktop),
-        dep2p.WithRelay(true),  // Enable Relay
+    // v2.0: Must configure RelayMap (at least 2 relays)
+    relayMap := &relayif.RelayMap{
+        Version: "2025.1",
+        Entries: []relayif.RelayMapEntry{
+            {
+                NodeID: parseNodeID("12D3KooWRelay1..."),
+                Addrs:  []string{"/ip4/relay1.example.com/udp/4001/quic-v1"},
+                Region: "us-east",
+            },
+            {
+                NodeID: parseNodeID("12D3KooWRelay2..."),
+                Addrs:  []string{"/ip4/relay2.example.com/udp/4001/quic-v1"},
+                Region: "eu-west",
+            },
+        },
+    }
+
+    node, err := dep2p.New(
+        dep2p.WithRelayMap(relayMap),  // v2.0 required
     )
     if err != nil {
         log.Fatalf("Failed to start: %v", err)
     }
     defer node.Close()
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     fmt.Printf("Node started: %s\n", node.ID().ShortString())
     fmt.Println("Relay client enabled, can connect to other nodes via relay")
@@ -121,17 +142,21 @@ func main() {
     defer cancel()
 
     // Configure Relay server
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetServer),
         dep2p.WithRelayServer(true),    // Enable Relay service
         dep2p.WithListenPort(4001),     // Fixed port
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create: %v", err)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("relay-network"))
+    realm, _ := node.Realm("relay-network")
+    _ = realm.Join(ctx)
 
     fmt.Println("╔════════════════════════════════════════╗")
     fmt.Println("║         Relay Server Started           ║")
@@ -175,16 +200,20 @@ func main() {
     ctx := context.Background()
 
     // AutoRelay is enabled by default in Desktop/Server presets
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         // AutoRelay automatically discovers and connects to Relay nodes
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create: %v", err)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     // Wait for AutoRelay to discover Relay nodes
     fmt.Println("Waiting for Relay node discovery...")
@@ -224,17 +253,21 @@ func main() {
     // Specify Relay node as Bootstrap
     relayAddr := "/ip4/1.2.3.4/udp/4001/quic-v1/p2p/5Q2STWvBRelayNode..."
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithBootstrapPeers(relayAddr),  // Relay node can also be Bootstrap
         dep2p.WithRelay(true),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create: %v", err)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("my-network"))
+    realm, _ := node.Realm("my-network")
+    _ = realm.Join(ctx)
 
     fmt.Printf("Node started: %s\n", node.ID().ShortString())
     fmt.Println("Will use specified Relay node")
@@ -322,17 +355,21 @@ func main() {
     ctx, cancel := context.WithCancel(context.Background())
     defer cancel()
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetServer),
         dep2p.WithRelayServer(true),
         dep2p.WithListenPort(4001),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create: %v", err)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("demo-network"))
+    realm, _ := node.Realm("demo-network")
+    _ = realm.Join(ctx)
 
     fmt.Printf("Relay server: %s\n", node.ID())
     for _, addr := range node.ListenAddrs() {
@@ -366,17 +403,21 @@ func main() {
 
     relayAddr := os.Getenv("RELAY_ADDR") // Get Relay address from env
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithBootstrapPeers(relayAddr),
         dep2p.WithRelay(true),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create: %v", err)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("demo-network"))
+    realm, _ := node.Realm("demo-network")
+    _ = realm.Join(ctx)
 
     fmt.Printf("Node A: %s\n", node.ID())
     fmt.Println("Waiting for Node B to connect...")
@@ -416,17 +457,21 @@ func main() {
     relayAddr := os.Getenv("RELAY_ADDR")
     nodeAID := os.Getenv("NODE_A_ID")
 
-    node, err := dep2p.StartNode(ctx,
+    node, err := dep2p.New(ctx,
         dep2p.WithPreset(dep2p.PresetDesktop),
         dep2p.WithBootstrapPeers(relayAddr),
         dep2p.WithRelay(true),
     )
     if err != nil {
-        log.Fatalf("Failed to start: %v", err)
+        log.Fatalf("Failed to create: %v", err)
     }
     defer node.Close()
+    if err := node.Start(ctx); err != nil {
+        log.Fatalf("Failed to start: %v", err)
+    }
 
-    node.Realm().JoinRealm(ctx, types.RealmID("demo-network"))
+    realm, _ := node.Realm("demo-network")
+    _ = realm.Join(ctx)
 
     fmt.Printf("Node B: %s\n", node.ID())
 
@@ -474,12 +519,13 @@ if err != nil {
 }
 
 // 3. Use multiple Relays
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithBootstrapPeers(
         "/ip4/1.2.3.4/udp/4001/quic-v1/p2p/...",
         "/ip4/5.6.7.8/udp/4001/quic-v1/p2p/...",
     ),
 )
+_ = node.Start(ctx)
 ```
 
 ### Problem 2: High Latency via Relay
@@ -498,11 +544,12 @@ node, _ := dep2p.StartNode(ctx,
 ```go
 // Limit Relay connections
 // Configure in Relay server settings
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetServer),
     dep2p.WithRelayServer(true),
     dep2p.WithConnectionLimits(100, 200),  // Limit connection count
 )
+_ = node.Start(ctx)
 ```
 
 ---

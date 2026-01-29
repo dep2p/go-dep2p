@@ -11,21 +11,21 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dep2p/go-dep2p/internal/core/address"
-	endpointif "github.com/dep2p/go-dep2p/pkg/interfaces/endpoint"
-	natif "github.com/dep2p/go-dep2p/pkg/interfaces/nat"
-	"github.com/dep2p/go-dep2p/pkg/protocolids"
+	"github.com/dep2p/go-dep2p/pkg/interfaces"
+	"github.com/dep2p/go-dep2p/pkg/lib/log"
+	"github.com/dep2p/go-dep2p/pkg/protocol"
 	"github.com/dep2p/go-dep2p/pkg/types"
 )
+
+var upgraderLogger = log.Logger("relay/upgrader")
 
 // ============================================================================
 //                              协议定义
 // ============================================================================
 
-// 引用 pkg/protocolids 唯一真源
-var (
-	// ProtocolAddrExchange 地址交换协议 (v1.1 scope: sys)
-	ProtocolAddrExchange = protocolids.SysAddrExchange
+const (
+	// ProtocolAddrExchange 地址交换协议
+	ProtocolAddrExchange = string(protocol.AddrExchange)
 )
 
 // 消息类型
@@ -37,11 +37,11 @@ const (
 
 // 升级状态
 const (
-	UpgradeStatePending   = iota // 待处理
-	UpgradeStateExchanged        // 已交换地址
-	UpgradeStatePunching         // 正在打洞
-	UpgradeStateSuccess          // 升级成功
-	UpgradeStateFailed           // 升级失败
+	UpgradeStatePending   int32 = iota // 待处理
+	UpgradeStateExchanged              // 已交换地址
+	UpgradeStatePunching               // 正在打洞
+	UpgradeStateSuccess                // 升级成功
+	UpgradeStateFailed                 // 升级失败
 )
 
 // MaxAddressCount 最大地址数量，防止内存耗尽攻击
@@ -51,14 +51,17 @@ const MaxAddressCount = 100
 //                              错误定义
 // ============================================================================
 
-// 连接升级相关错误
 var (
 	// ErrUpgradeInProgress 升级已在进行中
 	ErrUpgradeInProgress = errors.New("upgrade already in progress")
-	ErrNoPuncher         = errors.New("hole puncher not available")
-	ErrNoAddresses       = errors.New("no addresses to exchange")
-	ErrUpgradeFailed     = errors.New("upgrade failed")
-	ErrAlreadyDirect     = errors.New("connection is already direct")
+	// ErrNoPuncher 打洞器不可用
+	ErrNoPuncher = errors.New("hole puncher not available")
+	// ErrNoAddresses 无可用地址
+	ErrNoAddresses = errors.New("no addresses to exchange")
+	// ErrUpgradeFailed 升级失败
+	ErrUpgradeFailed = errors.New("upgrade failed")
+	// ErrAlreadyDirect 连接已经是直连
+	ErrAlreadyDirect = errors.New("connection is already direct")
 )
 
 // ============================================================================
@@ -95,6 +98,15 @@ func DefaultUpgraderConfig() UpgraderConfig {
 }
 
 // ============================================================================
+//                              HolePuncher 接口
+// ============================================================================
+
+// HolePuncher 打洞器接口
+type HolePuncher interface {
+	Punch(ctx context.Context, remoteID types.NodeID, remoteAddrs []string) (string, error)
+}
+
+// ============================================================================
 //                              ConnectionUpgrader 实现
 // ============================================================================
 
@@ -106,16 +118,15 @@ func DefaultUpgraderConfig() UpgraderConfig {
 // 3. 成功后迁移到直连
 type ConnectionUpgrader struct {
 	config     UpgraderConfig
-	puncher    natif.HolePuncher
-	endpoint   endpointif.Endpoint
-	localAddrs func() []endpointif.Address
+	puncher    HolePuncher
+	localAddrs func() []string
 
 	// 升级会话
-	sessions   map[types.NodeID]*upgradeSession
+	sessions   map[string]*upgradeSession
 	sessionsMu sync.RWMutex
 
 	// 回调
-	onUpgraded func(types.NodeID, endpointif.Address)
+	onUpgraded func(types.NodeID, string)
 
 	// 状态
 	running int32
@@ -126,31 +137,29 @@ type ConnectionUpgrader struct {
 // upgradeSession 升级会话
 type upgradeSession struct {
 	remoteID    types.NodeID
-	relayConn   endpointif.Connection // 中继连接
-	localAddrs  []endpointif.Address  // 本地地址
-	remoteAddrs []endpointif.Address  // 对方地址
-	state       int32           // 升级状态
-	retryCount  int             // 重试次数
-	lastAttempt time.Time       // 上次尝试时间
-	startTime   time.Time       // 开始时间
-	done        chan struct{}   // 完成通道
-	successAddr endpointif.Address    // 成功地址
-	err         error           // 错误
+	relayConn   interfaces.Connection // 中继连接
+	localAddrs  []string              // 本地地址
+	remoteAddrs []string              // 对方地址
+	state       int32                 // 升级状态
+	retryCount  int                   // 重试次数
+	lastAttempt time.Time             // 上次尝试时间
+	startTime   time.Time             // 开始时间
+	done        chan struct{}         // 完成通道
+	successAddr string                // 成功地址
+	err         error                 // 错误
 }
 
 // NewConnectionUpgrader 创建连接升级器
 func NewConnectionUpgrader(
 	config UpgraderConfig,
-	puncher natif.HolePuncher,
-	endpoint endpointif.Endpoint,
-	localAddrs func() []endpointif.Address,
+	puncher HolePuncher,
+	localAddrs func() []string,
 ) *ConnectionUpgrader {
 	return &ConnectionUpgrader{
 		config:     config,
 		puncher:    puncher,
-		endpoint:   endpoint,
 		localAddrs: localAddrs,
-		sessions:   make(map[types.NodeID]*upgradeSession),
+		sessions:   make(map[string]*upgradeSession),
 	}
 }
 
@@ -169,7 +178,7 @@ func (u *ConnectionUpgrader) Start(ctx context.Context) error {
 	// 启动定期重试任务
 	go u.retryLoop()
 
-	log.Info("ConnectionUpgrader 已启动")
+	upgraderLogger.Info("ConnectionUpgrader 已启动")
 	return nil
 }
 
@@ -186,18 +195,16 @@ func (u *ConnectionUpgrader) Stop() error {
 	// 安全取消所有进行中的会话
 	u.sessionsMu.Lock()
 	for _, session := range u.sessions {
-		// 使用 select 安全关闭通道，避免重复关闭导致 panic
 		select {
 		case <-session.done:
-			// 通道已关闭，跳过
 		default:
 			close(session.done)
 		}
 	}
-	u.sessions = make(map[types.NodeID]*upgradeSession)
+	u.sessions = make(map[string]*upgradeSession)
 	u.sessionsMu.Unlock()
 
-	log.Info("ConnectionUpgrader 已停止")
+	upgraderLogger.Info("ConnectionUpgrader 已停止")
 	return nil
 }
 
@@ -211,20 +218,22 @@ func (u *ConnectionUpgrader) Stop() error {
 // 1. 通过中继连接交换地址
 // 2. 并行尝试打洞
 // 3. 成功后返回直连地址
-func (u *ConnectionUpgrader) TryUpgrade(ctx context.Context, remoteID types.NodeID, relayConn endpointif.Connection) (endpointif.Address, error) {
+func (u *ConnectionUpgrader) TryUpgrade(ctx context.Context, remoteID types.NodeID, relayConn interfaces.Connection) (string, error) {
+	sessionKey := remoteID.String()
+
 	// 检查是否已有进行中的升级
 	u.sessionsMu.RLock()
-	if session, exists := u.sessions[remoteID]; exists {
+	if session, exists := u.sessions[sessionKey]; exists {
 		u.sessionsMu.RUnlock()
 		// 等待现有会话完成
 		select {
 		case <-session.done:
-			if session.successAddr != nil {
+			if session.successAddr != "" {
 				return session.successAddr, nil
 			}
-			return nil, session.err
+			return "", session.err
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return "", ctx.Err()
 		}
 	}
 	u.sessionsMu.RUnlock()
@@ -238,23 +247,23 @@ func (u *ConnectionUpgrader) TryUpgrade(ctx context.Context, remoteID types.Node
 	}
 
 	u.sessionsMu.Lock()
-	u.sessions[remoteID] = session
+	u.sessions[sessionKey] = session
 	u.sessionsMu.Unlock()
 
 	defer func() {
 		u.sessionsMu.Lock()
-		delete(u.sessions, remoteID)
+		delete(u.sessions, sessionKey)
 		u.sessionsMu.Unlock()
 	}()
 
-	log.Info("开始连接升级",
+	upgraderLogger.Info("开始连接升级",
 		"remoteID", remoteID.ShortString())
 
 	// 步骤 1: 交换地址
 	if err := u.exchangeAddresses(ctx, session); err != nil {
 		session.err = fmt.Errorf("address exchange failed: %w", err)
 		close(session.done)
-		return nil, session.err
+		return "", session.err
 	}
 
 	// 步骤 2: 打洞
@@ -262,7 +271,7 @@ func (u *ConnectionUpgrader) TryUpgrade(ctx context.Context, remoteID types.Node
 	if err != nil {
 		session.err = fmt.Errorf("hole punch failed: %w", err)
 		close(session.done)
-		return nil, session.err
+		return "", session.err
 	}
 
 	// 步骤 3: 通知成功
@@ -274,17 +283,22 @@ func (u *ConnectionUpgrader) TryUpgrade(ctx context.Context, remoteID types.Node
 		u.onUpgraded(remoteID, addr)
 	}
 
-	log.Info("连接升级成功",
+	upgraderLogger.Info("连接升级成功",
 		"remoteID", remoteID.ShortString(),
-		"directAddr", addr.String(),
+		"directAddr", addr,
 		"duration", time.Since(session.startTime))
 
 	return addr, nil
 }
 
 // OnUpgraded 设置升级成功回调
-func (u *ConnectionUpgrader) OnUpgraded(callback func(types.NodeID, endpointif.Address)) {
+func (u *ConnectionUpgrader) OnUpgraded(callback func(types.NodeID, string)) {
 	u.onUpgraded = callback
+}
+
+// SetPuncher 设置打洞器
+func (u *ConnectionUpgrader) SetPuncher(puncher HolePuncher) {
+	u.puncher = puncher
 }
 
 // ============================================================================
@@ -308,7 +322,7 @@ func (u *ConnectionUpgrader) exchangeAddresses(ctx context.Context, session *upg
 	exchCtx, cancel := context.WithTimeout(ctx, u.config.AddrExchangeTimeout)
 	defer cancel()
 
-	stream, err := session.relayConn.OpenStream(exchCtx, ProtocolAddrExchange)
+	stream, err := session.relayConn.NewStream(exchCtx)
 	if err != nil {
 		return fmt.Errorf("open stream failed: %w", err)
 	}
@@ -328,7 +342,7 @@ func (u *ConnectionUpgrader) exchangeAddresses(ctx context.Context, session *upg
 	session.remoteAddrs = remoteAddrs
 	atomic.StoreInt32(&session.state, UpgradeStateExchanged)
 
-	log.Debug("地址交换完成",
+	upgraderLogger.Debug("地址交换完成",
 		"remoteID", session.remoteID.ShortString(),
 		"localAddrs", len(session.localAddrs),
 		"remoteAddrs", len(remoteAddrs))
@@ -337,20 +351,20 @@ func (u *ConnectionUpgrader) exchangeAddresses(ctx context.Context, session *upg
 }
 
 // sendAddresses 发送地址列表
-func (u *ConnectionUpgrader) sendAddresses(stream endpointif.Stream, addrs []endpointif.Address) error {
+func (u *ConnectionUpgrader) sendAddresses(stream io.Writer, addrs []string) error {
 	// 消息格式: [type:1][count:2][addr1_len:2][addr1]...[addrN_len:2][addrN]
 	buf := make([]byte, 1+2)
 	buf[0] = MsgTypeAddrs
-	binary.BigEndian.PutUint16(buf[1:3], uint16(len(addrs))) //nolint:gosec // G115: 地址数量由协议限制
+	binary.BigEndian.PutUint16(buf[1:3], uint16(len(addrs)))
 
 	if _, err := stream.Write(buf); err != nil {
 		return err
 	}
 
 	for _, addr := range addrs {
-		addrBytes := []byte(addr.String())
+		addrBytes := []byte(addr)
 		lenBuf := make([]byte, 2)
-		binary.BigEndian.PutUint16(lenBuf, uint16(len(addrBytes))) //nolint:gosec // G115: 地址长度由协议限制
+		binary.BigEndian.PutUint16(lenBuf, uint16(len(addrBytes)))
 
 		if _, err := stream.Write(lenBuf); err != nil {
 			return err
@@ -364,7 +378,7 @@ func (u *ConnectionUpgrader) sendAddresses(stream endpointif.Stream, addrs []end
 }
 
 // receiveAddresses 接收地址列表
-func (u *ConnectionUpgrader) receiveAddresses(stream endpointif.Stream) ([]endpointif.Address, error) {
+func (u *ConnectionUpgrader) receiveAddresses(stream io.Reader) ([]string, error) {
 	// 读取消息头
 	header := make([]byte, 3)
 	if _, err := io.ReadFull(stream, header); err != nil {
@@ -377,12 +391,12 @@ func (u *ConnectionUpgrader) receiveAddresses(stream endpointif.Stream) ([]endpo
 
 	count := binary.BigEndian.Uint16(header[1:3])
 
-	// 防止内存耗尽攻击：限制最大地址数量
+	// 防止内存耗尽攻击
 	if count > MaxAddressCount {
 		return nil, fmt.Errorf("too many addresses: %d > %d", count, MaxAddressCount)
 	}
 
-	addrs := make([]endpointif.Address, 0, count)
+	addrs := make([]string, 0, count)
 
 	for i := uint16(0); i < count; i++ {
 		lenBuf := make([]byte, 2)
@@ -396,7 +410,7 @@ func (u *ConnectionUpgrader) receiveAddresses(stream endpointif.Stream) ([]endpo
 			return nil, err
 		}
 
-		addrs = append(addrs, address.NewAddr(types.Multiaddr(string(addrBytes))))
+		addrs = append(addrs, string(addrBytes))
 	}
 
 	return addrs, nil
@@ -407,13 +421,13 @@ func (u *ConnectionUpgrader) receiveAddresses(stream endpointif.Stream) ([]endpo
 // ============================================================================
 
 // holePunch 尝试打洞
-func (u *ConnectionUpgrader) holePunch(ctx context.Context, session *upgradeSession) (endpointif.Address, error) {
+func (u *ConnectionUpgrader) holePunch(ctx context.Context, session *upgradeSession) (string, error) {
 	if u.puncher == nil {
-		return nil, ErrNoPuncher
+		return "", ErrNoPuncher
 	}
 
 	if len(session.remoteAddrs) == 0 {
-		return nil, ErrNoAddresses
+		return "", ErrNoAddresses
 	}
 
 	atomic.StoreInt32(&session.state, UpgradeStatePunching)
@@ -424,7 +438,7 @@ func (u *ConnectionUpgrader) holePunch(ctx context.Context, session *upgradeSess
 	addr, err := u.puncher.Punch(punchCtx, session.remoteID, session.remoteAddrs)
 	if err != nil {
 		atomic.StoreInt32(&session.state, UpgradeStateFailed)
-		return nil, err
+		return "", err
 	}
 
 	atomic.StoreInt32(&session.state, UpgradeStateSuccess)
@@ -437,7 +451,6 @@ func (u *ConnectionUpgrader) holePunch(ctx context.Context, session *upgradeSess
 
 // retryLoop 定期重试循环
 func (u *ConnectionUpgrader) retryLoop() {
-	// 检查上下文是否有效
 	if u.ctx == nil {
 		return
 	}
@@ -460,7 +473,6 @@ func (u *ConnectionUpgrader) retryLoop() {
 
 // retryFailedSessions 重试失败的会话
 func (u *ConnectionUpgrader) retryFailedSessions() {
-	// 检查运行状态和上下文
 	if atomic.LoadInt32(&u.running) == 0 || u.ctx == nil {
 		return
 	}
@@ -479,14 +491,13 @@ func (u *ConnectionUpgrader) retryFailedSessions() {
 
 	for _, session := range toRetry {
 		go func(s *upgradeSession) {
-			// 再次检查上下文有效性
 			if u.ctx == nil {
 				return
 			}
 			s.retryCount++
 			s.lastAttempt = time.Now()
 
-			log.Debug("重试连接升级",
+			upgraderLogger.Debug("重试连接升级",
 				"remoteID", s.remoteID.ShortString(),
 				"retry", s.retryCount)
 
@@ -503,5 +514,33 @@ func (u *ConnectionUpgrader) retryFailedSessions() {
 	}
 }
 
-// stringAddress 已删除，统一使用 address.Addr
+// ============================================================================
+//                              协议处理器
+// ============================================================================
 
+// HandleAddrExchange 处理地址交换请求（作为服务端）
+func (u *ConnectionUpgrader) HandleAddrExchange(stream interfaces.Stream) {
+	defer func() { _ = stream.Close() }()
+
+	// 接收对方地址
+	remoteAddrs, err := u.receiveAddresses(stream)
+	if err != nil {
+		upgraderLogger.Debug("接收地址失败", "err", err)
+		return
+	}
+
+	// 发送本地地址
+	var localAddrs []string
+	if u.localAddrs != nil {
+		localAddrs = u.localAddrs()
+	}
+
+	if err := u.sendAddresses(stream, localAddrs); err != nil {
+		upgraderLogger.Debug("发送地址失败", "err", err)
+		return
+	}
+
+	upgraderLogger.Debug("地址交换完成",
+		"localAddrs", len(localAddrs),
+		"remoteAddrs", len(remoteAddrs))
+}

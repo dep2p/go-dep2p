@@ -6,11 +6,8 @@ import (
 
 	"go.uber.org/fx"
 
-	addressif "github.com/dep2p/go-dep2p/pkg/interfaces/address"
-	endpointif "github.com/dep2p/go-dep2p/pkg/interfaces/endpoint"
-	natif "github.com/dep2p/go-dep2p/pkg/interfaces/nat"
-	reachabilityif "github.com/dep2p/go-dep2p/pkg/interfaces/reachability"
-	relayif "github.com/dep2p/go-dep2p/pkg/interfaces/relay"
+	"github.com/dep2p/go-dep2p/internal/core/nat"
+	"github.com/dep2p/go-dep2p/pkg/interfaces"
 )
 
 // ============================================================================
@@ -21,11 +18,8 @@ import (
 type ModuleInput struct {
 	fx.In
 
-	// NAT 服务（可选）
-	NAT natif.NATService `name:"nat" optional:"true"`
-
-	// 地址管理器（可选）
-	AddressManager addressif.AddressManager `name:"address_manager" optional:"true"`
+	// Config 配置（可选）
+	Config *interfaces.ReachabilityConfig `optional:"true"`
 }
 
 // ============================================================================
@@ -37,10 +31,13 @@ type ModuleOutput struct {
 	fx.Out
 
 	// Coordinator 可达性协调器
-	Coordinator reachabilityif.Coordinator `name:"reachability_coordinator"`
+	Coordinator interfaces.ReachabilityCoordinator `name:"reachability_coordinator"`
 
-	// CoordinatorImpl 具体实现（仅供本组件内部 wiring/lifecycle 使用）
+	// CoordinatorImpl 具体实现（仅供内部 wiring 使用）
 	CoordinatorImpl *Coordinator `name:"reachability_coordinator_impl"`
+
+	// DialBackService 回拨验证服务
+	DialBackService interfaces.DialBackService `name:"dialback_service"`
 }
 
 // ============================================================================
@@ -49,15 +46,26 @@ type ModuleOutput struct {
 
 // ProvideServices 提供模块服务
 func ProvideServices(input ModuleInput) (ModuleOutput, error) {
-	coordinator := NewCoordinator(
-		input.NAT,
-		nil, // AutoRelay 通过 fx.Invoke 阶段回注入，避免形成 fx 依赖环
-		input.AddressManager,
-	)
+	config := input.Config
+	if config == nil {
+		config = interfaces.DefaultReachabilityConfig()
+	}
+
+	// 创建协调器
+	coordinator := NewCoordinator(config)
+
+	// 创建 dial-back 服务
+	dialBackService := NewDialBackService(config)
+	coordinator.SetDialBackService(dialBackService)
+
+	// 创建 witness 服务
+	witnessService := NewWitnessService(coordinator)
+	coordinator.SetWitnessService(witnessService)
 
 	return ModuleOutput{
 		Coordinator:     coordinator,
 		CoordinatorImpl: coordinator,
+		DialBackService: dialBackService,
 	}, nil
 }
 
@@ -68,79 +76,69 @@ func ProvideServices(input ModuleInput) (ModuleOutput, error) {
 // Module 返回 fx 模块配置
 func Module() fx.Option {
 	return fx.Module("reachability",
-		fx.Provide(ProvideServices),
-		fx.Invoke(wireAutoRelay),
-		fx.Invoke(wireDialBack),
+		fx.Provide(
+			ProvideServices,
+			ProvideDirectAddrStateMachine,
+		),
 		fx.Invoke(registerLifecycle),
+		fx.Invoke(bindReachabilityCoordinator),
 	)
 }
 
-type wireAutoRelayInput struct {
-	fx.In
-
-	Coordinator *Coordinator      `name:"reachability_coordinator_impl"`
-	AutoRelay   relayif.AutoRelay `name:"auto_relay" optional:"true"`
-}
-
-// wireAutoRelay 负责将 auto_relay 注入到 Coordinator，避免 Provide 阶段形成 fx 环
-func wireAutoRelay(input wireAutoRelayInput) {
-	if input.Coordinator == nil || input.AutoRelay == nil {
-		return
-	}
-	input.Coordinator.SetAutoRelay(input.AutoRelay)
-}
-
-type wireInput struct {
-	fx.In
-
-	Coordinator *Coordinator           `name:"reachability_coordinator_impl"`
-	Endpoint    endpointif.Endpoint    `name:"endpoint" optional:"true"`
-	Config      *reachabilityif.Config `optional:"true"`
-}
-
-// wireDialBack 负责将 endpoint/config 注入到 Coordinator，避免 Provide 阶段形成 fx 环
-func wireDialBack(input wireInput) {
-	if input.Coordinator == nil || input.Endpoint == nil {
-		return
-	}
-
-	cfg := reachabilityif.DefaultConfig()
-	if input.Config != nil {
-		cfg = input.Config
-	}
-
-	input.Coordinator.SetEndpoint(input.Endpoint)
-	input.Coordinator.EnableDialBack(cfg.EnableDialBack, cfg)
+// ProvideDirectAddrStateMachine 提供直接地址更新状态机
+func ProvideDirectAddrStateMachine() *DirectAddrUpdateStateMachine {
+	return NewDirectAddrUpdateStateMachine(DefaultDirectAddrStateMachineConfig())
 }
 
 // lifecycleInput 生命周期输入参数
 type lifecycleInput struct {
 	fx.In
-	LC          fx.Lifecycle
-	Coordinator *Coordinator `name:"reachability_coordinator_impl"`
+	LC           fx.Lifecycle
+	Coordinator  *Coordinator                  `name:"reachability_coordinator_impl"`
+	StateMachine *DirectAddrUpdateStateMachine `optional:"true"` // 可选的状态机
 }
 
 // registerLifecycle 注册生命周期
 func registerLifecycle(input lifecycleInput) {
+	// 集成状态机到 Coordinator（如果存在）
+	if input.StateMachine != nil {
+		input.Coordinator.SetStateMachine(input.StateMachine)
+		logger.Debug("DirectAddrUpdateStateMachine 已注入到 Coordinator")
+	}
+
 	input.LC.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
-			log.Info("可达性协调器模块启动")
+			logger.Info("可达性协调器模块启动")
 			return input.Coordinator.Start(ctx)
 		},
 		OnStop: func(_ context.Context) error {
-			log.Info("可达性协调器模块停止")
+			logger.Info("可达性协调器模块停止")
 			return input.Coordinator.Stop()
 		},
 	})
 }
 
+// bindReachabilityCoordinator 将 Coordinator 注入依赖方
+func bindReachabilityCoordinator(input struct {
+	fx.In
+	Coordinator interfaces.ReachabilityCoordinator `name:"reachability_coordinator"`
+	Host        interfaces.Host                   `optional:"true"`
+	NATService  *nat.Service                      `optional:"true"`
+}) {
+	if input.Host != nil {
+		input.Host.SetReachabilityCoordinator(input.Coordinator)
+	}
+	if input.NATService != nil {
+		input.NATService.SetReachabilityCoordinator(input.Coordinator)
+	}
+}
+
 // ============================================================================
-//                              模块元信息
+//                              接口实现检查
 // ============================================================================
 
-// 模块元信息常量
-const (
-	Version     = "1.0.0"
-	Name        = "reachability"
-	Description = "可达性协调模块，统一管理地址发布，实现'可达性优先'策略"
-)
+// 确保 Coordinator 实现 interfaces.ReachabilityCoordinator
+var _ interfaces.ReachabilityCoordinator = (*Coordinator)(nil)
+
+// 确保 DialBackService 实现 interfaces.DialBackService
+var _ interfaces.DialBackService = (*DialBackService)(nil)

@@ -1,0 +1,72 @@
+# DeP2P Bootstrap 节点 systemd 服务文件
+#
+# 安装步骤：
+# 1. 复制到系统目录: sudo cp dep2p-bootstrap.service /etc/systemd/system/
+# 2. 编辑修改路径和参数: sudo vim /etc/systemd/system/dep2p-bootstrap.service
+# 3. 重载配置: sudo systemctl daemon-reload
+# 4. 启用服务: sudo systemctl enable dep2p-bootstrap
+# 5. 启动服务: sudo systemctl start dep2p-bootstrap
+#
+# 常用命令：
+# - 查看状态: sudo systemctl status dep2p-bootstrap
+# - 查看日志: sudo journalctl -u dep2p-bootstrap -f
+# - 重启服务: sudo systemctl restart dep2p-bootstrap
+# - 停止服务: sudo systemctl stop dep2p-bootstrap
+
+[Unit]
+Description=DeP2P Bootstrap Node
+Documentation=https://github.com/dep2p/go-dep2p
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 【必须修改】请根据实际情况修改以下配置
+# ══════════════════════════════════════════════════════════════════════════════
+
+# 运行用户（建议创建专用用户）
+User=dep2p
+Group=dep2p
+
+# 工作目录（存放配置和数据）
+WorkingDirectory=/opt/dep2p/bootstrap
+
+# 可执行文件路径
+ExecStart=/opt/dep2p/dep2p \
+    --config /opt/dep2p/bootstrap/config.json \
+    --port 4001 \
+    --public-addr /ip4/YOUR_PUBLIC_IP/udp/4001/quic-v1 \
+    --enable-bootstrap
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 以下配置通常不需要修改
+# ══════════════════════════════════════════════════════════════════════════════
+
+# 环境变量
+Environment=DEP2P_PRESET=server
+Environment=DEP2P_ROLE=bootstrap
+
+# 重启策略
+Restart=always
+RestartSec=10
+
+# 资源限制（Bootstrap 节点资源需求相对较低）
+LimitNOFILE=32768
+LimitNPROC=32768
+
+# 安全加固
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/dep2p/bootstrap/data /opt/dep2p/bootstrap/logs
+
+# 日志配置
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dep2p-bootstrap
+
+[Install]
+WantedBy=multi-user.target

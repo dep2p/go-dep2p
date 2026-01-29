@@ -1,126 +1,121 @@
-// Package nat 提供 NAT 穿透模块的实现
-//
-// NAT 模块负责：
-// - NAT 类型检测
-// - 外部地址发现
-// - 端口映射
-// - 打洞协调
 package nat
 
 import (
 	"context"
-	"time"
 
+	"github.com/dep2p/go-dep2p/config"
+	"github.com/dep2p/go-dep2p/internal/core/lifecycle"
+	"github.com/dep2p/go-dep2p/internal/core/nat/holepunch"
+	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
 	"go.uber.org/fx"
-
-	natif "github.com/dep2p/go-dep2p/pkg/interfaces/nat"
 )
 
-// ============================================================================
-//                              模块输入依赖
-// ============================================================================
-
-// ModuleInput 定义模块输入依赖
-type ModuleInput struct {
+// Params Fx 依赖注入参数（创建时不依赖 Host，避免循环依赖）
+type Params struct {
 	fx.In
-
-	// Config 配置（可选）
-	Config *natif.Config `optional:"true"`
+	Swarm      pkgif.Swarm    `optional:"true"`
+	EventBus   pkgif.EventBus `optional:"true"`
+	UnifiedCfg *config.Config `optional:"true"`
+	// 注意：Host 不在这里，因为 Host 依赖 NAT（可选），会形成循环
+	// Host 在 lifecycle 的 fx.Invoke 中注入
 }
 
-// ============================================================================
-//                              模块输出服务
-// ============================================================================
-
-// ModuleOutput 定义模块输出服务
-type ModuleOutput struct {
-	fx.Out
-
-	// NATService NAT 服务
-	NATService natif.NATService `name:"nat"`
-
-	// STUNClient STUN 客户端
-	STUNClient natif.STUNClient `name:"stun_client" optional:"true"`
-
-	// HolePuncher 打洞器
-	HolePuncher natif.HolePuncher `name:"hole_puncher" optional:"true"`
-}
-
-// ============================================================================
-//                              服务提供
-// ============================================================================
-
-// ProvideServices 提供模块服务
-func ProvideServices(input ModuleInput) (ModuleOutput, error) {
-	config := natif.DefaultConfig()
-	if input.Config != nil {
-		config = *input.Config
+// ConfigFromUnified 从统一配置创建 NAT 配置
+func ConfigFromUnified(cfg *config.Config) *Config {
+	if cfg == nil {
+		return DefaultConfig()
 	}
+	return &Config{
+		EnableAutoNAT:          cfg.NAT.EnableAutoNAT,
+		EnableUPnP:             cfg.NAT.EnableUPnP,
+		EnableNATPMP:           cfg.NAT.EnableNATPMP,
+		EnableHolePunch:        cfg.NAT.EnableHolePunch,
+		STUNServers:            cfg.NAT.STUNServers,
+		ProbeInterval:          cfg.NAT.AutoNAT.ProbeInterval,
+		ProbeTimeout:           cfg.NAT.AutoNAT.ProbeTimeout,
+		MappingDuration:        cfg.NAT.UPnP.MappingDuration,
+		ConfidenceThreshold:    cfg.NAT.AutoNAT.ConfidenceThreshold,
+		ProbeSuccessThreshold:  cfg.NAT.AutoNAT.SuccessThreshold,
+		ProbeFailureThreshold:  cfg.NAT.AutoNAT.FailureThreshold,
+		STUNCacheDuration:      cfg.NAT.UPnP.CacheDuration,
+		MappingRenewalInterval: cfg.NAT.UPnP.RenewalInterval,
+		// 
+		LockReachabilityPublic: cfg.NAT.LockReachabilityPublic,
+	}
+}
 
-	// 创建 NAT 服务
-	service := NewService(config)
+// NewServiceFromParams 从参数创建服务
+func NewServiceFromParams(params Params) (*Service, error) {
+	cfg := ConfigFromUnified(params.UnifiedCfg)
+	return NewService(cfg, params.Swarm, params.EventBus)
+}
 
-	return ModuleOutput{
-		NATService:  service,
-		STUNClient:  service.STUNClient(),
-		HolePuncher: service.HolePuncher(),
+// Result NAT 模块导出结果
+type Result struct {
+	fx.Out
+	Service     *Service
+	NATService  pkgif.NATService
+	HolePuncher *holepunch.HolePuncher `optional:"true"` // P0 修复：导出 HolePuncher 供 Realm Connector 使用
+}
+
+// provideNATService 提供 NAT 服务
+func provideNATService(params Params) (Result, error) {
+	svc, err := NewServiceFromParams(params)
+	if err != nil {
+		return Result{}, err
+	}
+	
+	return Result{
+		Service:     svc,
+		NATService:  svc,           // 同一个实例，但类型不同
+		HolePuncher: svc.HolePuncher(), // P0 修复：导出 HolePuncher
 	}, nil
 }
 
-// ============================================================================
-//                              模块定义
-// ============================================================================
-
-// Module 返回 fx 模块配置
+// Module 返回 Fx 模块
 func Module() fx.Option {
 	return fx.Module("nat",
-		fx.Provide(ProvideServices),
+		fx.Provide(
+			provideNATService,
+		),
 		fx.Invoke(registerLifecycle),
+		fx.Invoke(bindLifecycleCoordinator),
 	)
 }
 
-// lifecycleInput 生命周期输入参数
 type lifecycleInput struct {
 	fx.In
-	LC         fx.Lifecycle
-	NATService natif.NATService `name:"nat"`
+	LC      fx.Lifecycle
+	Service *Service
+	Host    pkgif.Host `optional:"true"`
 }
 
-// registerLifecycle 注册生命周期
 func registerLifecycle(input lifecycleInput) {
+	if input.Host == nil {
+		return
+	}
 	input.LC.Append(fx.Hook{
-		OnStart: func(_ context.Context) error {
-			// 启动时检测 NAT 类型
-			go func() {
-				detectCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-
-				natType, err := input.NATService.DetectNATType(detectCtx)
-				if err != nil {
-					log.Debug("NAT 类型检测失败", "err", err)
-				} else {
-					log.Info("NAT 模块启动", "natType", natType.String())
-				}
-			}()
-			return nil
+		OnStart: func(ctx context.Context) error {
+			return input.Service.Start(ctx, input.Host)
 		},
 		OnStop: func(_ context.Context) error {
-			log.Info("NAT 模块停止")
-			if err := input.NATService.Close(); err != nil {
-				log.Warn("NAT 服务关闭失败", "err", err)
-			}
-			return nil
+			return input.Service.Stop()
 		},
 	})
 }
 
-// ============================================================================
-//                              模块元信息
-// ============================================================================
+// lifecycleCoordInput 生命周期协调器绑定参数
+type lifecycleCoordInput struct {
+	fx.In
+	Service              *Service
+	LifecycleCoordinator *lifecycle.Coordinator `optional:"true"`
+}
 
-// 模块元信息常量
-const (
-	Version     = "1.0.0"
-	Name        = "nat"
-	Description = "NAT 穿透模块，提供 STUN、UPnP、NAT-PMP 和打洞能力"
-)
+// bindLifecycleCoordinator 绑定生命周期协调器
+//
+// 用于 NAT 类型检测完成后通知 A3 gate 解除
+func bindLifecycleCoordinator(input lifecycleCoordInput) {
+	if input.LifecycleCoordinator != nil {
+		input.Service.SetLifecycleCoordinator(input.LifecycleCoordinator)
+	}
+}

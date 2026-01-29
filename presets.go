@@ -1,309 +1,216 @@
 package dep2p
 
 import (
-	"time"
-
-	"github.com/dep2p/go-dep2p/internal/config"
+	"github.com/dep2p/go-dep2p/config"
 )
 
-// Preset 预设配置
-// 预设封装了一组针对特定场景优化的默认配置
-type Preset struct {
+// ════════════════════════════════════════════════════════════════════════════
+//                              预设配置常量
+// ════════════════════════════════════════════════════════════════════════════
+
+// 预设名称常量
+const (
+	// PresetNameMobile 移动端预设名称
+	PresetNameMobile = "mobile"
+
+	// PresetNameDesktop 桌面端预设名称
+	PresetNameDesktop = "desktop"
+
+	// PresetNameServer 服务器预设名称
+	PresetNameServer = "server"
+
+	// PresetNameMinimal 最小预设名称
+	PresetNameMinimal = "minimal"
+)
+
+// ════════════════════════════════════════════════════════════════════════════
+//                              预设配置获取
+// ════════════════════════════════════════════════════════════════════════════
+
+// GetMobileConfig 获取移动端配置
+//
+// 适用场景：移动应用、低配设备
+// 特点：
+//   - 低资源占用
+//   - 较少的并发连接
+//   - 启用所有 NAT 穿透技术
+//   - 启用中继客户端
+//   - 仅 QUIC 传输
+//
+// 示例：
+//
+//	cfg := dep2p.GetMobileConfig()
+func GetMobileConfig() *config.Config {
+	return config.NewMobileConfig()
+}
+
+// GetDesktopConfig 获取桌面端配置
+//
+// 适用场景：桌面应用、个人电脑
+// 特点：
+//   - 适中的资源占用
+//   - 中等并发连接数
+//   - 启用所有 NAT 穿透技术
+//   - 启用中继客户端
+//   - 启用 QUIC 和 TCP
+//
+// 示例：
+//
+//	cfg := dep2p.GetDesktopConfig()
+func GetDesktopConfig() *config.Config {
+	return config.NewConfig()
+}
+
+// GetServerConfig 获取服务器配置
+//
+// 适用场景：服务器部署、公网节点、引导节点
+// 特点：
+//   - 高资源配置
+//   - 大量并发连接
+//   - 启用中继服务端
+//   - 启用 AutoNAT 服务端
+//   - 启用所有传输协议
+//
+// 示例：
+//
+//	cfg := dep2p.GetServerConfig()
+func GetServerConfig() *config.Config {
+	return config.NewServerConfig()
+}
+
+// GetMinimalConfig 获取最小配置
+//
+// 适用场景：测试环境、最小化部署
+// 特点：
+//   - 最小资源占用
+//   - 最少的功能启用
+//   - 适合快速测试和开发
+//
+// 示例：
+//
+//	cfg := dep2p.GetMinimalConfig()
+func GetMinimalConfig() *config.Config {
+	return config.NewMinimalConfig()
+}
+
+// GetConfigByPreset 根据预设名称获取配置
+//
+// 支持的预设名称：
+//   - "mobile"  - 移动端配置
+//   - "desktop" - 桌面端配置（默认）
+//   - "server"  - 服务器配置
+//   - "minimal" - 最小配置
+//
+// 如果名称未知，返回桌面端配置（默认）。
+//
+// 示例：
+//
+//	cfg := dep2p.GetConfigByPreset("server")
+func GetConfigByPreset(name string) *config.Config {
+	switch name {
+	case PresetNameMobile:
+		return GetMobileConfig()
+	case PresetNameDesktop:
+		return GetDesktopConfig()
+	case PresetNameServer:
+		return GetServerConfig()
+	case PresetNameMinimal:
+		return GetMinimalConfig()
+	default:
+		// 默认返回桌面端配置
+		return GetDesktopConfig()
+	}
+}
+
+// GetDefaultConfig 获取默认配置
+//
+// 返回桌面端配置作为默认值。
+// 等同于 GetDesktopConfig()。
+//
+// 示例：
+//
+//	cfg := dep2p.GetDefaultConfig()
+func GetDefaultConfig() *config.Config {
+	return GetDesktopConfig()
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//                              预设应用
+// ════════════════════════════════════════════════════════════════════════════
+
+// ApplyPresetToConfig 将预设应用到现有配置
+//
+// 这会修改传入的配置，而不是创建新配置。
+// 用于在已有配置基础上应用预设。
+//
+// 示例：
+//
+//	cfg := config.NewConfig()
+//	dep2p.ApplyPresetToConfig(cfg, "server")
+func ApplyPresetToConfig(cfg *config.Config, presetName string) error {
+	return config.ApplyPreset(cfg, presetName)
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//                              预设列表
+// ════════════════════════════════════════════════════════════════════════════
+
+// PresetInfo 预设信息
+type PresetInfo struct {
 	// Name 预设名称
 	Name string
 
 	// Description 预设描述
 	Description string
 
-	// 连接限制
-	ConnectionLowWater  int
-	ConnectionHighWater int
-
-	// 发现配置
-	DiscoveryInterval time.Duration
-	// BootstrapPeers 引导节点列表
-	//
-	// 格式（推荐完整地址，含 /p2p/<NodeID>）：
-	//   /dns4/bootstrap1.dep2p.io/udp/4001/quic-v1/p2p/<NodeID>
-	//   /ip4/1.2.3.4/udp/4001/quic-v1/p2p/<NodeID>
-	//
-	// 如果为 nil 或空，表示创世节点/无 bootstrap 场景。
-	// PresetMobile/Desktop/Server 默认填充公共 bootstrap 节点。
-	// PresetMinimal/Test 默认为空（测试隔离）。
-	BootstrapPeers []string
-
-	// 中继配置
-	EnableRelay       bool
-	EnableRelayServer bool
-
-	// NAT 配置
-	EnableNAT bool
-
-	// 传输配置
-	MaxConnections    int
-	MaxStreamsPerConn int
-	IdleTimeout       time.Duration
-
-	// Realm 配置
-	// v1.1+：Realm 为底层必备能力，不再提供 Enable 开关
-	IsolateDiscovery bool
-	IsolatePubSub    bool
-
-	// Liveness 配置
-	EnableLiveness    bool
-	HeartbeatInterval time.Duration
-	EnableGoodbye     bool
+	// UseCase 适用场景
+	UseCase string
 }
 
-// Apply 将预设配置应用到内部配置
-func (p *Preset) Apply(cfg *config.Config) {
-	// 连接限制
-	cfg.ConnectionManager.LowWater = p.ConnectionLowWater
-	cfg.ConnectionManager.HighWater = p.ConnectionHighWater
-
-	// 发现配置
-	cfg.Discovery.RefreshInterval = p.DiscoveryInterval
-	// Bootstrap peers：仅在 Preset 提供了非空列表时应用
-	// 这允许 WithBootstrapPeers(nil) 覆盖 Preset 的默认值
-	if len(p.BootstrapPeers) > 0 {
-		cfg.Discovery.BootstrapPeers = p.BootstrapPeers
-	}
-
-	// 中继配置
-	cfg.Relay.Enable = p.EnableRelay
-	cfg.Relay.EnableServer = p.EnableRelayServer
-
-	// NAT 配置
-	cfg.NAT.Enable = p.EnableNAT
-
-	// 传输配置
-	cfg.Transport.MaxConnections = p.MaxConnections
-	cfg.Transport.MaxStreamsPerConn = p.MaxStreamsPerConn
-	cfg.Transport.IdleTimeout = p.IdleTimeout
-
-	// Realm 配置
-	cfg.Realm.IsolateDiscovery = p.IsolateDiscovery
-	cfg.Realm.IsolatePubSub = p.IsolatePubSub
-
-	// Liveness 配置
-	cfg.Liveness.Enable = p.EnableLiveness
-	if p.HeartbeatInterval > 0 {
-		cfg.Liveness.HeartbeatInterval = p.HeartbeatInterval
-	}
-	cfg.Liveness.EnableGoodbye = p.EnableGoodbye
-}
-
-// ============================================================================
-//                              预定义预设
-// ============================================================================
-
-// 注意: 默认 bootstrap 节点由 internal/config.GetDefaultBootstrapPeers() 提供
-// 这是配置系统的唯一默认值真源
-
-// PresetMobile 移动端预设
+// AvailablePresets 返回所有可用预设的信息
 //
-// 针对手机、平板等资源受限设备优化:
-//   - 低连接数限制 (20/50)
-//   - 启用发现服务（低频率）
-//   - 启用中继（用于 NAT 穿透）
-//   - 较短的空闲超时
-//   - 使用默认 bootstrap 节点
-var PresetMobile = &Preset{
-	Name:        "mobile",
-	Description: "移动端优化配置，低资源占用",
-
-	ConnectionLowWater:  20,
-	ConnectionHighWater: 50,
-
-	DiscoveryInterval: 5 * time.Minute,
-	BootstrapPeers:    config.GetDefaultBootstrapPeers(),
-
-	EnableRelay:       true,
-	EnableRelayServer: false,
-
-	EnableNAT: true,
-
-	MaxConnections:    50,
-	MaxStreamsPerConn: 128,
-	IdleTimeout:       2 * time.Minute,
-
-	// Realm: 强制内建，隔离发现和 PubSub
-	IsolateDiscovery: true,
-	IsolatePubSub:    true,
-
-	// Liveness: 启用，较长心跳间隔（省电）
-	EnableLiveness:    true,
-	HeartbeatInterval: 30 * time.Second,
-	EnableGoodbye:     true,
-}
-
-// PresetDesktop 桌面端预设
+// 示例：
 //
-// 针对 PC、笔记本等普通设备优化:
-//   - 中等连接数限制 (50/100)
-//   - 启用全部发现服务
-//   - 启用中继
-//   - 标准空闲超时
-//   - 使用默认 bootstrap 节点
-var PresetDesktop = &Preset{
-	Name:        "desktop",
-	Description: "桌面端默认配置",
-
-	ConnectionLowWater:  50,
-	ConnectionHighWater: 100,
-
-	DiscoveryInterval: 3 * time.Minute,
-	BootstrapPeers:    config.GetDefaultBootstrapPeers(),
-
-	EnableRelay:       true,
-	EnableRelayServer: false,
-
-	EnableNAT: true,
-
-	MaxConnections:    100,
-	MaxStreamsPerConn: 256,
-	IdleTimeout:       5 * time.Minute,
-
-	// Realm: 强制内建，隔离发现和 PubSub
-	IsolateDiscovery: true,
-	IsolatePubSub:    true,
-
-	// Liveness: 启用，标准心跳间隔
-	EnableLiveness:    true,
-	HeartbeatInterval: 15 * time.Second,
-	EnableGoodbye:     true,
-}
-
-// PresetServer 服务器预设
-//
-// 针对服务器、高性能节点优化:
-//   - 高连接数限制 (200/500)
-//   - 启用全部发现服务（高频率）
-//   - 可作为中继服务器
-//   - 较长的空闲超时
-//   - 使用默认 bootstrap 节点
-var PresetServer = &Preset{
-	Name:        "server",
-	Description: "服务器优化配置，高性能",
-
-	ConnectionLowWater:  200,
-	ConnectionHighWater: 500,
-
-	DiscoveryInterval: 1 * time.Minute,
-	BootstrapPeers:    config.GetDefaultBootstrapPeers(),
-
-	EnableRelay:       true,
-	EnableRelayServer: true,
-
-	EnableNAT: true,
-
-	MaxConnections:    500,
-	MaxStreamsPerConn: 512,
-	IdleTimeout:       10 * time.Minute,
-
-	// Realm: 强制内建，隔离发现和 PubSub
-	IsolateDiscovery: true,
-	IsolatePubSub:    true,
-
-	// Liveness: 启用，较短心跳间隔（高可用性）
-	EnableLiveness:    true,
-	HeartbeatInterval: 10 * time.Second,
-	EnableGoodbye:     true,
-}
-
-// PresetMinimal 最小预设
-//
-// 仅用于测试和特殊场景:
-//   - 极低连接数限制 (10/20)
-//   - 发现服务为强制内建（无法禁用）；本预设仅通过更低连接上限/更低资源参数进行收敛
-//   - 禁用中继
-//   - 禁用 NAT
-//   - 无 bootstrap 节点（隔离环境）
-var PresetMinimal = &Preset{
-	Name:        "minimal",
-	Description: "最小配置，仅用于测试",
-
-	ConnectionLowWater:  10,
-	ConnectionHighWater: 20,
-
-	DiscoveryInterval: 30 * time.Minute,
-	BootstrapPeers:    nil, // 无 bootstrap，用于隔离测试
-
-	EnableRelay:       false,
-	EnableRelayServer: false,
-
-	EnableNAT: false,
-
-	MaxConnections:    20,
-	MaxStreamsPerConn: 64,
-	IdleTimeout:       1 * time.Minute,
-
-	// Realm: 强制内建；Minimal 预设不改变隔离策略（保持默认隔离）
-	IsolateDiscovery: true,
-	IsolatePubSub:    true,
-
-	// Liveness: 禁用
-	EnableLiveness:    false,
-	HeartbeatInterval: 0,
-	EnableGoodbye:     false,
-}
-
-// PresetTest 测试预设
-//
-// 用于单元测试和集成测试:
-//   - 低连接数限制
-//   - 发现服务为强制内建（无法禁用）；测试场景仅通过更短刷新间隔/本地监听来收敛外部依赖
-//   - 无 bootstrap 节点（测试隔离）
-var PresetTest = &Preset{
-	Name:        "test",
-	Description: "测试配置",
-
-	ConnectionLowWater:  5,
-	ConnectionHighWater: 10,
-
-	DiscoveryInterval: 10 * time.Second,
-	BootstrapPeers:    nil, // 无 bootstrap，用于测试隔离
-
-	EnableRelay:       false,
-	EnableRelayServer: false,
-
-	EnableNAT: false,
-
-	MaxConnections:    10,
-	MaxStreamsPerConn: 32,
-	IdleTimeout:       30 * time.Second,
-
-	// Realm: 强制内建（测试隔离）
-	IsolateDiscovery: true,
-	IsolatePubSub:    true,
-
-	// Liveness: 启用，短间隔（快速检测）
-	EnableLiveness:    true,
-	HeartbeatInterval: 5 * time.Second,
-	EnableGoodbye:     true,
-}
-
-// ============================================================================
-//                              预设查询
-// ============================================================================
-
-// AllPresets 返回所有预定义预设
-func AllPresets() []*Preset {
-	return []*Preset{
-		PresetMobile,
-		PresetDesktop,
-		PresetServer,
-		PresetMinimal,
-		PresetTest,
+//	for _, preset := range dep2p.AvailablePresets() {
+//	    fmt.Printf("%s: %s\n", preset.Name, preset.Description)
+//	}
+func AvailablePresets() []PresetInfo {
+	return []PresetInfo{
+		{
+			Name:        PresetNameMobile,
+			Description: "移动端优化配置，低资源占用",
+			UseCase:     "移动应用、低配设备、电池供电设备",
+		},
+		{
+			Name:        PresetNameDesktop,
+			Description: "桌面端默认配置，均衡的资源和功能",
+			UseCase:     "桌面应用、个人电脑",
+		},
+		{
+			Name:        PresetNameServer,
+			Description: "服务器优化配置，高性能高并发",
+			UseCase:     "服务器部署、公网节点、引导节点",
+		},
+		{
+			Name:        PresetNameMinimal,
+			Description: "最小配置，最少的资源和功能",
+			UseCase:     "测试环境、开发调试、极度资源受限场景",
+		},
 	}
 }
 
-// GetPresetByName 根据名称获取预设
-func GetPresetByName(name string) *Preset {
-	for _, p := range AllPresets() {
-		if p.Name == name {
-			return p
-		}
+// IsValidPreset 检查预设名称是否有效
+//
+// 示例：
+//
+//	if dep2p.IsValidPreset("server") {
+//	    cfg := dep2p.GetConfigByPreset("server")
+//	}
+func IsValidPreset(name string) bool {
+	switch name {
+	case PresetNameMobile, PresetNameDesktop, PresetNameServer, PresetNameMinimal:
+		return true
+	default:
+		return false
 	}
-	return nil
 }

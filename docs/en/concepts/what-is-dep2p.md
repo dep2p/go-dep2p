@@ -132,15 +132,17 @@ graph TD
 - Progressive configuration, simple cases stay simple
 
 ```go
-// Simplest start: one line of code
-node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+// Simplest start: two lines of code
+node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+_ = node.Start(ctx)
 
 // Add more configuration only when needed
-node, _ := dep2p.StartNode(ctx,
+node, _ := dep2p.New(ctx,
     dep2p.WithPreset(dep2p.PresetDesktop),
     dep2p.WithIdentity(myKey),           // optional
     dep2p.WithListenPort(8000),          // optional
 )
+_ = node.Start(ctx)
 ```
 
 ### 2. Explicit Over Implicit
@@ -151,13 +153,16 @@ node, _ := dep2p.StartNode(ctx,
 
 ```go
 // Explicit Realm joining, no auto-join
-if err := node.Realm().JoinRealm(ctx, "my-realm"); err != nil {
+realm, err := node.Realm("my-realm")
+if err != nil {
+    return err // Error explicitly returned
+}
+if err := realm.Join(ctx); err != nil {
     return err // Error explicitly returned
 }
 
 // Calling business API without joining Realm returns clear error
-realm, _ := node.JoinRealmWithKey(ctx, "my-realm", realmKey)
-err := realm.Messaging().Send(ctx, peerID, "/my/protocol", data)
+err = realm.Messaging().Send(ctx, peerID, "/my/protocol", data)
 // If not joined Realm, err == ErrNotMember (clearly explains why)
 ```
 
@@ -273,14 +278,15 @@ func main() {
     ctx := context.Background()
     
     // 1. Start node (infrastructure layer auto-ready)
-    node, _ := dep2p.StartNode(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    node, _ := dep2p.New(ctx, dep2p.WithPreset(dep2p.PresetDesktop))
+    _ = node.Start(ctx)
     defer node.Close()
     
     // 2. Join business network (required)
-    node.Realm().JoinRealm(ctx, "my-app")
+    realm, _ := node.Realm("my-app")
+    _ = realm.Join(ctx)
     
     // 3. Send message (only need NodeID)
-    realm, _ := node.JoinRealmWithKey(ctx, "my-realm", realmKey)
     realm.Messaging().Send(ctx, remoteNodeID, "/my/protocol/1.0", []byte("Hello!"))
     
     fmt.Println("It's that simple!")

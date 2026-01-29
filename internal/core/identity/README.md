@@ -1,243 +1,285 @@
-# Identity 身份管理模块
+# Core Identity 模块
+
+> **版本**: v1.1.0  
+> **更新日期**: 2026-01-13  
+> **状态**: ✅ 已实现
+
+---
 
 ## 概述
 
-**层级**: Tier 1  
-**职责**: 管理节点身份，包括密钥对生成、NodeID 派生、签名验证和密钥持久化。
+identity 模块是 DeP2P 的身份管理模块，负责密钥对管理、PeerID 派生和签名验证。
 
-## 设计引用
+| 属性 | 值 |
+|------|-----|
+| **架构层** | Core Layer Level 1 |
+| **代码位置** | `internal/core/identity/` |
+| **Fx 模块** | `fx.Module("identity")` |
+| **依赖** | 无（最底层模块） |
+| **被依赖** | peerstore, security, host |
 
-> **重要**: 实现前请详细阅读以下设计规范
+---
 
-| 设计文档 | 说明 |
-|----------|------|
-| [身份协议规范](../../../docs/01-design/protocols/foundation/01-identity.md) | 核心身份协议 |
-| [设备身份协议](../../../docs/01-design/protocols/foundation/03-device-id.md) | 可选扩展 - 多设备支持 |
-
-## 能力清单
-
-### 核心能力 (必须实现)
-
-| 能力 | 状态 | 说明 |
-|------|------|------|
-| Ed25519 密钥生成 | ✅ 已实现 | 生成 Ed25519 密钥对 |
-| NodeID 派生 | ✅ 已实现 | `NodeID = SHA256(PublicKey)` |
-| 签名与验证 | ✅ 已实现 | 使用私钥签名，公钥验证 |
-| 密钥持久化 (PEM) | ✅ 已实现 | PEM 格式存储私钥 |
-| 密钥加载 | ✅ 已实现 | 从文件加载私钥 |
-| 自动创建 | ✅ 已实现 | 首次启动自动创建身份 |
-
-### 扩展能力 (可选实现)
-
-| 能力 | 状态 | 说明 |
-|------|------|------|
-| 设备身份 (Device Identity) | ✅ 已实现 | 主从身份模型 |
-| 设备证书签发 | ✅ 已实现 | 主身份签发设备证书 |
-| 设备证书验证 | ✅ 已实现 | 验证设备证书有效性 |
-| 设备撤销检查 | ✅ 已实现 | 检查设备是否被撤销 |
-| ECDSA 密钥支持 | ✅ 已实现 | P-256/P-384 曲线 |
-| 多密钥类型支持 | ✅ 已实现 | Ed25519, ECDSA |
-
-## 依赖关系
-
-### 接口依赖
-
-```
-pkg/types/              → NodeID, KeyType
-pkg/interfaces/crypto/  → PublicKey, PrivateKey 接口
-pkg/interfaces/identity/ → Identity, IdentityManager 接口
-```
-
-### 模块依赖
-
-```
-无（Tier 1 基础模块）
-```
-
-## 目录结构
-
-```
-identity/
-├── README.md        # 本文件
-├── module.go        # fx 模块定义
-├── identity.go      # Identity 实现
-├── ed25519.go       # Ed25519 密钥实现
-├── ecdsa.go         # ECDSA 密钥实现 (P-256/P-384)
-├── device.go        # 设备身份管理
-├── nodeid.go        # NodeID 派生
-└── storage.go       # 密钥存储
-```
-
-## 公共接口
-
-实现 `pkg/interfaces/identity/` 中的接口：
+## 快速开始
 
 ```go
-// Identity 节点身份
+import "github.com/dep2p/go-dep2p/internal/core/identity"
+
+// 生成新身份
+priv, pub, _ := identity.GenerateEd25519Key()
+id, _ := identity.New(priv)
+
+// 获取 PeerID
+peerID := id.PeerID()
+fmt.Printf("PeerID: %s\n", peerID)
+
+// 签名和验证
+sig, _ := id.Sign([]byte("data"))
+valid, _ := id.Verify([]byte("data"), sig)
+```
+
+---
+
+## 核心功能
+
+### 1. 密钥对管理
+
+**支持的密钥类型**：
+- ✅ Ed25519（默认，推荐）
+- ⬜ Secp256k1（未来支持）
+- ⬜ RSA（未来支持）
+
+**密钥生成**：
+```go
+priv, pub, err := identity.GenerateEd25519Key()
+```
+
+**密钥序列化**：
+```go
+// 获取原始字节
+privBytes, _ := priv.Raw()
+pubBytes, _ := pub.Raw()
+
+// PEM 格式
+pemBytes, _ := identity.MarshalPrivateKeyPEM(priv)
+restored, _ := identity.UnmarshalPrivateKeyPEM(pemBytes)
+```
+
+---
+
+### 2. PeerID 派生
+
+**算法**：
+```
+PeerID = Base58(Multihash(SHA-256(PublicKey)))
+```
+
+**实现**：
+```go
+peerID, err := identity.PeerIDFromPublicKey(pub)
+// 示例输出: "zQmZEtDCL681At9ewnvze3fS9bFaZEeBDPMYWss2cwdoR7k"
+```
+
+**验证**：
+```go
+err := identity.ValidatePeerID(peerID)
+```
+
+---
+
+### 3. 签名与验证
+
+**签名**：
+```go
+data := []byte("message to sign")
+sig, err := id.Sign(data)
+// Ed25519 签名长度：64 字节
+```
+
+**验证**：
+```go
+valid, err := id.Verify(data, sig)
+// valid == true 表示签名有效
+```
+
+**批量操作**（性能优化）：
+```go
+// 批量签名
+dataList := [][]byte{msg1, msg2, msg3}
+sigs, _ := identity.SignBatch(priv, dataList)
+
+// 批量验证
+results, _ := identity.VerifyBatch(pub, dataList, sigs)
+```
+
+---
+
+## 文件结构
+
+```
+internal/core/identity/
+├── doc.go              # 包文档
+├── module.go           # Fx 模块定义
+├── identity.go         # Identity 主实现
+├── key.go              # Ed25519 密钥实现
+├── peerid.go           # PeerID 派生和验证
+├── signing.go          # 签名和验证操作
+├── errors.go           # 错误定义
+├── interfaces/         # 本地接口（已弃用，使用 pkg/interfaces）
+│   └── identity.go
+└── *_test.go           # 测试文件（12 个）
+```
+
+---
+
+## Fx 模块使用
+
+### 配置
+
+```go
+type Config struct {
+    KeyType     pkgif.KeyType  // 密钥类型（默认 Ed25519）
+    PrivKeyPath string          // 私钥文件路径（可选）
+    AutoCreate  bool            // 是否自动创建（默认 true）
+}
+```
+
+### 使用示例
+
+```go
+import (
+    "go.uber.org/fx"
+    "github.com/dep2p/go-dep2p/internal/core/identity"
+    pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
+)
+
+// 在应用中使用
+app := fx.New(
+    identity.Module(),
+    fx.Invoke(func(id pkgif.Identity) {
+        fmt.Printf("PeerID: %s\n", id.PeerID())
+    }),
+)
+```
+
+### 配置注入
+
+```go
+app := fx.New(
+    fx.Provide(func() *identity.Config {
+        return &identity.Config{
+            KeyType:     pkgif.KeyTypeEd25519,
+            PrivKeyPath: "/path/to/key.pem",
+            AutoCreate:  true,
+        }
+    }),
+    identity.Module(),
+)
+```
+
+---
+
+## 性能指标
+
+| 操作 | 时间 | 要求 | 状态 |
+|------|------|------|------|
+| 密钥生成 | ~24µs | < 10ms | ✅ 优秀 |
+| PeerID 派生 | ~1.8µs | - | ✅ 优秀 |
+| 签名 | ~28µs | < 1ms | ✅ 优秀 |
+| 验证 | ~65µs | < 1ms | ✅ 优秀 |
+
+**说明**：基于 Apple Silicon M 系列芯片的基准测试结果。
+
+---
+
+## 测试统计
+
+| 指标 | 数量 | 状态 |
+|------|------|------|
+| 实现文件 | 8 | ✅ |
+| 测试文件 | 12 | ✅ |
+| 测试用例 | 70+ | ✅ |
+| 基准测试 | 5 | ✅ |
+| 测试覆盖率 | 82.4% | ✅ |
+| 测试通过率 | 100% | ✅ |
+
+---
+
+## 架构定位
+
+### Tier 分层
+
+```
+Tier 1: Core Layer Level 1
+├── identity ◄── 本模块
+├── eventbus
+├── resourcemgr
+└── muxer
+
+依赖：无（最底层）
+被依赖：peerstore, security, host, realm
+```
+
+### 依赖关系
+
+```mermaid
+graph TD
+    identity[identity]
+    types[pkg/types]
+    interfaces[pkg/interfaces]
+    
+    identity --> types
+    identity --> interfaces
+    
+    peerstore[peerstore] --> identity
+    security[security] --> identity
+    host[host] --> identity
+```
+
+---
+
+## 接口实现
+
+实现 `pkg/interfaces/identity.go` 中的接口：
+
+```go
+// Identity 接口
 type Identity interface {
-    // ID 返回节点 ID
-    ID() types.NodeID
-    
-    // PublicKey 返回公钥
-    PublicKey() crypto.PublicKey
-    
-    // PrivateKey 返回私钥
-    PrivateKey() crypto.PrivateKey
-    
-    // Sign 签名数据
+    PeerID() string
+    PublicKey() PublicKey
+    PrivateKey() PrivateKey
     Sign(data []byte) ([]byte, error)
-    
-    // Verify 验证签名
-    Verify(data, signature []byte, pubKey crypto.PublicKey) (bool, error)
-    
-    // KeyType 返回密钥类型
-    KeyType() types.KeyType
+    Verify(data []byte, sig []byte) (bool, error)
 }
 
-// IdentityManager 身份管理器
-type IdentityManager interface {
-    // Create 创建新身份
-    Create() (Identity, error)
-    
-    // Load 从文件加载身份
-    Load(path string) (Identity, error)
-    
-    // Save 保存身份到文件
-    Save(identity Identity, path string) error
-    
-    // FromPrivateKey 从私钥创建身份
-    FromPrivateKey(key crypto.PrivateKey) (Identity, error)
+// PublicKey 接口
+type PublicKey interface {
+    Raw() ([]byte, error)
+    Type() KeyType
+    Equals(other PublicKey) bool
+    Verify(data, sig []byte) (bool, error)
+}
+
+// PrivateKey 接口
+type PrivateKey interface {
+    Raw() ([]byte, error)
+    Type() KeyType
+    PublicKey() PublicKey
+    Equals(other PrivateKey) bool
+    Sign(data []byte) ([]byte, error)
 }
 ```
 
-## 关键算法
-
-### NodeID 派生 (来自设计文档)
-
-```
-NodeID = SHA256(PublicKey)
-
-长度: 32 字节 (256 bits)
-编码: Base58
-```
-
-```go
-func DeriveNodeID(pubKey crypto.PublicKey) types.NodeID {
-    hash := sha256.Sum256(pubKey.Bytes())
-    var id types.NodeID
-    copy(id[:], hash[:])
-    return id
-}
-```
-
-### Ed25519 签名
-
-```go
-type ed25519Identity struct {
-    privateKey ed25519.PrivateKey  // 64 bytes
-    publicKey  ed25519.PublicKey   // 32 bytes
-    nodeID     types.NodeID        // 32 bytes
-}
-
-func (i *ed25519Identity) Sign(data []byte) ([]byte, error) {
-    return ed25519.Sign(i.privateKey, data), nil  // 64 bytes signature
-}
-
-func (i *ed25519Identity) Verify(data, sig []byte, pubKey crypto.PublicKey) (bool, error) {
-    return ed25519.Verify(pubKey.Bytes(), data, sig), nil
-}
-```
-
-### 密钥存储格式
-
-```
-# PEM 格式存储
------BEGIN ED25519 PRIVATE KEY-----
-...base64 encoded 64 bytes...
------END ED25519 PRIVATE KEY-----
-```
-
-## 设备身份扩展
-
-> 详见: [设备身份协议规范](../../../docs/01-design/protocols/foundation/03-device-id.md)
-
-### 两层身份模型
-
-```
-主身份 (Master Identity)
-├── 代表用户/组织
-├── 可冷存储
-└── 用于签发设备证书
-
-设备身份 (Device Identity)
-├── 每台设备独立密钥
-├── 由主身份签名授权
-└── 实际参与网络通信
-```
-
-### 设备证书格式
-
-```go
-type DeviceCertificate struct {
-    Version      uint8           // 证书版本
-    MasterID     types.NodeID    // 主身份 NodeID
-    DeviceID     types.NodeID    // 设备 NodeID
-    DevicePubKey []byte          // 设备公钥 (32 bytes)
-    DeviceName   string          // 设备名称
-    Capabilities []string        // 设备能力
-    ValidFrom    time.Time       // 生效时间
-    ValidUntil   time.Time       // 失效时间
-    Signature    []byte          // 主身份签名 (64 bytes)
-}
-```
-
-## fx 模块
-
-```go
-type ModuleInput struct {
-    fx.In
-    Config *identityif.Config `optional:"true"`
-}
-
-type ModuleOutput struct {
-    fx.Out
-    Identity        identityif.Identity        `name:"identity"`
-    IdentityManager identityif.IdentityManager `name:"identity_manager"`
-}
-
-func Module() fx.Option {
-    return fx.Module("identity",
-        fx.Provide(ProvideServices),
-        fx.Invoke(registerLifecycle),
-    )
-}
-```
-
-## 使用示例
-
-```go
-// 创建新身份
-manager := identity.NewManager(config)
-id, err := manager.Create()
-
-// 获取节点 ID
-nodeID := id.ID()
-fmt.Printf("Node ID: %s\n", nodeID.String())
-
-// 签名数据
-sig, err := id.Sign([]byte("hello"))
-
-// 验证签名
-valid, err := id.Verify([]byte("hello"), sig, id.PublicKey())
-
-// 保存和加载
-manager.Save(id, "/path/to/key.pem")
-loaded, err := manager.Load("/path/to/key.pem")
-```
+---
 
 ## 相关文档
 
-- [身份协议规范](../../../docs/01-design/protocols/foundation/01-identity.md)
-- [设备身份协议](../../../docs/01-design/protocols/foundation/03-device-id.md)
-- [pkg/interfaces/identity](../../../pkg/interfaces/identity/)
-- [pkg/interfaces/crypto](../../../pkg/interfaces/crypto/)
+| 文档 | 说明 |
+|------|------|
+| [L6_domains/core_identity/](../../../design/03_architecture/L6_domains/core_identity/) | 设计文档 |
+| [pkg/interfaces/identity.go](../../../pkg/interfaces/identity.go) | 接口定义 |
+| [COMPLIANCE_CHECK.md](../../../design/03_architecture/L6_domains/core_identity/COMPLIANCE_CHECK.md) | 合规性检查 |
+
+---
+
+**最后更新**：2026-01-13

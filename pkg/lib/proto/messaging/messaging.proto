@@ -1,0 +1,108 @@
+// DeP2P Messaging Protocol Definitions
+// 消息传递协议消息定义
+//
+// Protocol: /dep2p/app/<realmID>/messaging/1.0.0
+
+syntax = "proto3";
+
+package dep2p.messaging;
+
+option go_package = "github.com/dep2p/dep2p/pkg/proto/messaging";
+
+// MessageType 消息类型
+enum MessageType {
+  DIRECT = 0;      // 点对点消息
+  BROADCAST = 1;   // 广播消息
+  ACK = 2;         // 确认消息
+}
+
+// Priority 消息优先级
+enum Priority {
+  LOW = 0;
+  NORMAL = 1;
+  HIGH = 2;
+  URGENT = 3;
+}
+
+// Message 消息
+message Message {
+  // id 消息 ID（UUID）
+  bytes id = 1;
+  
+  // from 发送者 PeerID
+  bytes from = 2;
+  
+  // to 接收者 PeerID（点对点消息）
+  bytes to = 3;
+  
+  // topic 主题（广播消息）
+  string topic = 4;
+  
+  // type 消息类型
+  MessageType type = 5;
+  
+  // priority 优先级
+  Priority priority = 6;
+  
+  // payload 消息载荷
+  bytes payload = 7;
+  
+  // timestamp 发送时间戳
+  uint64 timestamp = 8;
+  
+  // ttl 消息存活时间（秒）
+  uint32 ttl = 9;
+  
+  // signature 消息签名
+  bytes signature = 10;
+  
+  // metadata 元数据
+  map<string, bytes> metadata = 11;
+}
+
+// Ack 确认消息
+message Ack {
+  // message_id 被确认的消息 ID
+  bytes message_id = 1;
+  
+  // from 确认者 PeerID
+  bytes from = 2;
+  
+  // status 确认状态
+  enum Status {
+    RECEIVED = 0;   // 已接收
+    PROCESSED = 1;  // 已处理
+    FAILED = 2;     // 处理失败
+  }
+  
+  Status status = 3;
+  uint64 timestamp = 4;
+}
+
+// Query 消息查询
+message Query {
+  // from 发送者过滤
+  bytes from = 1;
+  
+  // to 接收者过滤
+  bytes to = 2;
+  
+  // topic 主题过滤
+  string topic = 3;
+  
+  // after 时间过滤（之后）
+  uint64 after = 4;
+  
+  // before 时间过滤（之前）
+  uint64 before = 5;
+  
+  // limit 结果限制
+  uint32 limit = 6;
+}
+
+// QueryResponse 查询响应
+message QueryResponse {
+  repeated Message messages = 1;
+  bool has_more = 2;
+  bytes cursor = 3;
+}
