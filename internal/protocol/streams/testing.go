@@ -69,6 +69,10 @@ func (m *mockHost) NewStream(_ context.Context, peerID string, protocolIDs ...st
 	return stream, nil
 }
 
+func (m *mockHost) NewStreamWithPriority(ctx context.Context, peerID string, protocolID string, priority int) (interfaces.Stream, error) {
+	return m.NewStream(ctx, peerID, protocolID)
+}
+
 func (m *mockHost) Peerstore() interfaces.Peerstore {
 	return nil
 }
@@ -295,6 +299,14 @@ func (m *mockConnection) GetStreams() []interfaces.Stream {
 
 func (m *mockConnection) NewStream(_ context.Context) (interfaces.Stream, error) {
 	return nil, nil
+}
+
+func (m *mockConnection) NewStreamWithPriority(_ context.Context, _ int) (interfaces.Stream, error) {
+	return nil, nil
+}
+
+func (m *mockConnection) SupportsStreamPriority() bool {
+	return false
 }
 
 // mockRealmManager 模拟 RealmManager

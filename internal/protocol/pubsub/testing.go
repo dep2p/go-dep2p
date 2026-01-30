@@ -58,6 +58,10 @@ func (m *mockHost) NewStream(_ context.Context, peerID string, protocolIDs ...st
 	return newMockStream(protocolIDs[0], peerID), nil
 }
 
+func (m *mockHost) NewStreamWithPriority(ctx context.Context, peerID string, protocolID string, priority int) (interfaces.Stream, error) {
+	return m.NewStream(ctx, peerID, protocolID)
+}
+
 func (m *mockHost) Peerstore() interfaces.Peerstore {
 	return nil
 }
@@ -233,6 +237,14 @@ func (m *mockConnection) LocalMultiaddr() types.Multiaddr {
 
 func (m *mockConnection) NewStream(_ context.Context) (interfaces.Stream, error) {
 	return nil, nil
+}
+
+func (m *mockConnection) NewStreamWithPriority(_ context.Context, _ int) (interfaces.Stream, error) {
+	return nil, nil
+}
+
+func (m *mockConnection) SupportsStreamPriority() bool {
+	return false
 }
 
 func (m *mockConnection) AcceptStream() (interfaces.Stream, error) {

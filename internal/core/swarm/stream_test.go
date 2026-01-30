@@ -111,6 +111,14 @@ func (m *mockConnection) NewStream(ctx context.Context) (pkgif.Stream, error) {
 	return nil, nil
 }
 
+func (m *mockConnection) NewStreamWithPriority(ctx context.Context, priority int) (pkgif.Stream, error) {
+	return m.NewStream(ctx)
+}
+
+func (m *mockConnection) SupportsStreamPriority() bool {
+	return false
+}
+
 func (m *mockConnection) AcceptStream() (pkgif.Stream, error) {
 	return nil, nil
 }

@@ -46,6 +46,29 @@ func (m *MockMessaging) Close() error {
 	return nil
 }
 
+func (m *MockMessaging) Broadcast(ctx context.Context, protocol string, data []byte) *interfaces.BroadcastResult {
+	return &interfaces.BroadcastResult{
+		TotalCount:   1,
+		SuccessCount: 1,
+		FailedCount:  0,
+	}
+}
+
+func (m *MockMessaging) BroadcastAsync(ctx context.Context, protocol string, data []byte) <-chan interfaces.SendResult {
+	ch := make(chan interfaces.SendResult, 1)
+	ch <- interfaces.SendResult{}
+	close(ch)
+	return ch
+}
+
+func (m *MockMessaging) SendToMany(ctx context.Context, peers []string, protocol string, data []byte) []interfaces.SendResult {
+	results := make([]interfaces.SendResult, len(peers))
+	for i, peerID := range peers {
+		results[i] = interfaces.SendResult{PeerID: peerID}
+	}
+	return results
+}
+
 // MockPubSub 模拟 PubSub 接口实现
 type MockPubSub struct {
 	topics map[string]bool

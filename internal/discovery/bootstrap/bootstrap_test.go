@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-	
+
 	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
 	"github.com/dep2p/go-dep2p/pkg/types"
 	"github.com/stretchr/testify/assert"
@@ -15,15 +15,15 @@ import (
 // TestBootstrap_Creation 测试 Bootstrap 创建
 func TestBootstrap_Creation(t *testing.T) {
 	mockHost := &mockHost{}
-	
+
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
-	
+
 	config := &Config{
 		Peers:    []types.PeerInfo{{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{addr1}}},
 		Timeout:  5 * time.Second,
 		MinPeers: 1,
 	}
-	
+
 	bootstrap, err := New(mockHost, config)
 	require.NoError(t, err)
 	assert.NotNil(t, bootstrap)
@@ -38,31 +38,31 @@ func TestBootstrap_Bootstrap_Success(t *testing.T) {
 			return nil // 模拟成功连接
 		},
 	}
-	
+
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
 	addr2, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4002")
 	addr3, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4003")
 	addr4, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4004")
-	
+
 	peers := []types.PeerInfo{
 		{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{addr1}},
 		{ID: types.PeerID("peer2"), Addrs: []types.Multiaddr{addr2}},
 		{ID: types.PeerID("peer3"), Addrs: []types.Multiaddr{addr3}},
 		{ID: types.PeerID("peer4"), Addrs: []types.Multiaddr{addr4}},
 	}
-	
+
 	config := &Config{
 		Peers:    peers,
 		Timeout:  5 * time.Second,
 		MinPeers: 4,
 	}
-	
+
 	bootstrap, err := New(mockHost, config)
 	require.NoError(t, err)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	
+
 	err = bootstrap.Bootstrap(ctx)
 	assert.NoError(t, err)
 }
@@ -74,27 +74,27 @@ func TestBootstrap_Bootstrap_AllFail(t *testing.T) {
 			return assert.AnError // 所有连接都失败
 		},
 	}
-	
+
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
 	addr2, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4002")
-	
+
 	peers := []types.PeerInfo{
 		{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{addr1}},
 		{ID: types.PeerID("peer2"), Addrs: []types.Multiaddr{addr2}},
 	}
-	
+
 	config := &Config{
 		Peers:    peers,
 		Timeout:  5 * time.Second,
 		MinPeers: 1,
 	}
-	
+
 	bootstrap, err := New(mockHost, config)
 	require.NoError(t, err)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	
+
 	err = bootstrap.Bootstrap(ctx)
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrAllConnectionsFailed)
@@ -103,89 +103,89 @@ func TestBootstrap_Bootstrap_AllFail(t *testing.T) {
 // TestBootstrap_FindPeers 测试 FindPeers 方法
 func TestBootstrap_FindPeers(t *testing.T) {
 	mockHost := &mockHost{}
-	
+
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
 	addr2, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4002")
-	
+
 	peers := []types.PeerInfo{
 		{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{addr1}},
 		{ID: types.PeerID("peer2"), Addrs: []types.Multiaddr{addr2}},
 	}
-	
+
 	config := &Config{
 		Peers:    peers,
 		Timeout:  5 * time.Second,
 		MinPeers: 1,
 	}
-	
+
 	bootstrap, err := New(mockHost, config)
 	require.NoError(t, err)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	
+
 	peerCh, err := bootstrap.FindPeers(ctx, "test")
 	require.NoError(t, err)
-	
+
 	found := []types.PeerInfo{}
 	for peer := range peerCh {
 		found = append(found, peer)
 	}
-	
+
 	assert.Equal(t, 2, len(found))
 }
 
 // TestBootstrap_AddPeer 测试添加引导节点
 func TestBootstrap_AddPeer(t *testing.T) {
 	mockHost := &mockHost{}
-	
+
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
-	
+
 	config := &Config{
 		Peers:    []types.PeerInfo{{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{addr1}}},
 		Timeout:  5 * time.Second,
 		MinPeers: 1,
 	}
-	
+
 	bootstrap, err := New(mockHost, config)
 	require.NoError(t, err)
-	
+
 	initialCount := len(bootstrap.Peers())
-	
+
 	newAddr, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/5000")
-	
+
 	newPeer := types.PeerInfo{
 		ID:    types.PeerID("newpeer"),
 		Addrs: []types.Multiaddr{newAddr},
 	}
-	
+
 	bootstrap.AddPeer(newPeer)
-	
+
 	assert.Equal(t, initialCount+1, len(bootstrap.Peers()))
 }
 
 // TestBootstrap_Lifecycle 测试生命周期
 func TestBootstrap_Lifecycle(t *testing.T) {
 	mockHost := &mockHost{}
-	
+
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
-	
+
 	config := &Config{
 		Peers:    []types.PeerInfo{{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{addr1}}},
 		Timeout:  5 * time.Second,
 		MinPeers: 1,
 	}
-	
+
 	bootstrap, err := New(mockHost, config)
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
-	
+
 	// 测试启动
 	err = bootstrap.Start(ctx)
 	assert.NoError(t, err)
 	assert.True(t, bootstrap.Started())
-	
+
 	// 测试停止
 	err = bootstrap.Stop(ctx)
 	assert.NoError(t, err)
@@ -194,7 +194,7 @@ func TestBootstrap_Lifecycle(t *testing.T) {
 
 // mockHost 是 Host 接口的 mock 实现
 type mockHost struct {
-	connectFunc    func(ctx context.Context, peerID string, addrs []string) error
+	connectFunc     func(ctx context.Context, peerID string, addrs []string) error
 	advertisedAddrs []string // 可选：自定义对外通告地址，nil 时使用 Addrs()
 }
 
@@ -219,6 +219,10 @@ func (m *mockHost) Connect(ctx context.Context, peerID string, addrs []string) e
 
 func (m *mockHost) NewStream(ctx context.Context, peerID string, protocolIDs ...string) (pkgif.Stream, error) {
 	return nil, nil
+}
+
+func (m *mockHost) NewStreamWithPriority(ctx context.Context, peerID string, protocolID string, priority int) (pkgif.Stream, error) {
+	return m.NewStream(ctx, peerID, protocolID)
 }
 
 func (m *mockHost) SetStreamHandler(protocolID string, handler pkgif.StreamHandler) {
@@ -279,31 +283,31 @@ func TestBootstrap_Bootstrap_MinPeersFail(t *testing.T) {
 			return assert.AnError // 其他失败
 		},
 	}
-	
+
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
 	addr2, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4002")
 	addr3, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4003")
 	addr4, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4004")
-	
+
 	peers := []types.PeerInfo{
 		{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{addr1}},
 		{ID: types.PeerID("peer2"), Addrs: []types.Multiaddr{addr2}},
 		{ID: types.PeerID("peer3"), Addrs: []types.Multiaddr{addr3}},
 		{ID: types.PeerID("peer4"), Addrs: []types.Multiaddr{addr4}},
 	}
-	
+
 	config := &Config{
 		Peers:    peers,
 		Timeout:  5 * time.Second,
 		MinPeers: 4, // 需要4个，但只有2个成功
 	}
-	
+
 	bootstrap, err := New(mockHost, config)
 	require.NoError(t, err)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	
+
 	err = bootstrap.Bootstrap(ctx)
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrMinPeersNotMet)
@@ -312,14 +316,14 @@ func TestBootstrap_Bootstrap_MinPeersFail(t *testing.T) {
 // TestBootstrap_NoPeers 测试无引导节点
 func TestBootstrap_NoPeers(t *testing.T) {
 	mockHost := &mockHost{}
-	
+
 	config := &Config{
 		Peers:    []types.PeerInfo{},
 		Timeout:  5 * time.Second,
 		MinPeers: 0,
 		Enabled:  true, // 启用时，空 Peers 会自动禁用（优雅降级）
 	}
-	
+
 	// 优雅降级：空 Peers 配置会自动禁用，服务可以正常创建
 	bootstrap, err := New(mockHost, config)
 	assert.NoError(t, err)
@@ -330,7 +334,7 @@ func TestBootstrap_NoPeers(t *testing.T) {
 // TestBootstrap_Config_Validation 测试配置验证
 func TestBootstrap_Config_Validation(t *testing.T) {
 	mockHost := &mockHost{}
-	
+
 	// 测试无效 Timeout（需要 Enabled=true 才会触发验证）
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
 	config := &Config{
@@ -339,10 +343,10 @@ func TestBootstrap_Config_Validation(t *testing.T) {
 		MinPeers: 1,
 		Enabled:  true, // 必须启用才会验证
 	}
-	
+
 	_, err := New(mockHost, config)
 	assert.Error(t, err)
-	
+
 	// 测试 MinPeers 自动调整（MinPeers 超过 peers 数量时自动降低）
 	config2 := &Config{
 		Peers:    []types.PeerInfo{{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{addr1}}},
@@ -350,7 +354,7 @@ func TestBootstrap_Config_Validation(t *testing.T) {
 		MinPeers: 10, // 超过 peers 数量，应自动调整为 1
 		Enabled:  true,
 	}
-	
+
 	bootstrap, err := New(mockHost, config2)
 	assert.NoError(t, err)
 	assert.NotNil(t, bootstrap)
@@ -361,28 +365,28 @@ func TestBootstrap_Config_Validation(t *testing.T) {
 // TestBootstrap_Closed 测试关闭后操作
 func TestBootstrap_Closed(t *testing.T) {
 	mockHost := &mockHost{}
-	
+
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
-	
+
 	config := &Config{
 		Peers:    []types.PeerInfo{{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{addr1}}},
 		Timeout:  5 * time.Second,
 		MinPeers: 1,
 	}
-	
+
 	bootstrap, err := New(mockHost, config)
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
-	
+
 	// 关闭
 	err = bootstrap.Stop(ctx)
 	require.NoError(t, err)
-	
+
 	// 关闭后操作应该返回错误
 	err = bootstrap.Bootstrap(ctx)
 	assert.Error(t, err)
-	
+
 	_, err = bootstrap.FindPeers(ctx, "test")
 	assert.Error(t, err)
 }
@@ -395,24 +399,24 @@ func TestBootstrap_Concurrent(t *testing.T) {
 			return nil
 		},
 	}
-	
+
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
 	addr2, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4002")
-	
+
 	peers := []types.PeerInfo{
 		{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{addr1}},
 		{ID: types.PeerID("peer2"), Addrs: []types.Multiaddr{addr2}},
 	}
-	
+
 	config := &Config{
 		Peers:    peers,
 		Timeout:  5 * time.Second,
 		MinPeers: 2,
 	}
-	
+
 	bootstrap, err := New(mockHost, config)
 	require.NoError(t, err)
-	
+
 	// 并发调用 Peers()（测试 Race 安全性）
 	done := make(chan bool, 10)
 	for i := 0; i < 10; i++ {
@@ -423,7 +427,7 @@ func TestBootstrap_Concurrent(t *testing.T) {
 			done <- true
 		}()
 	}
-	
+
 	// 并发调用 AddPeer()
 	addr3, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4003")
 	for i := 0; i < 10; i++ {
@@ -436,7 +440,7 @@ func TestBootstrap_Concurrent(t *testing.T) {
 			done <- true
 		}(i)
 	}
-	
+
 	// 等待所有 goroutine 完成
 	for i := 0; i < 20; i++ {
 		<-done
@@ -446,36 +450,36 @@ func TestBootstrap_Concurrent(t *testing.T) {
 // TestBootstrap_FindPeers_ContextCancel 测试 FindPeers 上下文取消
 func TestBootstrap_FindPeers_ContextCancel(t *testing.T) {
 	mockHost := &mockHost{}
-	
+
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
 	addr2, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4002")
-	
+
 	peers := []types.PeerInfo{
 		{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{addr1}},
 		{ID: types.PeerID("peer2"), Addrs: []types.Multiaddr{addr2}},
 	}
-	
+
 	config := &Config{
 		Peers:    peers,
 		Timeout:  5 * time.Second,
 		MinPeers: 1,
 	}
-	
+
 	bootstrap, err := New(mockHost, config)
 	require.NoError(t, err)
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // 立即取消
-	
+
 	peerCh, err := bootstrap.FindPeers(ctx, "test")
 	require.NoError(t, err)
-	
+
 	// channel 应该立即关闭
 	count := 0
 	for range peerCh {
 		count++
 	}
-	
+
 	// 由于上下文取消，可能不返回任何节点
 	assert.LessOrEqual(t, count, len(peers))
 }
@@ -483,13 +487,13 @@ func TestBootstrap_FindPeers_ContextCancel(t *testing.T) {
 // TestBootstrap_NilHost 测试 nil Host
 func TestBootstrap_NilHost(t *testing.T) {
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
-	
+
 	config := &Config{
 		Peers:    []types.PeerInfo{{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{addr1}}},
 		Timeout:  5 * time.Second,
 		MinPeers: 1,
 	}
-	
+
 	_, err := New(nil, config)
 	assert.Error(t, err)
 }
@@ -497,24 +501,24 @@ func TestBootstrap_NilHost(t *testing.T) {
 // TestBootstrap_Peers 测试获取节点列表
 func TestBootstrap_Peers(t *testing.T) {
 	mockHost := &mockHost{}
-	
+
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
 	addr2, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4002")
-	
+
 	peers := []types.PeerInfo{
 		{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{addr1}},
 		{ID: types.PeerID("peer2"), Addrs: []types.Multiaddr{addr2}},
 	}
-	
+
 	config := &Config{
 		Peers:    peers,
 		Timeout:  5 * time.Second,
 		MinPeers: 1,
 	}
-	
+
 	bootstrap, err := New(mockHost, config)
 	require.NoError(t, err)
-	
+
 	gotPeers := bootstrap.Peers()
 	assert.Equal(t, 2, len(gotPeers))
 	assert.Equal(t, peers[0].ID, gotPeers[0].ID)
@@ -524,32 +528,32 @@ func TestBootstrap_Peers(t *testing.T) {
 // TestBootstrap_StartStop 测试启动停止
 func TestBootstrap_StartStop(t *testing.T) {
 	mockHost := &mockHost{}
-	
+
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
-	
+
 	config := &Config{
 		Peers:    []types.PeerInfo{{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{addr1}}},
 		Timeout:  5 * time.Second,
 		MinPeers: 1,
 	}
-	
+
 	bootstrap, err := New(mockHost, config)
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
-	
+
 	// 启动
 	err = bootstrap.Start(ctx)
 	assert.NoError(t, err)
-	
+
 	// 重复启动应返回错误
 	err = bootstrap.Start(ctx)
 	assert.ErrorIs(t, err, ErrAlreadyStarted)
-	
+
 	// 停止
 	err = bootstrap.Stop(ctx)
 	assert.NoError(t, err)
-	
+
 	// 重复停止应是幂等的
 	err = bootstrap.Stop(ctx)
 	assert.NoError(t, err)
@@ -567,31 +571,31 @@ func TestBootstrap_PartialSuccess(t *testing.T) {
 			return assert.AnError // 最后一个失败
 		},
 	}
-	
+
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
 	addr2, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4002")
 	addr3, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4003")
 	addr4, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4004")
-	
+
 	peers := []types.PeerInfo{
 		{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{addr1}},
 		{ID: types.PeerID("peer2"), Addrs: []types.Multiaddr{addr2}},
 		{ID: types.PeerID("peer3"), Addrs: []types.Multiaddr{addr3}},
 		{ID: types.PeerID("peer4"), Addrs: []types.Multiaddr{addr4}},
 	}
-	
+
 	config := &Config{
 		Peers:    peers,
 		Timeout:  5 * time.Second,
 		MinPeers: 3, // 需要3个，实际成功3个
 	}
-	
+
 	bootstrap, err := New(mockHost, config)
 	require.NoError(t, err)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	
+
 	err = bootstrap.Bootstrap(ctx)
 	assert.NoError(t, err) // 部分成功可以接受
 }
@@ -599,16 +603,16 @@ func TestBootstrap_PartialSuccess(t *testing.T) {
 // TestBootstrap_EmptyPeerID 测试空节点 ID
 func TestBootstrap_EmptyPeerID(t *testing.T) {
 	mockHost := &mockHost{}
-	
+
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
-	
+
 	config := &Config{
 		Peers:    []types.PeerInfo{{ID: types.PeerID(""), Addrs: []types.Multiaddr{addr1}}},
 		Timeout:  5 * time.Second,
 		MinPeers: 1,
 		Enabled:  true, // 必须启用才会验证
 	}
-	
+
 	_, err := New(mockHost, config)
 	assert.Error(t, err)
 }
@@ -616,14 +620,14 @@ func TestBootstrap_EmptyPeerID(t *testing.T) {
 // TestBootstrap_EmptyAddrs 测试空地址
 func TestBootstrap_EmptyAddrs(t *testing.T) {
 	mockHost := &mockHost{}
-	
+
 	config := &Config{
 		Peers:    []types.PeerInfo{{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{}}},
 		Timeout:  5 * time.Second,
 		MinPeers: 1,
 		Enabled:  true, // 必须启用才会验证
 	}
-	
+
 	_, err := New(mockHost, config)
 	assert.Error(t, err)
 }
@@ -632,7 +636,7 @@ func TestBootstrap_EmptyAddrs(t *testing.T) {
 func TestBootstrap_ConfigStruct(t *testing.T) {
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
 	peers := []types.PeerInfo{{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{addr1}}}
-	
+
 	config := &Config{
 		Peers:      peers,
 		Timeout:    10 * time.Second,
@@ -641,7 +645,7 @@ func TestBootstrap_ConfigStruct(t *testing.T) {
 		Interval:   5 * time.Minute,
 		Enabled:    true,
 	}
-	
+
 	assert.Equal(t, peers, config.Peers)
 	assert.Equal(t, 10*time.Second, config.Timeout)
 	assert.Equal(t, 2, config.MinPeers)
@@ -652,9 +656,9 @@ func TestBootstrap_ConfigStruct(t *testing.T) {
 func TestBootstrap_ConfigFromUnified(t *testing.T) {
 	// 测试使用统一配置系统（这才是正确的方式）
 	// DefaultConfig 已删除，应该通过 ConfigFromUnified 从 config 包获取配置
-	
+
 	addr1, _ := types.NewMultiaddr("/ip4/127.0.0.1/tcp/4001")
-	
+
 	config := &Config{
 		Peers:      []types.PeerInfo{{ID: types.PeerID("peer1"), Addrs: []types.Multiaddr{addr1}}},
 		Timeout:    30 * time.Second,
@@ -663,7 +667,7 @@ func TestBootstrap_ConfigFromUnified(t *testing.T) {
 		Interval:   5 * time.Minute,
 		Enabled:    true,
 	}
-	
+
 	assert.NotNil(t, config)
 	assert.Equal(t, 30*time.Second, config.Timeout)
 	assert.Equal(t, 1, config.MinPeers)
@@ -869,7 +873,6 @@ func TestDefaults_Fields(t *testing.T) {
 
 	t.Log("✅ Defaults 字段测试通过")
 }
-
 
 // ============================================================================
 // ExtendedNodeStore 额外测试

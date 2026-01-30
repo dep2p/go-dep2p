@@ -391,6 +391,21 @@ func (c *RelayCircuit) NewStream(ctx context.Context) (pkgif.Stream, error) {
 	return wrapped, nil
 }
 
+// NewStreamWithPriority 在此电路上创建新流（指定优先级）(v1.2 新增)
+//
+// 中继连接不支持流优先级，此方法直接调用 NewStream，忽略优先级参数。
+// 中继连接通过中继节点转发数据，优先级控制无法传递到最终目的地。
+func (c *RelayCircuit) NewStreamWithPriority(ctx context.Context, _ int) (pkgif.Stream, error) {
+	return c.NewStream(ctx)
+}
+
+// SupportsStreamPriority 检查连接是否支持流优先级 (v1.2 新增)
+//
+// 中继连接不支持流优先级。
+func (c *RelayCircuit) SupportsStreamPriority() bool {
+	return false
+}
+
 // AcceptStream 接受对方创建的流
 //
 // 只有 Closed 状态才拒绝操作。这样可以打破"Stale → 无法接受流 →

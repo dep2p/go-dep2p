@@ -240,6 +240,10 @@ func (h *mockHost) NewStream(ctx context.Context, peerID string, protocolIDs ...
 	return stream, nil
 }
 
+func (h *mockHost) NewStreamWithPriority(ctx context.Context, peerID string, protocolID string, priority int) (pkgif.Stream, error) {
+	return h.NewStream(ctx, peerID, protocolID)
+}
+
 func (h *mockHost) Peerstore() pkgif.Peerstore {
 	return nil
 }

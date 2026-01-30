@@ -142,7 +142,6 @@ func (h *Host) ShareableAddrs() []string {
 
 // HolePunchAddrs 返回用于打洞协商的地址列表
 //
-// 
 // 而不仅仅是已验证的地址。对于 NAT 节点，dial-back 验证无法成功，
 // 但 STUN 候选地址是真实的外部地址，是打洞必需的。
 func (h *Host) HolePunchAddrs() []string {
@@ -239,7 +238,7 @@ func (h *Host) Connect(ctx context.Context, peerID string, addrs []string) error
 		return errors.New("swarm not available")
 	}
 
-	// 
+	//
 	// 这可以大幅减少日志量（实测 27 分钟内减少 700+ 条重复日志）
 	alreadyConnected := h.swarm.Connectedness(peerID) == pkgif.Connected
 
@@ -266,7 +265,7 @@ func (h *Host) Connect(ctx context.Context, peerID string, addrs []string) error
 	if err != nil {
 		logger.Warn("连接节点失败", "peerID", peerID[:8], "error", err)
 	} else if !alreadyConnected {
-		// 
+		//
 		// P0-2: 添加连接类型标签，便于 NAT 穿透效果分析
 		connType := "direct"
 		if conn != nil && conn.ConnType().IsRelay() {
@@ -355,9 +354,21 @@ func truncatePeerID(peerID string, maxLen int) string {
 	return peerID[:maxLen]
 }
 
-// NewStream 创建到指定节点的新流
+// NewStream 创建到指定节点的新流（默认优先级）
 // 该方法会确保连接存在，然后创建流并进行协议协商
 func (h *Host) NewStream(ctx context.Context, peerID string, protocolIDs ...string) (pkgif.Stream, error) {
+	// 默认使用普通优先级
+	if len(protocolIDs) == 0 {
+		return h.NewStreamWithPriority(ctx, peerID, "", int(pkgif.StreamPriorityNormal))
+	}
+	return h.NewStreamWithPriority(ctx, peerID, protocolIDs[0], int(pkgif.StreamPriorityNormal))
+}
+
+// NewStreamWithPriority 创建到指定节点的新流（指定优先级）(v1.2 新增)
+//
+// 允许指定流优先级。在 QUIC 连接上，优先级会传递给底层传输层。
+// 在 TCP 连接上，优先级会被忽略（优雅降级）。
+func (h *Host) NewStreamWithPriority(ctx context.Context, peerID string, protocolID string, priority int) (pkgif.Stream, error) {
 	if h.closed.Load() {
 		return nil, errors.New("host is closed")
 	}
@@ -366,16 +377,16 @@ func (h *Host) NewStream(ctx context.Context, peerID string, protocolIDs ...stri
 		return nil, errors.New("swarm not available")
 	}
 
-	// 1. 委托给 Swarm 创建流
-	stream, err := h.swarm.NewStream(ctx, peerID)
+	// 1. 委托给 Swarm 创建流（带优先级）
+	stream, err := h.swarm.NewStreamWithPriority(ctx, peerID, priority)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create stream: %w", err)
 	}
 
 	// 2. 协议协商（如果提供了协议 ID）
-	if len(protocolIDs) > 0 {
+	if protocolID != "" {
 		// 使用 multistream-select 进行协议协商（客户端侧）
-		selectedProto, err := mss.SelectOneOf(protocolIDs, stream)
+		selectedProto, err := mss.SelectOneOf([]string{protocolID}, stream)
 		if err != nil {
 			stream.Close()
 			return nil, fmt.Errorf("protocol negotiation failed: %w", err)
@@ -530,7 +541,6 @@ func (h *Host) Closed() bool {
 // 2. 设置协商后的协议 ID 到流
 // 3. 将流路由到对应的协议处理器
 //
-// 
 // 中继连接的 STOP 流需要调用此方法来处理后续的协议协商
 func (h *Host) handleInboundStream(stream pkgif.Stream) {
 	if h.closed.Load() {
@@ -597,7 +607,6 @@ func (h *Host) handleInboundStream(stream pkgif.Stream) {
 // 对流进行协议协商并路由到相应处理器。
 // 用于处理非标准来源的入站流（如中继连接的 STOP 流）。
 //
-// 
 // WiFi→Relay→4G 的数据通过 STOP 流传输，需要进行协议协商和路由。
 func (h *Host) HandleInboundStream(stream pkgif.Stream) {
 	h.handleInboundStream(stream)

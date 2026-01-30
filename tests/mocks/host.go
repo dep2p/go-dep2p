@@ -17,25 +17,25 @@ type MockHost struct {
 	Closed     bool
 
 	// 可覆盖的方法
-	IDFunc                          func() string
-	AddrsFunc                       func() []string
-	ListenFunc                      func(addrs ...string) error
-	ConnectFunc                     func(ctx context.Context, peerID string, addrs []string) error
-	SetStreamHandlerFunc            func(protocolID string, handler interfaces.StreamHandler)
-	RemoveStreamHandlerFunc         func(protocolID string)
-	NewStreamFunc                   func(ctx context.Context, peerID string, protocolIDs ...string) (interfaces.Stream, error)
-	PeerstoreFunc                   func() interfaces.Peerstore
-	EventBusFunc                    func() interfaces.EventBus
-	NetworkFunc                     func() interfaces.Swarm
-	CloseFunc                       func() error
-	AdvertisedAddrsFunc             func() []string
-	ShareableAddrsFunc              func() []string
-	HolePunchAddrsFunc              func() []string
-	SetReachabilityCoordinatorFunc  func(coordinator interfaces.ReachabilityCoordinator)
+	IDFunc                         func() string
+	AddrsFunc                      func() []string
+	ListenFunc                     func(addrs ...string) error
+	ConnectFunc                    func(ctx context.Context, peerID string, addrs []string) error
+	SetStreamHandlerFunc           func(protocolID string, handler interfaces.StreamHandler)
+	RemoveStreamHandlerFunc        func(protocolID string)
+	NewStreamFunc                  func(ctx context.Context, peerID string, protocolIDs ...string) (interfaces.Stream, error)
+	PeerstoreFunc                  func() interfaces.Peerstore
+	EventBusFunc                   func() interfaces.EventBus
+	NetworkFunc                    func() interfaces.Swarm
+	CloseFunc                      func() error
+	AdvertisedAddrsFunc            func() []string
+	ShareableAddrsFunc             func() []string
+	HolePunchAddrsFunc             func() []string
+	SetReachabilityCoordinatorFunc func(coordinator interfaces.ReachabilityCoordinator)
 
 	// 调用记录（用于验证）
-	ConnectCalls    []ConnectCall
-	NewStreamCalls  []NewStreamCall
+	ConnectCalls   []ConnectCall
+	NewStreamCalls []NewStreamCall
 }
 
 // ConnectCall 记录 Connect 调用参数
@@ -112,6 +112,11 @@ func (m *MockHost) NewStream(ctx context.Context, peerID string, protocolIDs ...
 		return m.NewStreamFunc(ctx, peerID, protocolIDs...)
 	}
 	return NewMockStream(), nil
+}
+
+// NewStreamWithPriority 创建带优先级的流 (v1.2 新增)
+func (m *MockHost) NewStreamWithPriority(ctx context.Context, peerID string, protocolID string, _ int) (interfaces.Stream, error) {
+	return m.NewStream(ctx, peerID, protocolID)
 }
 
 // Peerstore 返回节点存储

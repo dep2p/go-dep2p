@@ -21,26 +21,50 @@ type Stream struct {
 	conn       *Connection
 	protocol   string
 	closed     int32 // atomic: 0 = open, 1 = closed
-	
+	priority   int   // 流优先级 (v1.2 新增)
+
 	// 状态机
 	state   types.StreamState
 	stateMu sync.RWMutex
-	
+
 	// 统计信息
 	bytesRead    int64     // atomic: 已读取字节数
 	bytesWritten int64     // atomic: 已写入字节数
 	openedAt     time.Time // 打开时间
 }
 
-// newStream 创建新流
+// newStream 创建新流（默认优先级）
 func newStream(quicStream *quic.Stream, conn *Connection) *Stream {
-	return &Stream{
+	return newStreamWithPriority(quicStream, conn, int(pkgif.StreamPriorityNormal))
+}
+
+// newStreamWithPriority 创建新流（指定优先级）(v1.2 新增)
+func newStreamWithPriority(quicStream *quic.Stream, conn *Connection, priority int) *Stream {
+	s := &Stream{
 		quicStream: quicStream,
 		conn:       conn,
 		protocol:   "", // 协议 ID 需要通过协议协商确定
+		priority:   priority,
 		state:      types.StreamStateOpen,
 		openedAt:   time.Now(),
 	}
+
+	// 记录优先级到日志（用于调试）
+	if priority != int(pkgif.StreamPriorityNormal) {
+		logger.Debug("创建带优先级的流",
+			"streamID", quicStream.StreamID(),
+			"priority", priority)
+	}
+
+	// TODO: 当 quic-go 支持时，调用 quicStream.SetPriority(priority)
+	// 目前 quic-go 的优先级支持需要通过 HTTP/3 层配置
+
+	return s
+}
+
+// Priority 返回流优先级 (v1.2 新增)
+func (s *Stream) Priority() int {
+	return s.priority
 }
 
 // Read 读取数据
@@ -161,7 +185,7 @@ func (s *Stream) Stat() types.StreamStat {
 			direction = types.DirOutbound
 		}
 	}
-	
+
 	return types.StreamStat{
 		Direction:    direction,
 		Opened:       s.openedAt,

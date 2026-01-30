@@ -1086,6 +1086,14 @@ func (s *Swarm) getBandwidthCounter() pkgif.BandwidthCounter {
 	return s.bandwidth
 }
 
+// BandwidthCounter 返回带宽计数器（v1.1 新增公开方法）
+//
+// 用于 Node API 层通过类型断言访问带宽统计功能。
+// 如果带宽统计未启用，返回 nil。
+func (s *Swarm) BandwidthCounter() pkgif.BandwidthCounter {
+	return s.getBandwidthCounter()
+}
+
 // SetRelayDialer 设置 Relay 拨号器（v2.0 统一接口）
 //
 // 用于支持惰性中继策略：

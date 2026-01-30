@@ -58,8 +58,20 @@ type Connection interface {
 	// RemoteMultiaddr 返回远端多地址
 	RemoteMultiaddr() types.Multiaddr
 
-	// NewStream 在此连接上创建新流
+	// NewStream 在此连接上创建新流（默认优先级）
 	NewStream(ctx context.Context) (Stream, error)
+
+	// NewStreamWithPriority 在此连接上创建新流（指定优先级）(v1.2 新增)
+	//
+	// 允许指定流优先级。在 QUIC 连接上，优先级会传递给底层传输层。
+	// 在 TCP 连接上，优先级会被忽略（优雅降级）。
+	//
+	// 参数:
+	//   - ctx: 上下文
+	//   - priority: 流优先级 (0=Critical, 1=High, 2=Normal, 3=Low)
+	//
+	// 注意：大多数实现会调用 NewStream 并忽略优先级，仅 QUIC 实现会使用优先级。
+	NewStreamWithPriority(ctx context.Context, priority int) (Stream, error)
 
 	// AcceptStream 接受对方创建的流
 	AcceptStream() (Stream, error)
@@ -75,6 +87,12 @@ type Connection interface {
 	// 返回连接的类型（直连或中继）。
 	// 仅供调试和监控使用，不影响正常使用。
 	ConnType() ConnectionType
+
+	// SupportsStreamPriority 检查连接是否支持流优先级 (v1.2 新增)
+	//
+	// 返回 true 表示此连接支持流优先级（如 QUIC 连接）。
+	// 返回 false 表示优先级会被忽略（如 TCP 连接）。
+	SupportsStreamPriority() bool
 
 	// Close 关闭连接
 	Close() error

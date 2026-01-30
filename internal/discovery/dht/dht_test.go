@@ -16,11 +16,11 @@ import (
 // TestDHT_Creation 测试DHT创建
 func TestDHT_Creation(t *testing.T) {
 	host := newMockHost("test-peer")
-	
+
 	dht, err := New(host, nil)
 	require.NoError(t, err)
 	require.NotNil(t, dht)
-	
+
 	assert.Equal(t, types.NodeID("test-peer"), types.NodeID(dht.host.ID()))
 	assert.NotNil(t, dht.routingTable)
 	assert.NotNil(t, dht.valueStore)
@@ -32,7 +32,7 @@ func TestDHT_Start(t *testing.T) {
 	host := newMockHost("test-peer")
 	dht, err := New(host, nil)
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
 	err = dht.Start(ctx)
 	require.NoError(t, err)
@@ -44,11 +44,11 @@ func TestDHT_Stop(t *testing.T) {
 	host := newMockHost("test-peer")
 	dht, err := New(host, nil)
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
 	err = dht.Start(ctx)
 	require.NoError(t, err)
-	
+
 	err = dht.Stop(ctx)
 	require.NoError(t, err)
 	assert.False(t, dht.started.Load())
@@ -57,7 +57,7 @@ func TestDHT_Stop(t *testing.T) {
 // TestDHT_Bootstrap 测试引导流程
 func TestDHT_Bootstrap(t *testing.T) {
 	host := newMockHost("test-peer")
-	
+
 	// 创建带引导节点的配置
 	config := DefaultConfig()
 	config.BootstrapPeers = []types.PeerInfo{
@@ -66,14 +66,14 @@ func TestDHT_Bootstrap(t *testing.T) {
 			Addrs: []types.Multiaddr{},
 		},
 	}
-	
+
 	dht, err := New(host, nil, WithBootstrapPeers(config.BootstrapPeers))
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
 	err = dht.Start(ctx)
 	require.NoError(t, err)
-	
+
 	err = dht.Bootstrap(ctx)
 	// Bootstrap 在 started=true 时总是返回 nil（连接失败只是 continue，不返回错误）
 	// 代码位置: dht.go:577-597
@@ -85,11 +85,11 @@ func TestDHT_FindPeer(t *testing.T) {
 	host := newMockHost("test-peer")
 	dht, err := New(host, nil)
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
 	err = dht.Start(ctx)
 	require.NoError(t, err)
-	
+
 	// 测试查找不存在的节点
 	_, err = dht.FindPeer(ctx, "unknown-peer")
 	assert.Error(t, err)
@@ -100,20 +100,20 @@ func TestDHT_FindPeers(t *testing.T) {
 	host := newMockHost("test-peer")
 	dht, err := New(host, nil)
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
 	err = dht.Start(ctx)
 	require.NoError(t, err)
-	
+
 	ch, err := dht.FindPeers(ctx, "test-namespace")
 	require.NoError(t, err)
-	
+
 	// 收集结果
 	var peers []types.PeerInfo
 	for peer := range ch {
 		peers = append(peers, peer)
 	}
-	
+
 	// 初始状态应该为空
 	assert.Equal(t, 0, len(peers))
 }
@@ -123,11 +123,11 @@ func TestDHT_Advertise(t *testing.T) {
 	host := newMockHost("test-peer")
 	dht, err := New(host, nil)
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
 	err = dht.Start(ctx)
 	require.NoError(t, err)
-	
+
 	ttl, err := dht.Advertise(ctx, "test-namespace")
 	require.NoError(t, err)
 	assert.Greater(t, ttl, int64(0))
@@ -138,18 +138,18 @@ func TestDHT_Lifecycle(t *testing.T) {
 	host := newMockHost("test-peer")
 	dht, err := New(host, nil)
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
-	
+
 	// 启动
 	err = dht.Start(ctx)
 	require.NoError(t, err)
 	assert.True(t, dht.started.Load())
-	
+
 	// 重复启动应该失败
 	err = dht.Start(ctx)
 	assert.Error(t, err)
-	
+
 	// 停止
 	err = dht.Stop(ctx)
 	require.NoError(t, err)
@@ -161,12 +161,12 @@ func TestDHT_Concurrent(t *testing.T) {
 	host := newMockHost("test-peer")
 	dht, err := New(host, nil)
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
 	err = dht.Start(ctx)
 	require.NoError(t, err)
 	defer dht.Stop(ctx)
-	
+
 	// 并发访问路由表（测试 Race 安全性）
 	done := make(chan bool, 10)
 	for i := 0; i < 10; i++ {
@@ -177,7 +177,7 @@ func TestDHT_Concurrent(t *testing.T) {
 			done <- true
 		}()
 	}
-	
+
 	for i := 0; i < 10; i++ {
 		<-done
 	}
@@ -188,10 +188,10 @@ func TestDHT_Config(t *testing.T) {
 	config := DefaultConfig()
 	assert.Equal(t, 20, config.BucketSize)
 	assert.Equal(t, 5, config.Alpha) // v2.0.1: Alpha 从 3 增加到 5
-	
+
 	err := config.Validate()
 	assert.NoError(t, err)
-	
+
 	// 测试无效配置
 	config.BucketSize = 0
 	err = config.Validate()
@@ -214,22 +214,22 @@ func TestDHT_GetValue(t *testing.T) {
 	host := newMockHost("test-peer")
 	dht, err := New(host, nil)
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
 	err = dht.Start(ctx)
 	require.NoError(t, err)
 	defer dht.Stop(ctx)
-	
+
 	// 先存储值
 	key := "test-key"
 	value := []byte("test-value")
 	dht.valueStore.Put(key, value, dht.config.MaxRecordAge)
-	
+
 	// 测试获取存在的值
 	got, err := dht.GetValue(ctx, key)
 	require.NoError(t, err)
 	assert.Equal(t, value, got)
-	
+
 	// 测试获取不存在的值
 	_, err = dht.GetValue(ctx, "non-existent-key")
 	assert.Error(t, err)
@@ -240,19 +240,19 @@ func TestDHT_PutValue(t *testing.T) {
 	host := newMockHost("test-peer")
 	dht, err := New(host, nil)
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
 	err = dht.Start(ctx)
 	require.NoError(t, err)
 	defer dht.Stop(ctx)
-	
+
 	key := "test-key"
 	value := []byte("test-value")
-	
+
 	// 存储值
 	err = dht.PutValue(ctx, key, value)
 	require.NoError(t, err)
-	
+
 	// 验证本地存储
 	got, ok := dht.valueStore.Get(key)
 	assert.True(t, ok)
@@ -264,18 +264,18 @@ func TestDHT_Provide(t *testing.T) {
 	host := newMockHost("test-peer")
 	dht, err := New(host, nil)
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
 	err = dht.Start(ctx)
 	require.NoError(t, err)
 	defer dht.Stop(ctx)
-	
+
 	key := "test-content"
-	
+
 	// 注册 Provider
 	err = dht.Provide(ctx, key, false)
 	require.NoError(t, err)
-	
+
 	// 验证本地存储
 	// 注意：Provide 内部会使用 normalizeProviderKey 转换 key
 	// 需要使用相同的转换后的 key 进行查询
@@ -290,27 +290,27 @@ func TestDHT_FindProviders(t *testing.T) {
 	host := newMockHost("test-peer")
 	dht, err := New(host, nil)
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
 	err = dht.Start(ctx)
 	require.NoError(t, err)
 	defer dht.Stop(ctx)
-	
+
 	key := "test-content"
-	
+
 	// 先注册 Provider
 	err = dht.Provide(ctx, key, false)
 	require.NoError(t, err)
-	
+
 	// 查找 Providers
 	ch, err := dht.FindProviders(ctx, key)
 	require.NoError(t, err)
-	
+
 	var providers []types.PeerInfo
 	for p := range ch {
 		providers = append(providers, p)
 	}
-	
+
 	assert.Len(t, providers, 1)
 	assert.Equal(t, types.PeerID("test-peer"), providers[0].ID)
 }
@@ -320,14 +320,14 @@ func TestDHT_SetEventBus(t *testing.T) {
 	host := newMockHost("test-peer")
 	dht, err := New(host, nil)
 	require.NoError(t, err)
-	
+
 	// 初始为 nil
 	assert.Nil(t, dht.eventBus)
-	
+
 	// 设置 EventBus
 	mockEB := &mockEventBus{}
 	dht.SetEventBus(mockEB)
-	
+
 	assert.Equal(t, mockEB, dht.eventBus)
 }
 
@@ -336,10 +336,10 @@ func TestDHT_RoutingTable(t *testing.T) {
 	host := newMockHost("test-peer")
 	dht, err := New(host, nil)
 	require.NoError(t, err)
-	
+
 	rt := dht.RoutingTable()
 	require.NotNil(t, rt)
-	
+
 	// 初始大小为 0
 	assert.Equal(t, 0, rt.Size())
 }
@@ -349,33 +349,33 @@ func TestDHT_NotStarted(t *testing.T) {
 	host := newMockHost("test-peer")
 	dht, err := New(host, nil)
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
-	
+
 	// GetValue 应该失败
 	_, err = dht.GetValue(ctx, "key")
 	assert.ErrorIs(t, err, ErrNotStarted)
-	
+
 	// PutValue 应该失败
 	err = dht.PutValue(ctx, "key", []byte("value"))
 	assert.ErrorIs(t, err, ErrNotStarted)
-	
+
 	// FindPeer 应该失败
 	_, err = dht.FindPeer(ctx, "peer")
 	assert.ErrorIs(t, err, ErrNotStarted)
-	
+
 	// Provide 应该失败
 	err = dht.Provide(ctx, "key", false)
 	assert.ErrorIs(t, err, ErrNotStarted)
-	
+
 	// FindProviders 应该失败
 	_, err = dht.FindProviders(ctx, "key")
 	assert.ErrorIs(t, err, ErrNotStarted)
-	
+
 	// Bootstrap 应该失败
 	err = dht.Bootstrap(ctx)
 	assert.ErrorIs(t, err, ErrNotStarted)
-	
+
 	// Stop 应该失败
 	err = dht.Stop(ctx)
 	assert.ErrorIs(t, err, ErrNotStarted)
@@ -386,17 +386,17 @@ func TestDHT_UpdateAddrs(t *testing.T) {
 	host := newMockHost("test-peer")
 	dht, err := New(host, nil)
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
 	err = dht.Start(ctx)
 	require.NoError(t, err)
 	defer dht.Stop(ctx)
-	
+
 	// 先注册 Provider
 	key := "test-content"
 	err = dht.Provide(ctx, key, false)
 	require.NoError(t, err)
-	
+
 	// 更新地址
 	host.addrs = []string{"/ip4/192.168.1.1/tcp/4001"}
 	err = dht.UpdateAddrs(ctx)
@@ -406,7 +406,7 @@ func TestDHT_UpdateAddrs(t *testing.T) {
 // TestDHT_InvalidConfig 测试无效配置
 func TestDHT_InvalidConfig(t *testing.T) {
 	host := newMockHost("test-peer")
-	
+
 	// Alpha 为 0
 	_, err := New(host, nil, func(c *Config) { c.Alpha = 0 })
 	assert.Error(t, err)
@@ -465,6 +465,10 @@ func (m *mockHost) RemoveStreamHandler(protocolID string) {
 
 func (m *mockHost) NewStream(ctx context.Context, peerID string, protocolIDs ...string) (pkgif.Stream, error) {
 	return nil, nil
+}
+
+func (m *mockHost) NewStreamWithPriority(ctx context.Context, peerID string, protocolID string, priority int) (pkgif.Stream, error) {
+	return m.NewStream(ctx, peerID, protocolID)
 }
 
 func (m *mockHost) Peerstore() pkgif.Peerstore {

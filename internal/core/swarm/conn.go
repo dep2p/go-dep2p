@@ -3,7 +3,7 @@ package swarm
 import (
 	"context"
 	"sync"
-	
+
 	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
 	"github.com/dep2p/go-dep2p/pkg/types"
 )
@@ -12,10 +12,10 @@ import (
 type SwarmConn struct {
 	swarm *Swarm
 	conn  pkgif.Connection // 升级后的连接
-	
+
 	streamsMu sync.Mutex
 	streams   []pkgif.Stream
-	
+
 	closed bool
 }
 
@@ -58,16 +58,16 @@ func (c *SwarmConn) AcceptStream() (pkgif.Stream, error) {
 		return nil, ErrSwarmClosed
 	}
 	c.streamsMu.Unlock()
-	
+
 	// 委托给底层连接
 	stream, err := c.conn.AcceptStream()
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// 封装为 SwarmStream
 	swarmStream := newSwarmStream(c, stream)
-	
+
 	// 记录流
 	c.streamsMu.Lock()
 	// 再次检查，防止在等待 Accept 期间连接被关闭
@@ -78,39 +78,64 @@ func (c *SwarmConn) AcceptStream() (pkgif.Stream, error) {
 	}
 	c.streams = append(c.streams, swarmStream)
 	c.streamsMu.Unlock()
-	
+
 	return swarmStream, nil
 }
 
-// NewStream 创建新流
+// NewStream 创建新流（默认优先级）
 func (c *SwarmConn) NewStream(ctx context.Context) (pkgif.Stream, error) {
+	return c.NewStreamWithPriority(ctx, int(pkgif.StreamPriorityNormal))
+}
+
+// NewStreamWithPriority 创建新流（指定优先级）(v1.2 新增)
+//
+// 允许指定流优先级。在 QUIC 连接上，优先级会传递给底层传输层。
+// 在 TCP 连接上，优先级会被忽略。
+func (c *SwarmConn) NewStreamWithPriority(ctx context.Context, priority int) (pkgif.Stream, error) {
 	c.streamsMu.Lock()
 	defer c.streamsMu.Unlock()
-	
+
 	if c.closed {
 		return nil, ErrSwarmClosed
 	}
-	
+
 	// 创建底层流
-	stream, err := c.conn.NewStream(ctx)
+	var stream pkgif.Stream
+	var err error
+
+	if c.conn.SupportsStreamPriority() {
+		// 支持优先级：使用带优先级的方法
+		stream, err = c.conn.NewStreamWithPriority(ctx, priority)
+	} else {
+		// 不支持优先级：回退到普通方法
+		stream, err = c.conn.NewStream(ctx)
+	}
+
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// 封装为 SwarmStream
 	swarmStream := newSwarmStream(c, stream)
-	
+
 	// 记录流
 	c.streams = append(c.streams, swarmStream)
-	
+
 	return swarmStream, nil
+}
+
+// SupportsStreamPriority 检查连接是否支持流优先级 (v1.2 新增)
+//
+// 代理底层连接的能力检查。
+func (c *SwarmConn) SupportsStreamPriority() bool {
+	return c.conn.SupportsStreamPriority()
 }
 
 // GetStreams 获取所有流
 func (c *SwarmConn) GetStreams() []pkgif.Stream {
 	c.streamsMu.Lock()
 	defer c.streamsMu.Unlock()
-	
+
 	// 返回副本
 	streams := make([]pkgif.Stream, len(c.streams))
 	copy(streams, c.streams)
@@ -138,22 +163,22 @@ func (c *SwarmConn) Close() error {
 		return nil
 	}
 	c.closed = true
-	
+
 	// 关闭所有流
 	streams := c.streams
 	c.streams = nil
 	c.streamsMu.Unlock()
-	
+
 	for _, stream := range streams {
 		stream.Close()
 	}
-	
+
 	// 从 Swarm 移除
 	c.swarm.removeConn(c)
-	
+
 	// 触发断开事件
 	c.swarm.notifyDisconnected(c)
-	
+
 	// 关闭底层连接
 	return c.conn.Close()
 }
@@ -162,7 +187,7 @@ func (c *SwarmConn) Close() error {
 func (c *SwarmConn) removeStream(stream pkgif.Stream) {
 	c.streamsMu.Lock()
 	defer c.streamsMu.Unlock()
-	
+
 	for i, s := range c.streams {
 		if s == stream {
 			c.streams = append(c.streams[:i], c.streams[i+1:]...)

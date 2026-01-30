@@ -71,6 +71,20 @@ func (c *Connection) NewStream(_ context.Context) (pkgif.Stream, error) {
 	return nil, ErrNoMuxer
 }
 
+// NewStreamWithPriority 创建新流（指定优先级）(v1.2 新增)
+//
+// TCP 连接不支持流优先级，此方法直接调用 NewStream，忽略优先级参数。
+func (c *Connection) NewStreamWithPriority(ctx context.Context, _ int) (pkgif.Stream, error) {
+	return c.NewStream(ctx)
+}
+
+// SupportsStreamPriority 检查连接是否支持流优先级 (v1.2 新增)
+//
+// TCP 连接不支持流优先级。
+func (c *Connection) SupportsStreamPriority() bool {
+	return false
+}
+
 // AcceptStream 接受对方创建的流
 func (c *Connection) AcceptStream() (pkgif.Stream, error) {
 	return nil, ErrNoMuxer

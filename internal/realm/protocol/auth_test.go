@@ -65,11 +65,15 @@ func (h *mockHost) RemoveStreamHandler(protocolID string) {
 func (h *mockHost) NewStream(ctx context.Context, peerID string, protocolIDs ...string) (pkgif.Stream, error) {
 	// 创建一对连接的流
 	local, remote := newMockStreamPair(h.id, peerID, protocolIDs[0])
-	
+
 	// 将远程流发送给对方处理
 	h.streams <- remote
-	
+
 	return local, nil
+}
+
+func (h *mockHost) NewStreamWithPriority(ctx context.Context, peerID string, protocolID string, priority int) (pkgif.Stream, error) {
+	return h.NewStream(ctx, peerID, protocolID)
 }
 
 func (h *mockHost) Peerstore() pkgif.Peerstore {
@@ -277,6 +281,14 @@ func (c *mockConnection) RemoteMultiaddr() types.Multiaddr {
 
 func (c *mockConnection) NewStream(ctx context.Context) (pkgif.Stream, error) {
 	return nil, nil
+}
+
+func (c *mockConnection) NewStreamWithPriority(ctx context.Context, priority int) (pkgif.Stream, error) {
+	return c.NewStream(ctx)
+}
+
+func (c *mockConnection) SupportsStreamPriority() bool {
+	return false
 }
 
 func (c *mockConnection) AcceptStream() (pkgif.Stream, error) {

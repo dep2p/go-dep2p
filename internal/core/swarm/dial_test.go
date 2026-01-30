@@ -96,13 +96,13 @@ func Test_rankAddrs(t *testing.T) {
 // Test_rankAddrs_AllTypes 测试所有地址类型的排序
 func Test_rankAddrs_AllTypes(t *testing.T) {
 	addrs := []string{
-		"/ip4/8.8.8.8/tcp/4001",          // other tcp
-		"/ip4/8.8.8.8/udp/4001/quic",     // other quic
-		"/ip4/192.168.1.100/tcp/4001",    // local tcp
-		"/ip4/10.0.0.1/tcp/4001",         // local tcp (10.x)
-		"/ip4/172.16.0.1/tcp/4001",       // local tcp (172.16)
-		"/ip4/127.0.0.1/tcp/4001",        // localhost
-		"/ip4/1.2.3.4/udp/5000",          // other (neither tcp nor quic)
+		"/ip4/8.8.8.8/tcp/4001",       // other tcp
+		"/ip4/8.8.8.8/udp/4001/quic",  // other quic
+		"/ip4/192.168.1.100/tcp/4001", // local tcp
+		"/ip4/10.0.0.1/tcp/4001",      // local tcp (10.x)
+		"/ip4/172.16.0.1/tcp/4001",    // local tcp (172.16)
+		"/ip4/127.0.0.1/tcp/4001",     // localhost
+		"/ip4/1.2.3.4/udp/5000",       // other (neither tcp nor quic)
 	}
 
 	ranked := rankAddrs(addrs)
@@ -309,13 +309,17 @@ type testConnForDial struct {
 	closed     bool
 }
 
-func (m *testConnForDial) LocalPeer() types.PeerID             { return "local-peer" }
-func (m *testConnForDial) RemotePeer() types.PeerID            { return m.remotePeer }
-func (m *testConnForDial) LocalMultiaddr() types.Multiaddr     { return nil }
-func (m *testConnForDial) RemoteMultiaddr() types.Multiaddr    { return nil }
+func (m *testConnForDial) LocalPeer() types.PeerID          { return "local-peer" }
+func (m *testConnForDial) RemotePeer() types.PeerID         { return m.remotePeer }
+func (m *testConnForDial) LocalMultiaddr() types.Multiaddr  { return nil }
+func (m *testConnForDial) RemoteMultiaddr() types.Multiaddr { return nil }
 func (m *testConnForDial) NewStream(ctx context.Context) (pkgif.Stream, error) {
 	return nil, nil
 }
+func (m *testConnForDial) NewStreamWithPriority(ctx context.Context, priority int) (pkgif.Stream, error) {
+	return m.NewStream(ctx)
+}
+func (m *testConnForDial) SupportsStreamPriority() bool        { return false }
 func (m *testConnForDial) AcceptStream() (pkgif.Stream, error) { return nil, nil }
 func (m *testConnForDial) GetStreams() []pkgif.Stream          { return nil }
 func (m *testConnForDial) IsClosed() bool                      { return m.closed }
@@ -354,7 +358,7 @@ func containsString(s, substr string) bool {
 }
 
 // ============================================================================
-//                     
+//
 // ============================================================================
 
 // Test_filterRelayAddrs 测试 Relay 地址过滤

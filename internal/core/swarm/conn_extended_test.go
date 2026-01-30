@@ -109,6 +109,14 @@ func (m *mockConnForTest) NewStream(ctx context.Context) (pkgif.Stream, error) {
 	return nil, ErrSwarmClosed
 }
 
+func (m *mockConnForTest) NewStreamWithPriority(ctx context.Context, priority int) (pkgif.Stream, error) {
+	return m.NewStream(ctx)
+}
+
+func (m *mockConnForTest) SupportsStreamPriority() bool {
+	return false
+}
+
 func (m *mockConnForTest) AcceptStream() (pkgif.Stream, error) {
 	return nil, ErrSwarmClosed
 }

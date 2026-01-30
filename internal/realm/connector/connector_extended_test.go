@@ -303,17 +303,17 @@ type mockHost struct {
 	connectFunc func(ctx context.Context, peerID string, addrs []string) error
 }
 
-func (m *mockHost) ID() string                                 { return "mock-host" }
-func (m *mockHost) Addrs() []string                            { return []string{"/ip4/127.0.0.1/tcp/4001"} }
-func (m *mockHost) Listen(addrs ...string) error               { return nil }
-func (m *mockHost) Close() error                               { return nil }
-func (m *mockHost) AdvertisedAddrs() []string                  { return m.Addrs() }
-func (m *mockHost) ShareableAddrs() []string                   { return nil }
-func (m *mockHost) HolePunchAddrs() []string                   { return nil }
-func (m *mockHost) Peerstore() pkgif.Peerstore                 { return nil }
-func (m *mockHost) EventBus() pkgif.EventBus                   { return nil }
-func (m *mockHost) SetStreamHandler(string, pkgif.StreamHandler) {}
-func (m *mockHost) RemoveStreamHandler(string)                 {}
+func (m *mockHost) ID() string                                               { return "mock-host" }
+func (m *mockHost) Addrs() []string                                          { return []string{"/ip4/127.0.0.1/tcp/4001"} }
+func (m *mockHost) Listen(addrs ...string) error                             { return nil }
+func (m *mockHost) Close() error                                             { return nil }
+func (m *mockHost) AdvertisedAddrs() []string                                { return m.Addrs() }
+func (m *mockHost) ShareableAddrs() []string                                 { return nil }
+func (m *mockHost) HolePunchAddrs() []string                                 { return nil }
+func (m *mockHost) Peerstore() pkgif.Peerstore                               { return nil }
+func (m *mockHost) EventBus() pkgif.EventBus                                 { return nil }
+func (m *mockHost) SetStreamHandler(string, pkgif.StreamHandler)             {}
+func (m *mockHost) RemoveStreamHandler(string)                               {}
 func (m *mockHost) SetReachabilityCoordinator(pkgif.ReachabilityCoordinator) {}
 
 func (m *mockHost) Network() pkgif.Swarm { return nil }
@@ -331,6 +331,10 @@ func (m *mockHost) Connect(ctx context.Context, peerID string, addrs []string) e
 
 func (m *mockHost) NewStream(ctx context.Context, peerID string, protocolIDs ...string) (pkgif.Stream, error) {
 	return nil, errors.New("mock newstream not implemented")
+}
+
+func (m *mockHost) NewStreamWithPriority(ctx context.Context, peerID string, protocolID string, priority int) (pkgif.Stream, error) {
+	return m.NewStream(ctx, peerID, protocolID)
 }
 
 // mockAddrSyncer 是地址同步器的 mock

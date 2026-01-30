@@ -240,8 +240,17 @@ func (s *Swarm) ClosePeer(peerID string) error {
 	return nil
 }
 
-// NewStream 创建到指定节点的新流
+// NewStream 创建到指定节点的新流（默认优先级）
 func (s *Swarm) NewStream(ctx context.Context, peerID string) (pkgif.Stream, error) {
+	// 默认使用普通优先级
+	return s.NewStreamWithPriority(ctx, peerID, int(pkgif.StreamPriorityNormal))
+}
+
+// NewStreamWithPriority 创建到指定节点的新流（指定优先级）(v1.2 新增)
+//
+// 允许指定流优先级。在 QUIC 连接上，优先级会传递给底层传输层。
+// 在 TCP 连接上，优先级会被忽略（优雅降级）。
+func (s *Swarm) NewStreamWithPriority(ctx context.Context, peerID string, priority int) (pkgif.Stream, error) {
 	if s.closed.Load() {
 		return nil, ErrSwarmClosed
 	}
@@ -261,7 +270,19 @@ func (s *Swarm) NewStream(ctx context.Context, peerID string) (pkgif.Stream, err
 			s.removeConn(conn)
 			continue
 		}
-		stream, err := conn.NewStream(ctx)
+
+		// 尝试使用带优先级的流创建
+		var stream pkgif.Stream
+		var err error
+
+		if conn.SupportsStreamPriority() {
+			// QUIC 连接：使用优先级
+			stream, err = conn.NewStreamWithPriority(ctx, priority)
+		} else {
+			// TCP/其他连接：忽略优先级
+			stream, err = conn.NewStream(ctx)
+		}
+
 		if err == nil {
 			return stream, nil
 		}

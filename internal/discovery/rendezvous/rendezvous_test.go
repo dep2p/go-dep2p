@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/dep2p/go-dep2p/pkg/lib/crypto"
 	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
+	"github.com/dep2p/go-dep2p/pkg/lib/crypto"
 	"github.com/dep2p/go-dep2p/pkg/types"
 )
 
@@ -401,6 +401,10 @@ func (m *mockHost) RemoveStreamHandler(protocolID string) {
 
 func (m *mockHost) NewStream(ctx context.Context, peerID string, protocolIDs ...string) (pkgif.Stream, error) {
 	return nil, nil
+}
+
+func (m *mockHost) NewStreamWithPriority(ctx context.Context, peerID string, protocolID string, priority int) (pkgif.Stream, error) {
+	return m.NewStream(ctx, peerID, protocolID)
 }
 
 func (m *mockHost) Peerstore() pkgif.Peerstore {

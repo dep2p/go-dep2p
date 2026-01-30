@@ -654,9 +654,9 @@ type mockHostForGateway struct {
 	newStreamCalls []string
 }
 
-func (m *mockHostForGateway) ID() string                                          { return m.id }
-func (m *mockHostForGateway) Addrs() []string                                     { return m.addrs }
-func (m *mockHostForGateway) Listen(addrs ...string) error                        { return nil }
+func (m *mockHostForGateway) ID() string                   { return m.id }
+func (m *mockHostForGateway) Addrs() []string              { return m.addrs }
+func (m *mockHostForGateway) Listen(addrs ...string) error { return nil }
 func (m *mockHostForGateway) Connect(ctx context.Context, peerID string, addrs []string) error {
 	m.conns[peerID] = true
 	return nil
@@ -670,12 +670,15 @@ func (m *mockHostForGateway) NewStream(ctx context.Context, peerID string, proto
 	}
 	return nil, fmt.Errorf("no stream available")
 }
-func (m *mockHostForGateway) Peerstore() pkgif.Peerstore               { return nil }
-func (m *mockHostForGateway) EventBus() pkgif.EventBus                 { return nil }
-func (m *mockHostForGateway) Close() error                             { return nil }
-func (m *mockHostForGateway) AdvertisedAddrs() []string                { return m.addrs }
-func (m *mockHostForGateway) ShareableAddrs() []string                 { return nil }
-func (m *mockHostForGateway) HolePunchAddrs() []string                 { return nil }
+func (m *mockHostForGateway) NewStreamWithPriority(ctx context.Context, peerID string, protocolID string, priority int) (pkgif.Stream, error) {
+	return m.NewStream(ctx, peerID, protocolID)
+}
+func (m *mockHostForGateway) Peerstore() pkgif.Peerstore                                 { return nil }
+func (m *mockHostForGateway) EventBus() pkgif.EventBus                                   { return nil }
+func (m *mockHostForGateway) Close() error                                               { return nil }
+func (m *mockHostForGateway) AdvertisedAddrs() []string                                  { return m.addrs }
+func (m *mockHostForGateway) ShareableAddrs() []string                                   { return nil }
+func (m *mockHostForGateway) HolePunchAddrs() []string                                   { return nil }
 func (m *mockHostForGateway) SetReachabilityCoordinator(c pkgif.ReachabilityCoordinator) {}
 
 func (m *mockHostForGateway) Network() pkgif.Swarm { return nil }
@@ -718,16 +721,16 @@ func (m *mockStreamForGateway) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (m *mockStreamForGateway) Close() error                     { m.closed = true; return nil }
-func (m *mockStreamForGateway) Reset() error                     { m.closed = true; return nil }
-func (m *mockStreamForGateway) Protocol() string                 { return "/test/1.0.0" }
-func (m *mockStreamForGateway) SetProtocol(protocol string)      {}
-func (m *mockStreamForGateway) Conn() pkgif.Connection           { return nil }
-func (m *mockStreamForGateway) IsClosed() bool                   { return m.closed }
-func (m *mockStreamForGateway) CloseWrite() error                { return nil }
-func (m *mockStreamForGateway) CloseRead() error                 { return nil }
-func (m *mockStreamForGateway) SetDeadline(t time.Time) error    { return nil }
+func (m *mockStreamForGateway) Close() error                       { m.closed = true; return nil }
+func (m *mockStreamForGateway) Reset() error                       { m.closed = true; return nil }
+func (m *mockStreamForGateway) Protocol() string                   { return "/test/1.0.0" }
+func (m *mockStreamForGateway) SetProtocol(protocol string)        {}
+func (m *mockStreamForGateway) Conn() pkgif.Connection             { return nil }
+func (m *mockStreamForGateway) IsClosed() bool                     { return m.closed }
+func (m *mockStreamForGateway) CloseWrite() error                  { return nil }
+func (m *mockStreamForGateway) CloseRead() error                   { return nil }
+func (m *mockStreamForGateway) SetDeadline(t time.Time) error      { return nil }
 func (m *mockStreamForGateway) SetReadDeadline(t time.Time) error  { return nil }
 func (m *mockStreamForGateway) SetWriteDeadline(t time.Time) error { return nil }
-func (m *mockStreamForGateway) Stat() types.StreamStat           { return types.StreamStat{} }
-func (m *mockStreamForGateway) State() types.StreamState         { return types.StreamStateOpen }
+func (m *mockStreamForGateway) Stat() types.StreamStat             { return types.StreamStat{} }
+func (m *mockStreamForGateway) State() types.StreamState           { return types.StreamStateOpen }

@@ -128,15 +128,27 @@ func (s *Service) Stop(_ context.Context) error {
 	return nil
 }
 
-// Open 打开到指定节点的流
+// Open 打开到指定节点的流（默认优先级）
 func (s *Service) Open(ctx context.Context, peerID string, protocol string) (interfaces.BiStream, error) {
+	return s.OpenWithOptions(ctx, peerID, protocol, interfaces.DefaultStreamOptions())
+}
+
+// OpenWithOptions 打开到指定节点的流（指定选项）(v1.2 新增)
+//
+// 允许指定流选项，如优先级。
+// 在 QUIC 连接上，优先级会传递给底层传输层，实现流级别的 QoS。
+// 在 TCP 连接上，优先级选项会被忽略（优雅降级）。
+func (s *Service) OpenWithOptions(ctx context.Context, peerID string, protocol string, opts interfaces.StreamOptions) (interfaces.BiStream, error) {
 	s.mu.RLock()
 	if !s.started {
 		s.mu.RUnlock()
 		return nil, ErrNotStarted
 	}
-	
-	logger.Debug("打开流", "peerID", log.TruncateID(peerID, 8), "protocol", protocol)
+
+	logger.Debug("打开流",
+		"peerID", log.TruncateID(peerID, 8),
+		"protocol", protocol,
+		"priority", opts.Priority.String())
 	s.mu.RUnlock()
 
 	// 验证协议
@@ -186,8 +198,8 @@ func (s *Service) Open(ctx context.Context, peerID string, protocol string) (int
 		return nil, ErrNoRealm
 	}
 
-	// 打开流
-	stream, err := s.host.NewStream(ctx, peerID, fullProtocol)
+	// 打开流（使用优先级）
+	stream, err := s.host.NewStreamWithPriority(ctx, peerID, fullProtocol, int(opts.Priority))
 	if err != nil {
 		return nil, err
 	}

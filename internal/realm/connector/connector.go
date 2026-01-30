@@ -8,8 +8,8 @@ import (
 
 	"github.com/dep2p/go-dep2p/internal/core/nat/holepunch"
 	pkgif "github.com/dep2p/go-dep2p/pkg/interfaces"
-	"github.com/dep2p/go-dep2p/pkg/types"
 	"github.com/dep2p/go-dep2p/pkg/lib/log"
+	"github.com/dep2p/go-dep2p/pkg/types"
 )
 
 var logger = log.Logger("realm/connector")
@@ -147,7 +147,7 @@ func (c *Connector) Connect(ctx context.Context, target string) (*ConnectResult,
 	if c.closed.Load() {
 		return nil, ErrConnectorClosed
 	}
-	
+
 	logger.Debug("连接节点", "target", log.TruncateID(target, 8))
 
 	if target == "" {
@@ -175,7 +175,7 @@ func (c *Connector) Connect(ctx context.Context, target string) (*ConnectResult,
 		logger.Debug("使用自动策略", "target", log.TruncateID(target, 8))
 		result, err = c.connectAuto(ctx, target, startTime, &attempts)
 	}
-	
+
 	if err != nil {
 		logger.Warn("连接失败", "target", log.TruncateID(target, 8), "strategy", c.config.Strategy, "attempts", attempts, "error", err)
 	} else {
@@ -248,10 +248,10 @@ func (c *Connector) ConnectWithHint(ctx context.Context, target string, hints []
 //
 // v2.0 统一 Relay 架构：
 //
-//	1. 地址解析：Peerstore → MemberList → DHT → Relay 地址簿
-//	2. 直连尝试：有地址时优先直连
-//	3. 打洞尝试：直连失败时尝试 NAT 穿透
-//	4. Relay 兜底：直连和打洞失败时，通过 RelayDialer 回退
+//  1. 地址解析：Peerstore → MemberList → DHT → Relay 地址簿
+//  2. 直连尝试：有地址时优先直连
+//  3. 打洞尝试：直连失败时尝试 NAT 穿透
+//  4. Relay 兜底：直连和打洞失败时，通过 RelayDialer 回退
 func (c *Connector) connectAuto(ctx context.Context, target string, startTime time.Time, attempts *int) (*ConnectResult, error) {
 	// 1. 解析地址
 	var addrs []types.Multiaddr
@@ -476,6 +476,14 @@ func (w *connWrapper) RemoteMultiaddr() types.Multiaddr {
 
 func (w *connWrapper) NewStream(_ context.Context) (pkgif.Stream, error) {
 	return nil, fmt.Errorf("not implemented: use host.NewStream instead")
+}
+
+func (w *connWrapper) NewStreamWithPriority(_ context.Context, _ int) (pkgif.Stream, error) {
+	return nil, fmt.Errorf("not implemented: use host.NewStreamWithPriority instead")
+}
+
+func (w *connWrapper) SupportsStreamPriority() bool {
+	return false
 }
 
 func (w *connWrapper) AcceptStream() (pkgif.Stream, error) {

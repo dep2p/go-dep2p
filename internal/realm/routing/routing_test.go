@@ -595,9 +595,9 @@ type mockHostForRouting struct {
 	stream *mockStreamForRouting
 }
 
-func (m *mockHostForRouting) ID() string                                          { return m.id }
-func (m *mockHostForRouting) Addrs() []string                                     { return []string{"/ip4/127.0.0.1/tcp/4001"} }
-func (m *mockHostForRouting) Listen(addrs ...string) error                        { return nil }
+func (m *mockHostForRouting) ID() string                   { return m.id }
+func (m *mockHostForRouting) Addrs() []string              { return []string{"/ip4/127.0.0.1/tcp/4001"} }
+func (m *mockHostForRouting) Listen(addrs ...string) error { return nil }
 func (m *mockHostForRouting) Connect(ctx context.Context, peerID string, addrs []string) error {
 	return nil
 }
@@ -609,12 +609,15 @@ func (m *mockHostForRouting) NewStream(ctx context.Context, peerID string, proto
 	}
 	return nil, fmt.Errorf("no stream available")
 }
-func (m *mockHostForRouting) Peerstore() pkgif.Peerstore               { return nil }
-func (m *mockHostForRouting) EventBus() pkgif.EventBus                 { return nil }
-func (m *mockHostForRouting) Close() error                             { return nil }
-func (m *mockHostForRouting) AdvertisedAddrs() []string                { return nil }
-func (m *mockHostForRouting) ShareableAddrs() []string                 { return nil }
-func (m *mockHostForRouting) HolePunchAddrs() []string                 { return nil }
+func (m *mockHostForRouting) NewStreamWithPriority(ctx context.Context, peerID string, protocolID string, priority int) (pkgif.Stream, error) {
+	return m.NewStream(ctx, peerID, protocolID)
+}
+func (m *mockHostForRouting) Peerstore() pkgif.Peerstore                                 { return nil }
+func (m *mockHostForRouting) EventBus() pkgif.EventBus                                   { return nil }
+func (m *mockHostForRouting) Close() error                                               { return nil }
+func (m *mockHostForRouting) AdvertisedAddrs() []string                                  { return nil }
+func (m *mockHostForRouting) ShareableAddrs() []string                                   { return nil }
+func (m *mockHostForRouting) HolePunchAddrs() []string                                   { return nil }
 func (m *mockHostForRouting) SetReachabilityCoordinator(c pkgif.ReachabilityCoordinator) {}
 
 func (m *mockHostForRouting) Network() pkgif.Swarm { return nil }
@@ -649,16 +652,16 @@ func (m *mockStreamForRouting) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (m *mockStreamForRouting) Close() error                     { m.closed = true; return nil }
-func (m *mockStreamForRouting) Reset() error                     { m.closed = true; return nil }
-func (m *mockStreamForRouting) Protocol() string                 { return "/test/1.0.0" }
-func (m *mockStreamForRouting) SetProtocol(protocol string)      {}
-func (m *mockStreamForRouting) Conn() pkgif.Connection           { return nil }
-func (m *mockStreamForRouting) IsClosed() bool                   { return m.closed }
-func (m *mockStreamForRouting) CloseWrite() error                { return nil }
-func (m *mockStreamForRouting) CloseRead() error                 { return nil }
-func (m *mockStreamForRouting) SetDeadline(t time.Time) error    { return nil }
+func (m *mockStreamForRouting) Close() error                       { m.closed = true; return nil }
+func (m *mockStreamForRouting) Reset() error                       { m.closed = true; return nil }
+func (m *mockStreamForRouting) Protocol() string                   { return "/test/1.0.0" }
+func (m *mockStreamForRouting) SetProtocol(protocol string)        {}
+func (m *mockStreamForRouting) Conn() pkgif.Connection             { return nil }
+func (m *mockStreamForRouting) IsClosed() bool                     { return m.closed }
+func (m *mockStreamForRouting) CloseWrite() error                  { return nil }
+func (m *mockStreamForRouting) CloseRead() error                   { return nil }
+func (m *mockStreamForRouting) SetDeadline(t time.Time) error      { return nil }
 func (m *mockStreamForRouting) SetReadDeadline(t time.Time) error  { return nil }
 func (m *mockStreamForRouting) SetWriteDeadline(t time.Time) error { return nil }
-func (m *mockStreamForRouting) Stat() types.StreamStat   { return types.StreamStat{} }
-func (m *mockStreamForRouting) State() types.StreamState { return types.StreamStateOpen }
+func (m *mockStreamForRouting) Stat() types.StreamStat             { return types.StreamStat{} }
+func (m *mockStreamForRouting) State() types.StreamState           { return types.StreamStateOpen }

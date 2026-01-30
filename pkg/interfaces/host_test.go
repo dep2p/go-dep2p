@@ -57,6 +57,10 @@ func (m *MockHost) NewStream(ctx context.Context, peerID string, protocolIDs ...
 	return NewMockStream(), nil
 }
 
+func (m *MockHost) NewStreamWithPriority(ctx context.Context, peerID string, protocolID string, priority int) (interfaces.Stream, error) {
+	return m.NewStream(ctx, peerID, protocolID)
+}
+
 func (m *MockHost) Peerstore() interfaces.Peerstore {
 	return nil
 }

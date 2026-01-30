@@ -49,8 +49,19 @@ type Swarm interface {
 	// ClosePeer 关闭与指定节点的所有连接
 	ClosePeer(peerID string) error
 
-	// NewStream 创建到指定节点的新流
+	// NewStream 创建到指定节点的新流（默认优先级）
 	NewStream(ctx context.Context, peerID string) (Stream, error)
+
+	// NewStreamWithPriority 创建到指定节点的新流（指定优先级）(v1.2 新增)
+	//
+	// 允许指定流优先级。在 QUIC 连接上，优先级会传递给底层传输层。
+	// 在 TCP 连接上，优先级会被忽略（优雅降级）。
+	//
+	// 参数:
+	//   - ctx: 上下文
+	//   - peerID: 目标节点 ID
+	//   - priority: 流优先级 (0=Critical, 1=High, 2=Normal, 3=Low)
+	NewStreamWithPriority(ctx context.Context, peerID string, priority int) (Stream, error)
 
 	// SetInboundStreamHandler 设置入站流处理器
 	//

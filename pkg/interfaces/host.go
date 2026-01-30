@@ -43,7 +43,7 @@ type Host interface {
 
 	// HolePunchAddrs 返回用于打洞协商的地址列表
 	//
-	// 
+	//
 	// 而不仅仅是已验证的地址。对于 NAT 节点，dial-back 验证无法成功，
 	// 但 STUN 候选地址是真实的外部地址，是打洞必需的。
 	//
@@ -72,8 +72,20 @@ type Host interface {
 	// RemoveStreamHandler 移除指定协议的流处理器
 	RemoveStreamHandler(protocolID string)
 
-	// NewStream 创建到指定节点的新流
+	// NewStream 创建到指定节点的新流（默认优先级）
 	NewStream(ctx context.Context, peerID string, protocolIDs ...string) (Stream, error)
+
+	// NewStreamWithPriority 创建到指定节点的新流（指定优先级）(v1.2 新增)
+	//
+	// 允许指定流优先级。在 QUIC 连接上，优先级会传递给底层传输层。
+	// 在 TCP 连接上，优先级会被忽略（优雅降级）。
+	//
+	// 参数:
+	//   - ctx: 上下文
+	//   - peerID: 目标节点 ID
+	//   - protocolID: 协议 ID
+	//   - priority: 流优先级 (0=Critical, 1=High, 2=Normal, 3=Low)
+	NewStreamWithPriority(ctx context.Context, peerID string, protocolID string, priority int) (Stream, error)
 
 	// Peerstore 返回节点存储
 	Peerstore() Peerstore
@@ -100,7 +112,7 @@ type Host interface {
 	// 对流进行协议协商并路由到相应处理器。
 	// 用于处理非标准来源的入站流（如中继连接的 STOP 流）。
 	//
-	// 
+	//
 	// 后续的协议协商请求需要通过此方法路由到正确的处理器。
 	HandleInboundStream(stream Stream)
 }

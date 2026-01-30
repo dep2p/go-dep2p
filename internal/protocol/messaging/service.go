@@ -303,6 +303,244 @@ func (s *Service) Close() error {
 	return s.Stop(context.Background())
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+//                         批量发送 API 实现 (v1.1 新增)
+// ════════════════════════════════════════════════════════════════════════════
+
+// SendToMany 批量发送消息（并行执行）
+//
+// 向多个节点发送相同消息，内部并行化以最小化总延迟。
+// 返回每个节点的发送结果。
+func (s *Service) SendToMany(ctx context.Context, peers []string, protocol string, data []byte) []interfaces.SendResult {
+	if len(peers) == 0 {
+		return nil
+	}
+
+	s.mu.RLock()
+	if !s.started {
+		s.mu.RUnlock()
+		// 返回所有节点的错误结果
+		results := make([]interfaces.SendResult, len(peers))
+		for i, peer := range peers {
+			results[i] = interfaces.SendResult{
+				PeerID: peer,
+				Error:  ErrNotStarted,
+			}
+		}
+		return results
+	}
+	s.mu.RUnlock()
+
+	// 验证协议
+	if err := validateProtocol(protocol); err != nil {
+		results := make([]interfaces.SendResult, len(peers))
+		for i, peer := range peers {
+			results[i] = interfaces.SendResult{
+				PeerID: peer,
+				Error:  err,
+			}
+		}
+		return results
+	}
+
+	logger.Debug("批量发送消息",
+		"peerCount", len(peers),
+		"protocol", protocol,
+		"dataSize", len(data))
+
+	results := make([]interfaces.SendResult, len(peers))
+
+	var wg sync.WaitGroup
+	for i, peer := range peers {
+		wg.Add(1)
+		go func(idx int, peerID string) {
+			defer wg.Done()
+
+			start := time.Now()
+			resp, err := s.Send(ctx, peerID, protocol, data)
+
+			results[idx] = interfaces.SendResult{
+				PeerID:   peerID,
+				Response: resp,
+				Error:    err,
+				Latency:  time.Since(start),
+			}
+		}(i, peer)
+	}
+
+	wg.Wait()
+
+	// 统计结果
+	successCount := 0
+	for _, r := range results {
+		if r.Error == nil {
+			successCount++
+		}
+	}
+
+	logger.Debug("批量发送完成",
+		"total", len(peers),
+		"success", successCount,
+		"failed", len(peers)-successCount)
+
+	return results
+}
+
+// Broadcast 广播消息给所有 Realm 成员
+//
+// 向 Realm 内所有成员（排除自己）发送消息。
+// 内部并行化以最小化总延迟。
+func (s *Service) Broadcast(ctx context.Context, protocol string, data []byte) *interfaces.BroadcastResult {
+	s.mu.RLock()
+	if !s.started {
+		s.mu.RUnlock()
+		return &interfaces.BroadcastResult{
+			TotalCount:   0,
+			SuccessCount: 0,
+			FailedCount:  0,
+			Results:      nil,
+		}
+	}
+	s.mu.RUnlock()
+
+	// 获取成员列表
+	peers := s.getBroadcastTargets()
+	if len(peers) == 0 {
+		logger.Debug("广播无目标节点")
+		return &interfaces.BroadcastResult{
+			TotalCount:   0,
+			SuccessCount: 0,
+			FailedCount:  0,
+			Results:      nil,
+		}
+	}
+
+	logger.Debug("开始广播",
+		"targetCount", len(peers),
+		"protocol", protocol,
+		"dataSize", len(data))
+
+	// 使用 SendToMany 执行实际发送
+	results := s.SendToMany(ctx, peers, protocol, data)
+
+	// 统计结果
+	successCount := 0
+	failedCount := 0
+	for _, r := range results {
+		if r.Error == nil {
+			successCount++
+		} else {
+			failedCount++
+		}
+	}
+
+	broadcastResult := &interfaces.BroadcastResult{
+		TotalCount:   len(peers),
+		SuccessCount: successCount,
+		FailedCount:  failedCount,
+		Results:      results,
+	}
+
+	logger.Info("广播完成",
+		"total", broadcastResult.TotalCount,
+		"success", broadcastResult.SuccessCount,
+		"failed", broadcastResult.FailedCount)
+
+	return broadcastResult
+}
+
+// BroadcastAsync 异步广播（立即返回）
+//
+// 启动广播但不等待完成，适用于火忘场景。
+// 返回一个 channel，可用于异步接收每个节点的发送结果。
+func (s *Service) BroadcastAsync(ctx context.Context, protocol string, data []byte) <-chan interfaces.SendResult {
+	// 创建缓冲 channel（避免阻塞发送者）
+	resultsCh := make(chan interfaces.SendResult, 100)
+
+	go func() {
+		defer close(resultsCh)
+
+		s.mu.RLock()
+		if !s.started {
+			s.mu.RUnlock()
+			return
+		}
+		s.mu.RUnlock()
+
+		// 获取成员列表
+		peers := s.getBroadcastTargets()
+		if len(peers) == 0 {
+			return
+		}
+
+		logger.Debug("开始异步广播",
+			"targetCount", len(peers),
+			"protocol", protocol,
+			"dataSize", len(data))
+
+		var wg sync.WaitGroup
+		for _, peer := range peers {
+			wg.Add(1)
+			go func(peerID string) {
+				defer wg.Done()
+
+				start := time.Now()
+				resp, err := s.Send(ctx, peerID, protocol, data)
+
+				result := interfaces.SendResult{
+					PeerID:   peerID,
+					Response: resp,
+					Error:    err,
+					Latency:  time.Since(start),
+				}
+
+				// 非阻塞发送到 channel
+				select {
+				case resultsCh <- result:
+				case <-ctx.Done():
+					return
+				}
+			}(peer)
+		}
+
+		wg.Wait()
+	}()
+
+	return resultsCh
+}
+
+// getBroadcastTargets 获取广播目标节点列表（排除自己）
+func (s *Service) getBroadcastTargets() []string {
+	localID := s.host.ID()
+	var members []string
+
+	// Realm-bound 模式
+	if s.realm != nil {
+		allMembers := s.realm.Members()
+		for _, m := range allMembers {
+			if m != localID {
+				members = append(members, m)
+			}
+		}
+		return members
+	}
+
+	// 全局模式：使用 current Realm
+	if s.realmMgr != nil {
+		currentRealm := s.realmMgr.Current()
+		if currentRealm != nil {
+			allMembers := currentRealm.Members()
+			for _, m := range allMembers {
+				if m != localID {
+					members = append(members, m)
+				}
+			}
+		}
+	}
+
+	return members
+}
+
 // sendRequest 发送请求并等待响应
 func (s *Service) sendRequest(ctx context.Context, peerID, protocol string, req *interfaces.Request) (*interfaces.Response, error) {
 	// 应用超时

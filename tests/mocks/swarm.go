@@ -15,25 +15,25 @@ type MockSwarm struct {
 	mu sync.RWMutex
 
 	// 基本属性
-	LocalPeerID   string
+	LocalPeerID    string
 	ListenAddrsVal []string
-	PeersVal      []string
-	ConnsVal      []interfaces.Connection
+	PeersVal       []string
+	ConnsVal       []interfaces.Connection
 
 	// 可覆盖的方法
-	LocalPeerFunc            func() string
-	ListenFunc               func(addrs ...string) error
-	ListenAddrsFunc          func() []string
-	PeersFunc                func() []string
-	ConnsFunc                func() []interfaces.Connection
-	ConnsToPeerFunc          func(peerID string) []interfaces.Connection
-	ConnectednessFunc        func(peerID string) interfaces.Connectedness
-	DialPeerFunc             func(ctx context.Context, peerID string) (interfaces.Connection, error)
-	ClosePeerFunc            func(peerID string) error
-	NewStreamFunc            func(ctx context.Context, peerID string) (interfaces.Stream, error)
+	LocalPeerFunc               func() string
+	ListenFunc                  func(addrs ...string) error
+	ListenAddrsFunc             func() []string
+	PeersFunc                   func() []string
+	ConnsFunc                   func() []interfaces.Connection
+	ConnsToPeerFunc             func(peerID string) []interfaces.Connection
+	ConnectednessFunc           func(peerID string) interfaces.Connectedness
+	DialPeerFunc                func(ctx context.Context, peerID string) (interfaces.Connection, error)
+	ClosePeerFunc               func(peerID string) error
+	NewStreamFunc               func(ctx context.Context, peerID string) (interfaces.Stream, error)
 	SetInboundStreamHandlerFunc func(handler interfaces.InboundStreamHandler)
-	NotifyFunc               func(notifier interfaces.SwarmNotifier)
-	CloseFunc                func() error
+	NotifyFunc                  func(notifier interfaces.SwarmNotifier)
+	CloseFunc                   func() error
 
 	// 内部状态
 	inboundHandler interfaces.InboundStreamHandler
@@ -182,6 +182,11 @@ func (m *MockSwarm) ClosePeer(peerID string) error {
 
 // NewStream 创建到指定节点的新流
 func (m *MockSwarm) NewStream(ctx context.Context, peerID string) (interfaces.Stream, error) {
+	return m.NewStreamWithPriority(ctx, peerID, int(interfaces.StreamPriorityNormal))
+}
+
+// NewStreamWithPriority 创建带优先级的流 (v1.2 新增)
+func (m *MockSwarm) NewStreamWithPriority(ctx context.Context, peerID string, _ int) (interfaces.Stream, error) {
 	m.mu.Lock()
 	m.NewStreamCalls = append(m.NewStreamCalls, peerID)
 	m.mu.Unlock()

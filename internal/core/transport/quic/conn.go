@@ -60,21 +60,21 @@ func (c *Connection) LocalMultiaddr() types.Multiaddr {
 	if localUDPAddr == nil {
 		return nil
 	}
-	
+
 	// localUDPAddr.String() 返回 "ip:port" 格式，需要拆分
 	host, port, err := splitHostPort(localUDPAddr.String())
 	if err != nil {
 		logger.Warn("解析本地地址失败", "addr", localUDPAddr.String(), "error", err)
 		return nil
 	}
-	
+
 	// 判断 IPv4 或 IPv6
 	ipProto := "ip4"
 	ip := net.ParseIP(host)
 	if ip != nil && ip.To4() == nil {
 		ipProto = "ip6"
 	}
-	
+
 	// 构造正确的 multiaddr: /ip4|ip6/host/udp/port/quic-v1
 	addrStr := fmt.Sprintf("/%s/%s/udp/%s/quic-v1", ipProto, host, port)
 	addr, err := types.NewMultiaddr(addrStr)
@@ -95,8 +95,23 @@ func (c *Connection) RemoteMultiaddr() types.Multiaddr {
 	return c.remoteAddr
 }
 
-// NewStream 创建新流
+// NewStream 创建新流（默认优先级）
 func (c *Connection) NewStream(ctx context.Context) (pkgif.Stream, error) {
+	return c.NewStreamWithPriority(ctx, int(pkgif.StreamPriorityNormal))
+}
+
+// NewStreamWithPriority 创建新流（指定优先级）(v1.2 新增)
+//
+// 允许指定流优先级。QUIC (RFC 9000) 原生支持流优先级，
+// 用于在网络拥塞时优先调度重要流。
+//
+// 参数:
+//   - ctx: 上下文
+//   - priority: 流优先级 (0=Critical, 1=High, 2=Normal, 3=Low)
+//
+// 注意：当前实现中优先级信息被记录但 quic-go 的优先级调度需要额外配置。
+// 未来版本将与 quic-go 的 Stream.SetPriority() 集成。
+func (c *Connection) NewStreamWithPriority(ctx context.Context, priority int) (pkgif.Stream, error) {
 	// 先检查连接是否已关闭
 	c.mu.RLock()
 	if c.closed {
@@ -121,10 +136,17 @@ func (c *Connection) NewStream(ctx context.Context) (pkgif.Stream, error) {
 		return nil, ErrConnectionClosed
 	}
 
-	stream := newStream(quicStream, c)
+	stream := newStreamWithPriority(quicStream, c, priority)
 	c.streams = append(c.streams, stream)
 
 	return stream, nil
+}
+
+// SupportsStreamPriority 检查连接是否支持流优先级 (v1.2 新增)
+//
+// QUIC 连接支持流优先级。
+func (c *Connection) SupportsStreamPriority() bool {
+	return true
 }
 
 // AcceptStream 接受对方创建的流

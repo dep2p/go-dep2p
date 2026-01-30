@@ -11,14 +11,14 @@ import (
 // MockConnection 模拟 Connection 接口实现
 type MockConnection struct {
 	// 基本属性
-	LocalPeerID       types.PeerID
-	LocalAddr         types.Multiaddr
-	RemotePeerID      types.PeerID
-	RemoteAddr        types.Multiaddr
-	Closed            bool
-	Streams           []interfaces.Stream
-	StatValue         interfaces.ConnectionStat
-	ConnTypeValue     interfaces.ConnectionType // 
+	LocalPeerID   types.PeerID
+	LocalAddr     types.Multiaddr
+	RemotePeerID  types.PeerID
+	RemoteAddr    types.Multiaddr
+	Closed        bool
+	Streams       []interfaces.Stream
+	StatValue     interfaces.ConnectionStat
+	ConnTypeValue interfaces.ConnectionType //
 
 	// 可覆盖的方法
 	LocalPeerFunc       func() types.PeerID
@@ -31,7 +31,7 @@ type MockConnection struct {
 	StatFunc            func() interfaces.ConnectionStat
 	CloseFunc           func() error
 	IsClosedFunc        func() bool
-	ConnTypeFunc        func() interfaces.ConnectionType // 
+	ConnTypeFunc        func() interfaces.ConnectionType //
 
 	// 调用记录
 	NewStreamCalls int
@@ -93,6 +93,16 @@ func (m *MockConnection) NewStream(ctx context.Context) (interfaces.Stream, erro
 	return stream, nil
 }
 
+// NewStreamWithPriority 创建带优先级的流 (v1.2 新增)
+func (m *MockConnection) NewStreamWithPriority(ctx context.Context, _ int) (interfaces.Stream, error) {
+	return m.NewStream(ctx)
+}
+
+// SupportsStreamPriority Mock 连接不支持流优先级 (v1.2 新增)
+func (m *MockConnection) SupportsStreamPriority() bool {
+	return false
+}
+
 // AcceptStream 接受对方创建的流
 func (m *MockConnection) AcceptStream() (interfaces.Stream, error) {
 	if m.AcceptStreamFunc != nil {
@@ -136,8 +146,6 @@ func (m *MockConnection) IsClosed() bool {
 }
 
 // ConnType 返回连接类型（v2.0 新增）
-//
-// 
 func (m *MockConnection) ConnType() interfaces.ConnectionType {
 	if m.ConnTypeFunc != nil {
 		return m.ConnTypeFunc()

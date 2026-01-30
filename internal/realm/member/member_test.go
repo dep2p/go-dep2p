@@ -486,6 +486,9 @@ func (h *localMockHost) RemoveStreamHandler(protocolID string) {}
 func (h *localMockHost) NewStream(ctx context.Context, peerID string, protocolIDs ...string) (pkgif.Stream, error) {
 	return nil, fmt.Errorf("not implemented")
 }
+func (h *localMockHost) NewStreamWithPriority(ctx context.Context, peerID string, protocolID string, priority int) (pkgif.Stream, error) {
+	return h.NewStream(ctx, peerID, protocolID)
+}
 func (h *localMockHost) Peerstore() pkgif.Peerstore                                           { return nil }
 func (h *localMockHost) EventBus() pkgif.EventBus                                             { return nil }
 func (h *localMockHost) Close() error                                                         { return nil }
@@ -1954,6 +1957,9 @@ func (m *mockSwarmForDisconnectTest) ClosePeer(peerID string) error { return nil
 func (m *mockSwarmForDisconnectTest) NewStream(ctx context.Context, peerID string) (pkgif.Stream, error) {
 	return nil, nil
 }
+func (m *mockSwarmForDisconnectTest) NewStreamWithPriority(ctx context.Context, peerID string, priority int) (pkgif.Stream, error) {
+	return m.NewStream(ctx, peerID)
+}
 func (m *mockSwarmForDisconnectTest) SetInboundStreamHandler(handler pkgif.InboundStreamHandler) {}
 func (m *mockSwarmForDisconnectTest) AddInboundConnection(conn pkgif.Connection)                 {}
 func (m *mockSwarmForDisconnectTest) Notify(notifier pkgif.SwarmNotifier)                        {}
@@ -1998,6 +2004,9 @@ func (m *mockHostForDisconnectTest) SetStreamHandler(protocolID string, handler 
 func (m *mockHostForDisconnectTest) RemoveStreamHandler(protocolID string) {}
 func (m *mockHostForDisconnectTest) NewStream(ctx context.Context, peerID string, protocolIDs ...string) (pkgif.Stream, error) {
 	return nil, nil
+}
+func (m *mockHostForDisconnectTest) NewStreamWithPriority(ctx context.Context, peerID string, protocolID string, priority int) (pkgif.Stream, error) {
+	return m.NewStream(ctx, peerID, protocolID)
 }
 func (m *mockHostForDisconnectTest) Peerstore() pkgif.Peerstore { return nil }
 func (m *mockHostForDisconnectTest) EventBus() pkgif.EventBus   { return nil }

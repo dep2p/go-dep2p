@@ -386,7 +386,7 @@ func EnableBootstrap(enable bool) Option {
 	return func(cfg *nodeConfig) error {
 		cfg.config.Discovery.Bootstrap.EnableService = enable
 		if enable {
-			// 
+			//
 			cfg.config.NAT.LockReachabilityPublic = true
 		}
 		return nil
@@ -411,7 +411,7 @@ func EnableInfrastructure(enable bool) Option {
 		cfg.config.Relay.EnableServer = enable
 		if enable {
 			cfg.config.Discovery.EnableMDNS = false // 基础设施节点禁用 mDNS（云服务器无局域网邻居）
-			// 
+			//
 			// 基础设施节点配置了公网地址，不应被 AutoNAT 降级为 Private
 			cfg.config.NAT.LockReachabilityPublic = true
 		}
@@ -598,7 +598,7 @@ func EnableRelayServer(enable bool) Option {
 	return func(cfg *nodeConfig) error {
 		cfg.config.Relay.EnableServer = enable
 		if enable {
-			// 
+			//
 			cfg.config.NAT.LockReachabilityPublic = true
 		}
 		return nil
@@ -655,6 +655,33 @@ func WithPublicAddr(addr string) Option {
 			return fmt.Errorf("public address cannot be empty")
 		}
 		cfg.advertiseAddrs = append(cfg.advertiseAddrs, addr)
+		return nil
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//
+//	带宽统计选项（v1.1 新增）
+//
+// ════════════════════════════════════════════════════════════════════════════
+
+// WithBandwidth 启用带宽统计
+//
+// enabled: 是否启用带宽统计
+// perPeer: 是否按节点统计
+// perProtocol: 是否按协议统计
+//
+// 启用后可通过 node.BandwidthStats()、node.BandwidthForPeer()、
+// node.BandwidthForProtocol() 等方法获取带宽使用情况。
+//
+// 示例：
+//
+//	dep2p.New(ctx, dep2p.WithBandwidth(true, true, true))
+func WithBandwidth(enabled, perPeer, perProtocol bool) Option {
+	return func(cfg *nodeConfig) error {
+		cfg.config.Bandwidth.Enabled = enabled
+		cfg.config.Bandwidth.EnablePerPeer = perPeer
+		cfg.config.Bandwidth.EnablePerProtocol = perProtocol
 		return nil
 	}
 }

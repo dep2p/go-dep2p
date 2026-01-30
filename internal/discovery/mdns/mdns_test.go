@@ -327,6 +327,10 @@ func (m *mockHost) NewStream(ctx context.Context, peerID string, protocolIDs ...
 	return nil, nil
 }
 
+func (m *mockHost) NewStreamWithPriority(ctx context.Context, peerID string, protocolID string, priority int) (pkgif.Stream, error) {
+	return m.NewStream(ctx, peerID, protocolID)
+}
+
 func (m *mockHost) SetStreamHandler(protocolID string, handler pkgif.StreamHandler) {
 }
 
@@ -518,7 +522,7 @@ func TestMDNS_StateTransitions(t *testing.T) {
 		// TryStartServer 尝试启动
 		err = mdns.TryStartServer()
 		// 可能成功或失败（取决于网络环境），但不应该 panic
-		
+
 		mdns.Stop(ctx)
 	})
 

@@ -63,7 +63,7 @@ func (t *Transport) Dial(ctx context.Context, raddr types.Multiaddr, peerID type
 			rawConn.Close()
 			return nil, fmt.Errorf("upgrade connection: %w", err)
 		}
-		
+
 		// 将 UpgradedConn 转换为 Connection
 		// UpgradedConn 实现了 MuxedConn，需要包装为 Connection
 		return wrapUpgradedConn(upgradedConn, t.localPeer, raddr), nil
@@ -185,7 +185,7 @@ type upgradedConnection struct {
 	localPeer  types.PeerID
 	remoteAddr types.Multiaddr
 	opened     time.Time
-	
+
 	mu      sync.RWMutex
 	streams []pkgif.Stream
 	closed  bool
@@ -209,7 +209,7 @@ func (c *upgradedConnection) RemoteMultiaddr() types.Multiaddr {
 func (c *upgradedConnection) GetStreams() []pkgif.Stream {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	// 返回副本
 	result := make([]pkgif.Stream, len(c.streams))
 	copy(result, c.streams)
@@ -220,7 +220,7 @@ func (c *upgradedConnection) GetStreams() []pkgif.Stream {
 func (c *upgradedConnection) Stat() pkgif.ConnectionStat {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	return pkgif.ConnectionStat{
 		Direction:  pkgif.DirOutbound,
 		Opened:     c.opened.Unix(),
@@ -243,16 +243,30 @@ func (c *upgradedConnection) NewStream(ctx context.Context) (pkgif.Stream, error
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// 包装 MuxedStream 为 Stream
 	stream := wrapMuxedStream(muxedStream, c)
-	
+
 	// 记录流
 	c.mu.Lock()
 	c.streams = append(c.streams, stream)
 	c.mu.Unlock()
-	
+
 	return stream, nil
+}
+
+// NewStreamWithPriority 创建新流（指定优先级）(v1.2 新增)
+//
+// TCP 连接不支持流优先级，此方法直接调用 NewStream，忽略优先级参数。
+func (c *upgradedConnection) NewStreamWithPriority(ctx context.Context, _ int) (pkgif.Stream, error) {
+	return c.NewStream(ctx)
+}
+
+// SupportsStreamPriority 检查连接是否支持流优先级 (v1.2 新增)
+//
+// 升级后的 TCP 连接不支持流优先级。
+func (c *upgradedConnection) SupportsStreamPriority() bool {
+	return false
 }
 
 // AcceptStream 接受新流
@@ -262,15 +276,15 @@ func (c *upgradedConnection) AcceptStream() (pkgif.Stream, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// 包装 MuxedStream 为 Stream
 	stream := wrapMuxedStream(muxedStream, c)
-	
+
 	// 记录流
 	c.mu.Lock()
 	c.streams = append(c.streams, stream)
 	c.mu.Unlock()
-	
+
 	return stream, nil
 }
 
